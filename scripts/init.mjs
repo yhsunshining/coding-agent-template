@@ -720,16 +720,25 @@ async function installDependencies() {
 
   log('依赖安装成功', 'success')
 
-  // 重新编译原生模块（better-sqlite3 等需要针对当前 Node.js 版本编译）
+  // 重新编译原生模块（better-sqlite3 需要针对当前 Node.js 版本编译）
   log('正在编译原生模块...', 'info')
-  const rebuild = runCommandSafe(
-    'npm run build-release --prefix node_modules/.pnpm/better-sqlite3@12.8.0/node_modules/better-sqlite3'
-  )
-  if (rebuild.success) {
-    log('原生模块编译成功', 'success')
-  } else {
-    log('原生模块编译失败，如遇到 better-sqlite3 错误请手动运行：', 'warn')
-    log('  cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npm run build-release', 'info')
+  try {
+    // 动态查找 better-sqlite3 目录，避免写死版本号
+    const { execSync: exec } = await import('child_process')
+    const pkgDir = exec(
+      'node -e "console.log(require.resolve(\'better-sqlite3/package.json\').replace(\'/package.json\', \'\'))"',
+      { encoding: 'utf-8', stdio: 'pipe' }
+    ).trim()
+
+    const rebuild = runCommandSafe(`npm run build-release --prefix "${pkgDir}"`)
+    if (rebuild.success) {
+      log('原生模块编译成功', 'success')
+    } else {
+      log('原生模块编译失败，如遇到 better-sqlite3 错误请手动运行：', 'warn')
+      log('  pnpm rebuild better-sqlite3', 'info')
+    }
+  } catch (e) {
+    log('未找到 better-sqlite3，跳过原生模块编译', 'warn')
   }
 
   return true
