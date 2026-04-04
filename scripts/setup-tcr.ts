@@ -493,7 +493,12 @@ async function createNamespaceWithSuffix(client: any, prefix: string, maxRetries
         log('Please delete an existing namespace at: https://console.cloud.tencent.com/tcr/namespace', 'info')
         return null
       }
-      if (error.code === 'ResourceInUse' || error.code === 'FailedOperation.AlreadyExists' || error.message?.includes('already') || error.message?.includes('exist')) {
+      if (
+        error.code === 'ResourceInUse' ||
+        error.code === 'FailedOperation.AlreadyExists' ||
+        error.message?.includes('already') ||
+        error.message?.includes('exist')
+      ) {
         log(`Namespace '${namespace}' already taken globally, trying another suffix...`, 'warn')
         continue
       }
@@ -606,11 +611,19 @@ async function validateAndPrepareEnv(config: SetupConfig): Promise<boolean> {
   // Step 3: Try explicit environment variables + session token
   // Note: token is only read from process.env (not .env.local) to avoid persisting stale tokens
   if (!config.secretId) {
-    const envValue = process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || env['TCB_SECRET_ID'] || env['TENCENTCLOUD_SECRET_ID']
+    const envValue =
+      process.env.TCB_SECRET_ID ||
+      process.env.TENCENTCLOUD_SECRET_ID ||
+      env['TCB_SECRET_ID'] ||
+      env['TENCENTCLOUD_SECRET_ID']
     if (envValue) config.secretId = envValue
   }
   if (!config.secretKey) {
-    const envValue = process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || env['TCB_SECRET_KEY'] || env['TENCENTCLOUD_SECRET_KEY']
+    const envValue =
+      process.env.TCB_SECRET_KEY ||
+      process.env.TENCENTCLOUD_SECRET_KEY ||
+      env['TCB_SECRET_KEY'] ||
+      env['TENCENTCLOUD_SECRET_KEY']
     if (envValue) config.secretKey = envValue
   }
   if (!config.accountId) {

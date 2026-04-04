@@ -539,6 +539,84 @@ function pushImage(image) {
 
 // ===================== Setup Functions =====================
 
+/**
+ * 询问用户是否使用永久密钥，如有则保存并用其登录 cloudbase CLI
+ * 永久密钥优先级最高：无需 token，不会过期
+ */
+async function setupPermanentKey(config) {
+  const env = loadEnvFile()
+
+  // 已有永久密钥（非临时，即没有 token）
+  const savedId = env['TCB_SECRET_ID'] || ''
+  const savedKey = env['TCB_SECRET_KEY'] || ''
+  const savedToken = env['TCB_TOKEN'] || ''
+
+  if (savedId && savedKey && !savedToken) {
+    log('已读取到永久密钥，跳过密钥询问', 'success')
+    config.secretId = savedId
+    config.secretKey = savedKey
+    config.accountId = env['TENCENTCLOUD_ACCOUNT_ID'] || config.accountId
+    config.isTemporaryCredential = false
+    return true
+  }
+
+  // 询问是否输入永久密钥
+  console.log('')
+  console.log('━━━ 腾讯云永久密钥（可选）━━━')
+  console.log('')
+  console.log('  永久密钥无需 Token、不会过期，推荐用于本地开发。')
+  console.log('  获取方式：登录腾讯云控制台 → 访问管理 → API 密钥管理')
+  console.log('  https://console.cloud.tencent.com/cam/capi')
+  console.log('')
+  console.log('  如暂不填写，将使用 cloudbase login 临时凭证（按 Enter 跳过）。')
+  console.log('')
+
+  const secretId = await promptInput('SecretId（AKID 开头，回车跳过）')
+  if (!secretId) {
+    log('跳过永久密钥，将使用 cloudbase 临时凭证', 'info')
+    return false
+  }
+
+  const secretKey = await promptInput('SecretKey', true)
+  if (!secretKey) {
+    log('SecretKey 不能为空，跳过永久密钥', 'warn')
+    return false
+  }
+
+  // 保存到 .env.local（清除旧的 token，避免混用）
+  saveEnvVar('TCB_SECRET_ID', secretId)
+  saveEnvVar('TCB_SECRET_KEY', secretKey)
+  saveEnvVar('TCB_TOKEN', '')
+  log('永久密钥已保存到 .env.local', 'success')
+
+  // 用永久密钥登录 cloudbase CLI
+  log('正在使用永久密钥登录 cloudbase CLI...')
+  try {
+    execSync(`cloudbase login --apiKeyId "${secretId}" --apiKey "${secretKey}"`, {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+    })
+    log('cloudbase CLI 登录成功', 'success')
+  } catch (e) {
+    log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
+    log(e.stderr || e.message || '', 'warn')
+  }
+
+  config.secretId = secretId
+  config.secretKey = secretKey
+  config.isTemporaryCredential = false
+
+  // 获取账号 ID（从 auth.json 刷新，登录后会更新）
+  const cred = getCloudbaseCredential()
+  if (cred) {
+    config.accountId = cred.credential.uin
+    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', config.accountId)
+    log(`账号 ID：${config.accountId}`, 'info')
+  }
+
+  return true
+}
+
 async function validateAndPrepareEnv(config) {
   log('Validating credentials...')
 
@@ -983,6 +1061,12 @@ Examples:
   }
   if (config.tag === 'latest') {
     config.tag = env['TCR_TAG'] || 'latest'
+  }
+
+  // 询问永久密钥（如已填写则直接使用，跳过 cloudbase 临时凭证流程）
+  const hasPermanentKey = await setupPermanentKey(config)
+  if (hasPermanentKey) {
+    config.skipCloudbaseLogin = true
   }
 
   // Validate environment

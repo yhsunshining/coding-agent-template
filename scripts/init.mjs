@@ -289,31 +289,88 @@ async function setupCloudbaseConfig() {
 
   const env = loadEnvFile()
 
-  // ── Token check ──────────────────────────────────────────────
-  // If using temporary credentials from cloudbase auth.json, token must be saved
-  let token = env['TCB_TOKEN'] || ''
-  if (!token && existsSync(CLOUDBASE_AUTH_FILE)) {
-    try {
-      const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
-      const tmpToken = auth?.credential?.tmpToken
-      if (tmpToken) {
-        // Temporary credentials always need token
-        saveEnvVar('TCB_TOKEN', tmpToken)
-        token = tmpToken
-        log('已从 cloudbase 凭证中保存 TCB_TOKEN', 'success')
-      }
-    } catch { /* ignore */ }
-  }
+  // ── 永久密钥询问 ──────────────────────────────────────────────
+  // 已有永久密钥（有 SECRET_ID/KEY 且无 TOKEN）则跳过询问
+  const hasPermanentKey = env['TCB_SECRET_ID'] && env['TCB_SECRET_KEY'] && !env['TCB_TOKEN']
+  let usePermanentKey = hasPermanentKey
 
-  if (!token) {
-    log('TCB_TOKEN 未设置（临时凭证必填）', 'warn')
-    token = await promptInput('请输入 TCB_TOKEN（使用永久密钥可直接回车跳过）', false)
-    if (token) {
-      saveEnvVar('TCB_TOKEN', token)
-      log('TCB_TOKEN 已保存', 'success')
+  if (!hasPermanentKey) {
+    console.log('')
+    console.log('  永久密钥无需 Token、不会过期，推荐用于本地开发。')
+    console.log('  获取方式：腾讯云控制台 → 访问管理 → API 密钥管理')
+    console.log('  https://console.cloud.tencent.com/cam/capi')
+    console.log('')
+    console.log('  如暂不填写，将使用 cloudbase login 临时凭证（按 Enter 跳过）。')
+    console.log('')
+
+    const secretId = await promptInput('SecretId（AKID 开头，回车跳过）')
+    if (secretId) {
+      const secretKey = await promptInput('SecretKey', true)
+      if (secretKey) {
+        saveEnvVar('TCB_SECRET_ID', secretId)
+        saveEnvVar('TCB_SECRET_KEY', secretKey)
+        saveEnvVar('TCB_TOKEN', '')
+        log('永久密钥已保存', 'success')
+
+        // 使用永久密钥登录 cloudbase CLI
+        log('正在使用永久密钥登录 cloudbase CLI...')
+        try {
+          execSync(`cloudbase login --apiKeyId "${secretId}" --apiKey "${secretKey}"`, {
+            stdio: 'pipe',
+            encoding: 'utf-8',
+          })
+          log('cloudbase CLI 登录成功', 'success')
+        } catch (e) {
+          log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
+        }
+
+        // 获取账号 ID
+        try {
+          const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
+          const uin = auth?.credential?.uin
+          if (uin) {
+            saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', uin)
+            log(`账号 ID：${uin}`, 'info')
+          }
+        } catch { /* ignore */ }
+
+        usePermanentKey = true
+      } else {
+        log('SecretKey 为空，跳过永久密钥', 'warn')
+      }
+    } else {
+      log('跳过永久密钥，将使用 cloudbase 临时凭证', 'info')
     }
   } else {
-    log('TCB_TOKEN 已设置', 'success')
+    log(`已检测到永久密钥（${env['TCB_SECRET_ID'].slice(0, 10)}...）`, 'success')
+  }
+
+  // ── Token check ──────────────────────────────────────────────
+  // 永久密钥无需 token；临时凭证需要保存 token
+  let token = env['TCB_TOKEN'] || ''
+  if (!usePermanentKey) {
+    if (!token && existsSync(CLOUDBASE_AUTH_FILE)) {
+      try {
+        const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
+        const tmpToken = auth?.credential?.tmpToken
+        if (tmpToken) {
+          saveEnvVar('TCB_TOKEN', tmpToken)
+          token = tmpToken
+          log('已从 cloudbase 凭证中保存 TCB_TOKEN', 'success')
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!token) {
+      log('TCB_TOKEN 未设置（临时凭证必填）', 'warn')
+      token = await promptInput('请输入 TCB_TOKEN（使用永久密钥可直接回车跳过）', false)
+      if (token) {
+        saveEnvVar('TCB_TOKEN', token)
+        log('TCB_TOKEN 已保存', 'success')
+      }
+    } else {
+      log('TCB_TOKEN 已设置', 'success')
+    }
   }
 
   // ── TCB_ENV_ID selection ──────────────────────────────────────
@@ -383,6 +440,39 @@ async function setupCloudbaseConfig() {
 
   saveEnvVar('TCB_ENV_ID', selectedEnvId)
   log(`TCB_ENV_ID 已保存：${selectedEnvId}`, 'success')
+
+  // ── TCB_PROVISION_MODE 选择 ───────────────────────────────────
+  const existingMode = loadEnvFile()['TCB_PROVISION_MODE'] || ''
+  if (existingMode) {
+    log(`TCB_PROVISION_MODE 已设置：${existingMode}`, 'success')
+  } else {
+    console.log('')
+    console.log('━━━ 用户环境模式 ━━━')
+    console.log('')
+    console.log('  1) 共享模式（shared）— 默认推荐')
+    console.log('     所有用户共用同一个 CloudBase 环境，无需额外资源。')
+    console.log('')
+    console.log('  2) 独立模式（isolated）')
+    console.log('     每个用户自动创建独立的 CloudBase 环境。')
+    console.log('     ⚠ 需要账号有足够余额，且密钥具备 CAM 权限。')
+    console.log('')
+
+    let mode = ''
+    while (!mode) {
+      const answer = await promptInput('请选择模式（1 或 2，回车默认选 1）')
+      if (!answer || answer === '1') {
+        mode = 'shared'
+      } else if (answer === '2') {
+        mode = 'isolated'
+      } else {
+        log('请输入 1 或 2', 'warn')
+      }
+    }
+
+    saveEnvVar('TCB_PROVISION_MODE', mode)
+    log(`TCB_PROVISION_MODE 已保存：${mode}`, 'success')
+  }
+
   return true
 }
 
