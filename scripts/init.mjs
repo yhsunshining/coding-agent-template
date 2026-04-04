@@ -622,7 +622,7 @@ async function setupServerEnv() {
       }
     })
 
-    const overwrite = await askYesNo('packages/server/.env 已存在，是否覆盖？（否则跳过此步骤）', false)
+    const overwrite = await askYesNo('packages/server/.env 已存在，是否覆盖？（否则跳过此步骤）', true)
     if (!overwrite) {
       log('跳过服务端环境变量配置', 'info')
       return true
@@ -713,13 +713,26 @@ async function installDependencies() {
 
   const result = runCommandSafe('pnpm install')
 
-  if (result.success) {
-    log('依赖安装成功', 'success')
-    return true
+  if (!result.success) {
+    log('依赖安装失败', 'error')
+    return false
   }
 
-  log('依赖安装失败', 'error')
-  return false
+  log('依赖安装成功', 'success')
+
+  // 重新编译原生模块（better-sqlite3 等需要针对当前 Node.js 版本编译）
+  log('正在编译原生模块...', 'info')
+  const rebuild = runCommandSafe(
+    'npm run build-release --prefix node_modules/.pnpm/better-sqlite3@12.8.0/node_modules/better-sqlite3'
+  )
+  if (rebuild.success) {
+    log('原生模块编译成功', 'success')
+  } else {
+    log('原生模块编译失败，如遇到 better-sqlite3 错误请手动运行：', 'warn')
+    log('  cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npm run build-release', 'info')
+  }
+
+  return true
 }
 
 // ===================== Main =====================

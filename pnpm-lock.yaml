@@ -242,9 +242,6 @@ importers:
       tencentcloud-sdk-nodejs:
         specifier: ^4.1.205
         version: 4.1.206
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
