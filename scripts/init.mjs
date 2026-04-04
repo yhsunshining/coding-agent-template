@@ -611,7 +611,21 @@ function setupServerEnv() {
   const env = loadEnvFile()
   const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
 
-  const get = (key, fallback = '') => env[key] || process.env[key] || fallback
+  // Load existing server .env to preserve manually-set values (e.g. CodeBuddy OAuth, Git Archive)
+  const existingServerEnv = {}
+  if (existsSync(serverEnvFile)) {
+    readFileSync(serverEnvFile, 'utf-8').split('\n').forEach(line => {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...rest] = trimmed.split('=')
+        if (key) existingServerEnv[key.trim()] = rest.join('=').trim()
+      }
+    })
+  }
+
+  // Priority: existing server .env > root .env.local > process.env > fallback
+  const get = (key, fallback = '') =>
+    existingServerEnv[key] || env[key] || process.env[key] || fallback
 
   const jweSecret = get('JWE_SECRET')
   const encryptionKey = get('ENCRYPTION_KEY')
