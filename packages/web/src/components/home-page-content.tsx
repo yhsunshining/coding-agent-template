@@ -9,6 +9,8 @@ import { setSelectedOwner, setSelectedRepo } from '@/lib/utils/cookies'
 import type { Session } from '@/lib/session/types'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +39,92 @@ interface HomePageContentProps {
   initialEnableBrowser?: boolean
   maxSandboxDuration?: number
   user?: Session['user'] | null
+}
+
+function LocalSignInForm({ onSuccess }: { onSuccess: () => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const setSession = useSetAtom(sessionAtom)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register'
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username, password }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.error || 'An error occurred')
+      } else {
+        setSession({ user: data.user, envId: data.envId })
+        onSuccess()
+      }
+    } catch {
+      setError('Network error, please try again')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+      <div className="flex gap-2 text-sm">
+        <button
+          type="button"
+          className={`font-medium ${mode === 'login' ? 'text-foreground underline' : 'text-muted-foreground'}`}
+          onClick={() => { setMode('login'); setError('') }}
+        >
+          Login
+        </button>
+        <span className="text-muted-foreground">/</span>
+        <button
+          type="button"
+          className={`font-medium ${mode === 'register' ? 'text-foreground underline' : 'text-muted-foreground'}`}
+          onClick={() => { setMode('register'); setError('') }}
+        >
+          Register
+        </button>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="signin-username">Username</Label>
+        <Input
+          id="signin-username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Enter username"
+          autoComplete="username"
+          required
+          minLength={3}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="signin-password">Password</Label>
+        <Input
+          id="signin-password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Enter password"
+          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          required
+          minLength={6}
+        />
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <Button type="submit" disabled={loading} size="lg" className="w-full">
+        {loading ? 'Loading...' : mode === 'login' ? 'Login' : 'Register'}
+      </Button>
+    </form>
+  )
 }
 
 export function HomePageContent({
@@ -625,6 +713,7 @@ export function HomePageContent({
           </DialogHeader>
 
           <div className="flex flex-col gap-3 py-4">
+            {/* GitHub sign-in (disabled)
             {hasGitHub && (
               <Button
                 onClick={handleGitHubSignIn}
@@ -665,6 +754,8 @@ export function HomePageContent({
                 )}
               </Button>
             )}
+            */}
+            <LocalSignInForm onSuccess={() => setShowSignInDialog(false)} />
           </div>
         </DialogContent>
       </Dialog>

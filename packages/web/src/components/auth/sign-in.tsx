@@ -82,7 +82,7 @@ export function SignIn() {
           </DialogHeader>
 
           <div className="flex flex-col gap-3 py-4">
-            {/* GitHub */}
+            {/* GitHub sign-in (disabled)
             {hasGitHub && (
               <Button
                 onClick={handleGitHubSignIn}
@@ -104,8 +104,9 @@ export function SignIn() {
                 )}
               </Button>
             )}
+            */}
 
-            {/* Divider */}
+            {/* Divider (disabled)
             {hasGitHub && hasLocal && (
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
@@ -116,6 +117,7 @@ export function SignIn() {
                 </div>
               </div>
             )}
+            */}
 
             {/* Local account */}
             {hasLocal && (
