@@ -36,8 +36,9 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
-import { useAtom } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { taskChatInputAtomFamily } from '@/lib/atoms/task'
+import { sessionAtom } from '@/lib/atoms/session'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -214,6 +215,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [newMessage, setNewMessage] = useAtom(taskChatInputAtomFamily(taskId))
+  const session = useAtomValue(sessionAtom)
   const [isSending, setIsSending] = useState(false)
   const [isStreamingResponse, setIsStreamingResponse] = useState(false)
   const isStreamingRef = useRef(false) // ref 版本，供 fetchMessages 使用（不触发重建）
@@ -1404,7 +1406,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     if (activeTab === 'cloud') {
       return (
         <div className="flex-1 overflow-hidden -mx-3 -mt-3">
-          <CloudDashboard style={{ height: '100%' }} />
+          <CloudDashboard envId={session.envId} style={{ height: '100%' }} />
         </div>
       )
     }
@@ -1873,52 +1875,12 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                               allAgentMessages.length > 0 &&
                               allAgentMessages[allAgentMessages.length - 1].id === agentMessage.id
 
-                            const isAgentWorking = task.status === 'processing' || task.status === 'pending'
-                            const content = parseAgentMessage(agentMessage)
-
-                            // Pre-process content to mark the last tool call with a special marker
-                            let processedContent = content
-                            if (isAgentWorking && isLastAgentMessage) {
-                              // Find all tool calls (more comprehensive pattern)
-                              const toolCallRegex = /\n\n([A-Z][a-z]+(?:\s+[a-z]+)*:?\s+[^\n]+)/g
-                              const matches = Array.from(content.matchAll(toolCallRegex))
-
-                              // Filter to only actual tool calls
-                              const toolCallMatches = matches.filter((match) => {
-                                const text = match[1]
-                                return /^(?:Editing|Reading|Running|Listing|Executing|Searching|Finding|Grep)/i.test(
-                                  text,
-                                )
-                              })
-
-                              if (toolCallMatches.length > 0) {
-                                // Get the last match
-                                const lastMatch = toolCallMatches[toolCallMatches.length - 1]
-                                const lastToolCall = lastMatch[1]
-                                const lastIndex = lastMatch.index! + 2 // +2 for \n\n
-                                const endOfToolCall = lastIndex + lastToolCall.length
-
-                                // Check if there's any non-whitespace content after the last tool call
-                                const contentAfter = content.substring(endOfToolCall).trim()
-
-                                // Only add the shimmer marker if there's no content after it
-                                if (!contentAfter) {
-                                  processedContent =
-                                    content.substring(0, lastIndex) +
-                                    '🔄SHIMMER🔄' +
-                                    lastToolCall +
-                                    content.substring(endOfToolCall)
-                                }
-                              }
-                            }
-
                             return (
                               <div className="space-y-2">
-                                {/* Render thinking + tool_call parts in order */}
+                                {/* Render all parts in order: thinking, tool_call, text */}
                                 {agentMessage.parts &&
                                   agentMessage.parts.map((part, pi) => {
                                     if (part.type === 'thinking' && part.text) {
-                                      // 查看后面是否还有 thinking part（决定"思考中"还是"已思考"）
                                       const hasMoreThinking = agentMessage.parts
                                         ?.slice(pi + 1)
                                         .some((p) => p.type === 'thinking')
@@ -1950,98 +1912,53 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                                         />
                                       )
                                     }
+                                    if (part.type === 'text' && part.text) {
+                                      return (
+                                        <Streamdown
+                                          key={`text-${pi}`}
+                                          components={{
+                                            code: ({
+                                              className,
+                                              children,
+                                              ...props
+                                            }: React.ComponentPropsWithoutRef<'code'>) => (
+                                              <code className={`${className} !text-xs`} {...props}>
+                                                {children}
+                                              </code>
+                                            ),
+                                            pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
+                                              <pre className="!text-xs" {...props}>
+                                                {children}
+                                              </pre>
+                                            ),
+                                            p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
+                                              <p {...props}>{children}</p>
+                                            ),
+                                            ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
+                                              <ul className="text-xs list-disc ml-4" {...props}>
+                                                {children}
+                                              </ul>
+                                            ),
+                                            ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
+                                              <ol className="text-xs list-decimal ml-4" {...props}>
+                                                {children}
+                                              </ol>
+                                            ),
+                                            li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
+                                              <li className="text-xs mb-2" {...props}>
+                                                {Children.toArray(children).filter(
+                                                  (ch) => typeof ch === 'string' || isValidElement(ch),
+                                                )}
+                                              </li>
+                                            ),
+                                          }}
+                                        >
+                                          {part.text}
+                                        </Streamdown>
+                                      )
+                                    }
                                     return null
                                   })}
-                                {/* Render text content via Streamdown */}
-                                {processedContent && (
-                                  <Streamdown
-                                    components={{
-                                      code: ({
-                                        className,
-                                        children,
-                                        ...props
-                                      }: React.ComponentPropsWithoutRef<'code'>) => (
-                                        <code className={`${className} !text-xs`} {...props}>
-                                          {children}
-                                        </code>
-                                      ),
-                                      pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
-                                        <pre className="!text-xs" {...props}>
-                                          {children}
-                                        </pre>
-                                      ),
-                                      p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => {
-                                        // Extract text from complex children structures
-                                        const childrenArray = Children.toArray(children)
-                                        const textParts: string[] = []
-
-                                        childrenArray.forEach((child) => {
-                                          if (typeof child === 'string') {
-                                            textParts.push(child)
-                                          } else if (isValidElement(child)) {
-                                            // It's a React element - keep it as-is, don't stringify
-                                            // This will be handled by React
-                                          }
-                                          // Skip plain objects entirely
-                                        })
-
-                                        const text = textParts.join('')
-                                        const hasShimmerMarker = text.includes('🔄SHIMMER🔄')
-                                        const isToolCall =
-                                          /^(🔄SHIMMER🔄)?(Editing|Reading|Running|Listing|Executing|Searching|Finding|Grep)/i.test(
-                                            text,
-                                          )
-
-                                        // Always remove the marker from display (global replace to catch all instances)
-                                        const displayText = text.replace(/🔄SHIMMER🔄/g, '')
-
-                                        // If we have React elements, also remove marker from string children
-                                        const hasReactElements = childrenArray.some((child) => isValidElement(child))
-                                        const cleanedChildren = hasReactElements
-                                          ? childrenArray
-                                              .map((child) =>
-                                                typeof child === 'string' ? child.replace(/🔄SHIMMER🔄/g, '') : child,
-                                              )
-                                              .filter((child) => typeof child === 'string' || isValidElement(child))
-                                          : displayText
-
-                                        return (
-                                          <p
-                                            className={
-                                              isToolCall
-                                                ? hasShimmerMarker
-                                                  ? 'bg-gradient-to-r from-muted-foreground from-20% via-foreground/40 via-50% to-muted-foreground to-80% bg-clip-text text-transparent bg-[length:300%_100%] animate-[shimmer_1.5s_linear_infinite]'
-                                                  : 'text-muted-foreground/60'
-                                                : ''
-                                            }
-                                            {...props}
-                                          >
-                                            {cleanedChildren}
-                                          </p>
-                                        )
-                                      },
-                                      ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
-                                        <ul className="text-xs list-disc ml-4" {...props}>
-                                          {children}
-                                        </ul>
-                                      ),
-                                      ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
-                                        <ol className="text-xs list-decimal ml-4" {...props}>
-                                          {children}
-                                        </ol>
-                                      ),
-                                      li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-                                        <li className="text-xs mb-2" {...props}>
-                                          {Children.toArray(children).filter(
-                                            (c) => typeof c === 'string' || isValidElement(c),
-                                          )}
-                                        </li>
-                                      ),
-                                    }}
-                                  >
-                                    {processedContent}
-                                  </Streamdown>
-                                )}
                               </div>
                             )
                           })()}

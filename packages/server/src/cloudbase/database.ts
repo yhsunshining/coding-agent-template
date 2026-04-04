@@ -1,37 +1,22 @@
 import CloudBase from '@cloudbase/manager-node'
-import { AuthSupervisor } from '@cloudbase/toolbox'
-import { loadConfig } from '../config/store.js'
 import type { CollectionInfo, CollectionListResult, DocumentQueryResult } from '@coder/shared'
 
-const auth = AuthSupervisor.getInstance({})
+// ─── 获取 Manager 实例（按请求初始化，使用用户凭证）──────────
 
-// ─── 获取 Manager 实例 ──────────────────────────────────
+export interface CloudBaseCredentials {
+  envId: string
+  secretId: string
+  secretKey: string
+  sessionToken?: string
+}
 
-export async function getManager(): Promise<CloudBase> {
-  // 优先使用环境变量（Dashboard 模式）
-  if (process.env.TCB_SECRET_ID && process.env.TCB_ENV_ID) {
-    return new CloudBase({
-      secretId: process.env.TCB_SECRET_ID,
-      secretKey: process.env.TCB_SECRET_KEY || '',
-      token: process.env.TCB_TOKEN || '',
-      envId: process.env.TCB_ENV_ID,
-      proxy: process.env.http_proxy,
-    })
-  }
-
-  // 回退到登录态
-  const loginState = await auth.getLoginState()
-  if (!loginState) throw new Error('未登录')
-  const config = loadConfig()
-  if (!config.cloudbase?.envId) throw new Error('未绑定环境')
-
+export function createManager(creds: CloudBaseCredentials): CloudBase {
   return new CloudBase({
-    secretId: (loginState as any).secretId,
-    secretKey: (loginState as any).secretKey,
-    token: (loginState as any).token,
-    envId: config.cloudbase.envId,
+    secretId: creds.secretId,
+    secretKey: creds.secretKey,
+    token: creds.sessionToken || '',
+    envId: creds.envId,
     proxy: process.env.http_proxy,
-    region: config.cloudbase.region,
   })
 }
 
@@ -47,8 +32,8 @@ async function getDatabaseInstanceId(manager: CloudBase): Promise<string> {
 
 // ─── 集合管理 ───────────────────────────────────────────
 
-export async function listCollections(): Promise<CollectionListResult> {
-  const manager = await getManager()
+export async function listCollections(creds: CloudBaseCredentials): Promise<CollectionListResult> {
+  const manager = createManager(creds)
   const result = await manager.database.listCollections({
     MgoOffset: 0,
     MgoLimit: 1000,
@@ -66,31 +51,30 @@ export async function listCollections(): Promise<CollectionListResult> {
   }
 }
 
-export async function createCollection(name: string): Promise<void> {
-  const manager = await getManager()
+export async function createCollection(creds: CloudBaseCredentials, name: string): Promise<void> {
+  const manager = createManager(creds)
   await manager.database.createCollection(name)
-  // 等待集合就绪
   await waitForCollectionReady(manager, name)
 }
 
-export async function deleteCollection(name: string): Promise<void> {
-  const manager = await getManager()
+export async function deleteCollection(creds: CloudBaseCredentials, name: string): Promise<void> {
+  const manager = createManager(creds)
   await manager.database.deleteCollection(name)
 }
 
 // ─── 文档 CRUD ──────────────────────────────────────────
 
 export async function queryDocuments(
+  creds: CloudBaseCredentials,
   collection: string,
   page = 1,
   pageSize = 50,
   where?: Record<string, unknown>,
 ): Promise<DocumentQueryResult> {
-  const manager = await getManager()
+  const manager = createManager(creds)
   const instanceId = await getDatabaseInstanceId(manager)
   const offset = (page - 1) * pageSize
 
-  // 构建 MgoQuery：支持传入自定义 where 条件
   const mgoQuery = where && Object.keys(where).length > 0 ? JSON.stringify(where) : '{}'
 
   const result = await manager.commonService('tcb', '2018-06-08').call({
@@ -124,8 +108,12 @@ export async function queryDocuments(
   }
 }
 
-export async function insertDocument(collection: string, data: Record<string, unknown>): Promise<string> {
-  const manager = await getManager()
+export async function insertDocument(
+  creds: CloudBaseCredentials,
+  collection: string,
+  data: Record<string, unknown>,
+): Promise<string> {
+  const manager = createManager(creds)
   const instanceId = await getDatabaseInstanceId(manager)
 
   const result = await manager.commonService('tcb', '2018-06-08').call({
@@ -140,11 +128,15 @@ export async function insertDocument(collection: string, data: Record<string, un
   return result.InsertedIds?.[0] ?? ''
 }
 
-export async function updateDocument(collection: string, docId: string, data: Record<string, unknown>): Promise<void> {
-  const manager = await getManager()
+export async function updateDocument(
+  creds: CloudBaseCredentials,
+  collection: string,
+  docId: string,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const manager = createManager(creds)
   const instanceId = await getDatabaseInstanceId(manager)
 
-  // 移除 _id 字段，不允许更新
   const { _id, ...updateData } = data
 
   await manager.commonService('tcb', '2018-06-08').call({
@@ -160,8 +152,8 @@ export async function updateDocument(collection: string, docId: string, data: Re
   })
 }
 
-export async function deleteDocument(collection: string, docId: string): Promise<void> {
-  const manager = await getManager()
+export async function deleteDocument(creds: CloudBaseCredentials, collection: string, docId: string): Promise<void> {
+  const manager = createManager(creds)
   const instanceId = await getDatabaseInstanceId(manager)
 
   await manager.commonService('tcb', '2018-06-08').call({

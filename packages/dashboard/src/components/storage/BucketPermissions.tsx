@@ -2,9 +2,11 @@ import { Modal, ModalBody, ModalFooter } from '../ui/Modal'
 import { Button } from '../ui'
 import { Shield, Lock, Eye, Users, FileEdit } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { useAtomValue } from 'jotai'
 import type { BucketInfo } from '../../services/storage'
 import { capiClient } from '../../services/capi'
 import { toast } from 'sonner'
+import { envIdAtom } from '../../atoms/env'
 
 interface Props {
   open: boolean
@@ -40,6 +42,7 @@ const ACL_OPTIONS = [
 ]
 
 export default function BucketPermissions({ open, onOpenChange, bucket }: Props) {
+  const envId = useAtomValue(envIdAtom)
   const [acl, setAcl] = useState('PRIVATE')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -48,7 +51,7 @@ export default function BucketPermissions({ open, onOpenChange, bucket }: Props)
     if (!open || !bucket) return
     setLoading(true)
     capiClient
-      .tcb('DescribeStorageACL', { EnvId: import.meta.env.VITE_TCB_ENV_ID })
+      .tcb('DescribeStorageACL', { EnvId: envId })
       .then((res: any) => {
         if (res?.AclTag) setAcl(res.AclTag)
       })
@@ -61,7 +64,7 @@ export default function BucketPermissions({ open, onOpenChange, bucket }: Props)
     setSaving(true)
     try {
       await capiClient.tcb('ModifyStorageACL', {
-        EnvId: import.meta.env.VITE_TCB_ENV_ID,
+        EnvId: envId,
         AclTag: acl,
       })
       toast.success('权限已更新')

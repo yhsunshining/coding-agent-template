@@ -20,10 +20,17 @@ import { db } from '../db/client.js'
 import { tasks, deployments } from '../db/schema.js'
 import { eq, and, isNull } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
-import type { AppEnv } from '../middleware/auth.js'
-import type { Context } from 'hono'
+import { requireUserEnv, type AppEnv } from '../middleware/auth.js'
 
 const acp = new Hono<AppEnv>()
+
+// 除 /health 外，所有 ACP 路由都需要登录 + 用户环境校验
+acp.use('/*', async (c, next) => {
+  if (c.req.path.endsWith('/health') || c.req.path.endsWith('/config')) {
+    return next()
+  }
+  return requireUserEnv(c, next)
+})
 
 // ─── JSON-RPC Helper Functions ────────────────────────────────────────────
 
@@ -37,16 +44,6 @@ function rpcErr(id: number | string | null, code: number, message: string): Json
     id: id ?? null,
     error: { code, message },
   }
-}
-
-// ─── User Context Helper ──────────────────────────────────────────────────
-
-function getUserContext(c: Context<AppEnv>): { envId: string; userId: string } {
-  const config = loadConfig()
-  const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId || ''
-  const session = c.get('session')
-  const userId = session?.user?.id || 'anonymous'
-  return { envId, userId }
 }
 
 // ─── Health Check ──────────────────────────────────────────────────────────
@@ -63,7 +60,7 @@ acp.get('/health', (c) => {
 acp.post('/conversation', async (c) => {
   const body = await c.req.json<{ title?: string; conversationId?: string }>()
   const conversationId = body?.conversationId || uuidv4()
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
 
   if (!envId) {
     return c.json({ error: 'CloudBase environment not bound' }, 400)
@@ -102,7 +99,7 @@ acp.get('/conversation/records', async (c) => {
     return c.json({ error: 'conversationId is required' }, 400)
   }
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json({ error: 'CloudBase environment not bound' }, 400)
   }
@@ -153,7 +150,7 @@ acp.get('/conversation/:conversationId/messages', async (c) => {
   const limit = parseInt(c.req.query('limit') || '50')
   const sort = (c.req.query('sort') || 'DESC') as 'ASC' | 'DESC'
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json({ error: 'CloudBase environment not bound' }, 400)
   }
@@ -196,7 +193,7 @@ acp.post('/chat', async (c) => {
   const body = await c.req.json<{ prompt: string; conversationId?: string }>()
   const { prompt, conversationId } = body
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json({ error: 'CloudBase environment not bound' }, 400)
   }
@@ -273,6 +270,7 @@ acp.post('/chat', async (c) => {
         conversationId: actualConversationId,
         envId,
         userId,
+        userCredentials,
         cwd,
       })
     } catch (error) {
@@ -361,7 +359,7 @@ async function handleSessionNew(c: any, id: number | string, params: Record<stri
   const conversationId = (params?.conversationId as string) || uuidv4()
   const sessionId = conversationId
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, 'CloudBase environment not bound'))
   }
@@ -391,7 +389,7 @@ async function handleSessionLoad(c: any, id: number | string, params: Record<str
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, 'sessionId is required'))
   }
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, 'CloudBase environment not bound'))
   }
@@ -408,7 +406,7 @@ async function handleSessionLoad(c: any, id: number | string, params: Record<str
 async function handleSessionPrompt(c: any, id: number | string, params: SessionPromptParams) {
   const sessionId = params?.sessionId
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, 'CloudBase environment not bound'))
   }
@@ -641,6 +639,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
         conversationId: sessionId,
         envId,
         userId,
+        userCredentials,
         cwd,
       })
     } catch (error) {
@@ -690,7 +689,7 @@ async function handleSessionCancel(
 ) {
   const sessionId = params?.sessionId as string
 
-  const { envId, userId } = getUserContext(c)
+  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
 
   if (sessionId && envId) {
     // 获取最新消息并更新状态为 cancel

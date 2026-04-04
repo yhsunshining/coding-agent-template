@@ -431,6 +431,12 @@ export interface AgentOptions {
   conversationId?: string
   envId?: string
   userId?: string
+  /** 登录用户的 CloudBase 凭证（临时密钥或分配密钥） */
+  userCredentials?: {
+    secretId: string
+    secretKey: string
+    sessionToken?: string
+  }
   maxTurns?: number
   cwd?: string
   /** AskUserQuestion 的用户回答（resume 场景）{ [recordId]: { toolCallId, answers: { [q]: a } } } */

@@ -14,7 +14,7 @@ import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage } from '@code
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-const MODEL = 'kimi-k2.5'
+const MODEL = 'glm-5.0'
 const OAUTH_TOKEN_ENDPOINT = 'https://copilot.tencent.com/oauth2/token'
 const CONNECT_TIMEOUT_MS = 60_000
 const ITERATION_TIMEOUT_MS = 30 * 1000
@@ -56,9 +56,6 @@ async function initSandboxWorkspace(
   secret: { envId: string; secretId: string; secretKey: string; token?: string },
 ): Promise<string | undefined> {
   try {
-    const gitArchiveRepo = process.env.GIT_ARCHIVE_REPO || ''
-    const gitArchiveUser = process.env.GIT_ARCHIVE_USER || ''
-    const gitArchiveToken = process.env.GIT_ARCHIVE_TOKEN || ''
     const res = await sandbox.request('/api/session/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -68,9 +65,6 @@ async function initSandboxWorkspace(
           TENCENTCLOUD_SECRETID: secret.secretId,
           TENCENTCLOUD_SECRETKEY: secret.secretKey,
           ...(secret.token ? { TENCENTCLOUD_SESSIONTOKEN: secret.token } : {}),
-          ...(gitArchiveRepo ? { GIT_ARCHIVE_REPO: gitArchiveRepo } : {}),
-          ...(gitArchiveUser ? { GIT_ARCHIVE_USER: gitArchiveUser } : {}),
-          ...(gitArchiveToken ? { GIT_ARCHIVE_TOKEN: gitArchiveToken } : {}),
         },
       }),
       signal: AbortSignal.timeout(15_000),
@@ -254,7 +248,16 @@ ${
 
 export class CloudbaseAgentService {
   async chatStream(prompt: string, callback: AgentCallback, options: AgentOptions = {}): Promise<void> {
-    const { conversationId = uuidv4(), envId, userId, maxTurns = 10, cwd, askAnswers, toolConfirmation } = options
+    const {
+      conversationId = uuidv4(),
+      envId,
+      userId,
+      userCredentials,
+      maxTurns = 50,
+      cwd,
+      askAnswers,
+      toolConfirmation,
+    } = options
     console.log('[Agent] chatStream start, conversationId:', conversationId, 'prompt:', prompt.slice(0, 50))
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
@@ -419,7 +422,7 @@ export class CloudbaseAgentService {
     let sandboxInstance: SandboxInstance | null = null
     let toolOverrideConfig: { url: string; headers: Record<string, string> } | null = null
 
-    const sandboxEnabled = process.env.SCF_SANDBOX_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI
+    const sandboxEnabled = process.env.TCB_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI
 
     if (sandboxEnabled) {
       try {
@@ -435,28 +438,28 @@ export class CloudbaseAgentService {
           wrappedCallback({ type: 'text', content: '沙箱启动超时，将使用受限模式继续对话。\n\n' })
           sandboxInstance = null
         } else {
-          // ── 初始化工作空间：注入凭证并获取 cwd ───────────────────
+          // ── 初始化工作空间：注入【登录用户凭证】──────────────────
           const sandboxCwd = await initSandboxWorkspace(sandboxInstance, {
             envId: userContext.envId,
-            secretId: process.env.TCB_SECRET_ID || '',
-            secretKey: process.env.TCB_SECRET_KEY || '',
-            token: process.env.TCB_TOKEN,
+            secretId: userCredentials?.secretId || '',
+            secretKey: userCredentials?.secretKey || '',
+            token: userCredentials?.sessionToken,
           })
           if (sandboxCwd) {
             wrappedCallback({ type: 'session', sandboxCwd } as any)
             console.log(`[Agent] Sandbox workspace initialized, cwd: ${sandboxCwd}`)
           }
 
-          // Create sandbox MCP client for CloudBase tools
+          // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             baseUrl: sandboxInstance.baseUrl,
             sessionId: conversationId,
             getAccessToken: () => sandboxInstance!.getAccessToken(),
             getCredentials: async () => ({
               cloudbaseEnvId: userContext.envId,
-              secretId: process.env.TCB_SECRET_ID || '',
-              secretKey: process.env.TCB_SECRET_KEY || '',
-              sessionToken: process.env.TCB_TOKEN,
+              secretId: userCredentials?.secretId || '',
+              secretKey: userCredentials?.secretKey || '',
+              sessionToken: userCredentials?.sessionToken,
             }),
             workspaceFolderPaths: actualCwd,
             log: (msg) => console.log(msg),

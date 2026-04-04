@@ -3,10 +3,54 @@ import tencentcloud from 'tencentcloud-sdk-nodejs'
 const CamClient = tencentcloud.cam.v20190116.Client
 const TcbClient = tencentcloud.tcb.v20180608.Client
 
+/**
+ * 构建用户环境的 CAM 策略 statement
+ * 在 provision（创建永久策略）和 acp（签发临时密钥）中复用
+ */
+export function buildUserEnvPolicyStatements(envId: string) {
+  return [
+    {
+      action: [
+        'tcb:DescribeEnvs',
+        'tcb:DescribePackages',
+        'tcb:CheckTcbService',
+        'tcb:DescribeBillingInfo',
+        'tcb:DescribeEnvLimit',
+        'tcb:GetUserKeyList',
+        'tcb:DescribeMonitorMetric',
+        'tcb:ListTables',
+      ],
+      effect: 'allow',
+      resource: ['*'],
+    },
+    {
+      action: ['tcb:*'],
+      effect: 'allow',
+      resource: [`qcs::tcb:::env/${envId}`],
+    },
+    {
+      action: ['cos:*'],
+      effect: 'allow',
+      resource: ['*'],
+    },
+    {
+      action: ['scf:*'],
+      effect: 'allow',
+      resource: ['*'],
+    },
+    {
+      action: ['sts:GetFederationToken'],
+      effect: 'allow',
+      resource: ['*'],
+    },
+  ]
+}
+
 function getClients() {
   const credential = {
     secretId: process.env.TCB_SECRET_ID || process.env.TENCENT_SECRET_ID || '',
     secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENT_SECRET_KEY || '',
+    token: process.env.TCB_TOKEN || process.env.TENCENTCLOUD_SESSIONTOKEN || '',
   }
 
   const camClient = new CamClient({
@@ -154,42 +198,7 @@ export async function provisionUserResources(userId: string, username: string): 
   if (!policyId) {
     const policyDocument = JSON.stringify({
       version: '2.0',
-      statement: [
-        {
-          action: [
-            'tcb:DescribeEnvs',
-            'tcb:DescribePackages',
-            'tcb:CheckTcbService',
-            'tcb:DescribeBillingInfo',
-            'tcb:DescribeEnvLimit',
-            'tcb:GetUserKeyList',
-            'tcb:DescribeMonitorMetric',
-            'tcb:ListTables',
-          ],
-          effect: 'allow',
-          resource: ['*'],
-        },
-        {
-          action: ['tcb:*'],
-          effect: 'allow',
-          resource: [`qcs::tcb:::env/${envId}`],
-        },
-        {
-          action: ['cos:*'],
-          effect: 'allow',
-          resource: ['*'],
-        },
-        {
-          action: ['scf:*'],
-          effect: 'allow',
-          resource: ['*'],
-        },
-        {
-          action: ['sts:GetFederationToken'],
-          effect: 'allow',
-          resource: ['*'],
-        },
-      ],
+      statement: buildUserEnvPolicyStatements(envId!),
     })
 
     const createPolicyResp = await (camClient as any).CreatePolicy({

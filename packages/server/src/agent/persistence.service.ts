@@ -2,7 +2,6 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 import CloudBase from '@cloudbase/node-sdk'
-import { AuthSupervisor } from '@cloudbase/toolbox'
 import { loadConfig } from '../config/store.js'
 import type { CodeBuddyMessage, CodeBuddyContentBlock, UnifiedMessageRecord, UnifiedMessagePart } from '@coder/shared'
 import { AGENT_ID } from '@coder/shared'
@@ -40,41 +39,32 @@ function getLocalMessageFilePath(sessionId: string, cwd: string): string {
  * 使用 CloudBase 文档数据库存储消息记录
  */
 export class PersistenceService {
+  /**
+   * 使用【支撑身份】初始化 CloudBase SDK
+   * 凭证来源：系统环境变量（永久密钥），用于操作支撑环境的数据库
+   * 注意：DB 记录中的 envId 字段是【用户环境 ID】，由 caller 传入，用于数据隔离
+   */
   private async getCloudBaseApp(): Promise<ReturnType<typeof CloudBase.init>> {
     const config = loadConfig()
     const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId
 
     if (!envId) {
-      throw new Error('未绑定 CloudBase 环境，请设置 TCB_ENV_ID 环境变量')
+      throw new Error('缺少支撑环境配置，请设置 TCB_ENV_ID 环境变量')
     }
 
-    // 优先使用环境变量中的密钥
     const secretId = process.env.TCB_SECRET_ID
     const secretKey = process.env.TCB_SECRET_KEY
     const token = process.env.TCB_TOKEN || undefined
 
-    if (secretId && secretKey) {
-      return CloudBase.init({
-        env: envId,
-        secretId,
-        secretKey,
-        ...(token ? { sessionToken: token } : {}),
-      })
-    }
-
-    // 降级：使用 AuthSupervisor 获取凭证
-    const auth = AuthSupervisor.getInstance({})
-    const loginState = await auth.getLoginState()
-
-    if (!loginState) {
-      throw new Error('未登录 CloudBase，请设置 TCB_SECRET_ID 和 TCB_SECRET_KEY 环境变量')
+    if (!secretId || !secretKey) {
+      throw new Error('缺少支撑身份密钥，请设置 TCB_SECRET_ID 和 TCB_SECRET_KEY 环境变量')
     }
 
     return CloudBase.init({
-      envId,
-      secretId: (loginState as any).secretId,
-      secretKey: (loginState as any).secretKey,
-      token: (loginState as any).token,
+      env: envId,
+      secretId,
+      secretKey,
+      ...(token ? { sessionToken: token } : {}),
     })
   }
 

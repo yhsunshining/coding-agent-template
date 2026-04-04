@@ -11,6 +11,7 @@ export interface SessionUser {
 export interface SessionUserInfo {
   user?: SessionUser
   authProvider?: 'github' | 'vercel' | 'local'
+  envId?: string
 }
 
 export const sessionAtom = atom<SessionUserInfo>({ user: undefined })

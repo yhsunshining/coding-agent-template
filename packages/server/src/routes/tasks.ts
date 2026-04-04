@@ -3,13 +3,12 @@ import { db } from '../db/client'
 import { tasks, accounts, users, deployments } from '../db/schema'
 import { eq, desc, and, isNull } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
-import { requireAuth, type AppEnv } from '../middleware/auth'
+import { requireAuth, requireUserEnv, type AppEnv } from '../middleware/auth'
 import { createTaskLogger } from '../lib/task-logger'
 import { decrypt } from '../lib/crypto'
 import { Octokit } from '@octokit/rest'
 import { Sandbox } from '@vercel/sandbox'
 import { persistenceService } from '../agent/persistence.service'
-import { loadConfig } from '../config/store'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -459,11 +458,9 @@ tasksRouter.delete('/:taskId', async (c) => {
 })
 
 // Get task messages
-tasksRouter.get('/:taskId/messages', async (c) => {
-  const authErr = requireAuth(c)
-  if (authErr) return authErr
-
+tasksRouter.get('/:taskId/messages', requireUserEnv, async (c) => {
   const session = c.get('session')!
+  const { envId, userId } = c.get('userEnv')!
   const { taskId } = c.req.param()
 
   const [task] = await db
@@ -475,10 +472,6 @@ tasksRouter.get('/:taskId/messages', async (c) => {
   if (!task) {
     return c.json({ error: 'Task not found' }, 404)
   }
-
-  const config = loadConfig()
-  const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId || ''
-  const userId = session.user.id
 
   try {
     const cloudbaseRecords = await persistenceService.loadDBMessages(taskId, envId, userId, 100)

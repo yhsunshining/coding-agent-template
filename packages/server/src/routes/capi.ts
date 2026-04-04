@@ -1,23 +1,15 @@
 import { Hono } from 'hono'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserEnv } from '../middleware/auth.js'
 import CloudBase from '@cloudbase/manager-node'
 import type { AppEnv } from '../middleware/auth.js'
 
 const router = new Hono<AppEnv>()
 
-// 通用腾讯云 API 代理
+// 通用腾讯云 API 代理 — 使用登录用户身份
 // POST /api/capi
 // Body: { service: 'tcb', action: 'DescribeEnvs', params: {} }
-router.post('/', async (c) => {
-  const authError = requireAuth(c)
-  if (authError) return authError
-
-  const secretId = process.env.TCB_SECRET_ID
-  const secretKey = process.env.TCB_SECRET_KEY
-  const envId = process.env.TCB_ENV_ID
-  if (!secretId || !secretKey || !envId) {
-    return c.json({ error: '服务端未配置密钥' }, 500)
-  }
+router.post('/', requireUserEnv, async (c) => {
+  const { envId, credentials } = c.get('userEnv')!
 
   let body: { service?: string; action?: string; params?: Record<string, unknown> }
   try {
@@ -34,8 +26,9 @@ router.post('/', async (c) => {
 
   try {
     const app = new CloudBase({
-      secretId,
-      secretKey,
+      secretId: credentials.secretId,
+      secretKey: credentials.secretKey,
+      token: credentials.sessionToken || '',
       envId,
     })
 

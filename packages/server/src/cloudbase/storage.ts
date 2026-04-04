@@ -1,4 +1,4 @@
-import { getManager } from './database.js'
+import { createManager, type CloudBaseCredentials } from './database.js'
 
 export interface BucketInfo {
   type: 'storage' | 'static'
@@ -17,18 +17,15 @@ export interface FileInfo {
   size: number
   lastModified: string
   isDir: boolean
-  fileId?: string // 仅云存储: cloud://envId/xxx
-  publicUrl?: string // 仅静态托管: https://cdnDomain/xxx
+  fileId?: string
+  publicUrl?: string
 }
 
-// 获取环境存储桶信息
-export async function getBuckets(): Promise<BucketInfo[]> {
-  const manager = await getManager()
+export async function getBuckets(creds: CloudBaseCredentials): Promise<BucketInfo[]> {
+  const manager = createManager(creds)
   const { EnvInfo } = await manager.env.getEnvInfo()
-  const envId = process.env.TCB_ENV_ID || ''
   const buckets: BucketInfo[] = []
 
-  // 云存储（私有）
   const storage = EnvInfo?.Storages?.[0]
   if (storage) {
     buckets.push({
@@ -42,7 +39,6 @@ export async function getBuckets(): Promise<BucketInfo[]> {
     })
   }
 
-  // 静态托管（公有读）
   try {
     const hostingInfo = await manager.hosting.getInfo()
     const hosting = hostingInfo?.[0]
@@ -58,7 +54,6 @@ export async function getBuckets(): Promise<BucketInfo[]> {
       })
     }
   } catch {
-    // 静态托管未开启时忽略
     const staticStore = (EnvInfo as any)?.StaticStorages?.[0]
     if (staticStore) {
       buckets.push({
@@ -76,10 +71,8 @@ export async function getBuckets(): Promise<BucketInfo[]> {
   return buckets
 }
 
-// 列出云存储文件（带 fileId）
-export async function listStorageFiles(prefix: string = ''): Promise<FileInfo[]> {
-  const manager = await getManager()
-  const envId = process.env.TCB_ENV_ID || ''
+export async function listStorageFiles(creds: CloudBaseCredentials, prefix: string = ''): Promise<FileInfo[]> {
+  const manager = createManager(creds)
   const files = await manager.storage.walkCloudDir(prefix)
 
   const fileMap = new Map<string, FileInfo>()
@@ -111,7 +104,7 @@ export async function listStorageFiles(prefix: string = ''): Promise<FileInfo[]>
         size: Number(f.Size) || 0,
         lastModified: f.LastModified,
         isDir: false,
-        fileId: `cloud://${envId}/${key}`,
+        fileId: `cloud://${creds.envId}/${key}`,
       })
     }
   }
@@ -119,9 +112,12 @@ export async function listStorageFiles(prefix: string = ''): Promise<FileInfo[]>
   return Array.from(fileMap.values())
 }
 
-// 列出静态托管文件（带公开 URL）
-export async function listHostingFiles(prefix: string = '', cdnDomain: string = ''): Promise<FileInfo[]> {
-  const manager = await getManager()
+export async function listHostingFiles(
+  creds: CloudBaseCredentials,
+  prefix: string = '',
+  cdnDomain: string = '',
+): Promise<FileInfo[]> {
+  const manager = createManager(creds)
   const result = await manager.hosting.listFiles()
   const fileMap = new Map<string, FileInfo>()
 
@@ -162,21 +158,18 @@ export async function listHostingFiles(prefix: string = '', cdnDomain: string = 
   return Array.from(fileMap.values())
 }
 
-// 获取文件临时下载链接（云存储）
-export async function getDownloadUrl(cloudPath: string): Promise<string> {
-  const manager = await getManager()
+export async function getDownloadUrl(creds: CloudBaseCredentials, cloudPath: string): Promise<string> {
+  const manager = createManager(creds)
   const result = await manager.storage.getTemporaryUrl([{ cloudPath, maxAge: 3600 }])
   return result?.[0]?.url || ''
 }
 
-// 删除文件（云存储）
-export async function deleteFile(cloudPath: string): Promise<void> {
-  const manager = await getManager()
+export async function deleteFile(creds: CloudBaseCredentials, cloudPath: string): Promise<void> {
+  const manager = createManager(creds)
   await manager.storage.deleteFile([cloudPath])
 }
 
-// 删除静态托管文件
-export async function deleteHostingFile(cloudPath: string): Promise<void> {
-  const manager = await getManager()
+export async function deleteHostingFile(creds: CloudBaseCredentials, cloudPath: string): Promise<void> {
+  const manager = createManager(creds)
   await manager.hosting.deleteFiles({ cloudPath, isDir: false })
 }

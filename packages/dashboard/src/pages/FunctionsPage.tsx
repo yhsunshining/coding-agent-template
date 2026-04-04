@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
+import { useAtomValue } from 'jotai'
 import { functionsAPI, FunctionInfo } from '../services/functions'
 import { Button } from '../components/ui'
 import { RefreshCw, Zap, Trash2, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { envIdAtom } from '../atoms/env'
 
 function formatSize(bytes: number) {
   if (!bytes) return '-'
@@ -68,6 +70,8 @@ function StatusDot({ status }: { status: string }) {
 }
 
 export default function FunctionsPage() {
+  const envId = useAtomValue(envIdAtom)
+  console.log('[FunctionsPage] envId from atom:', envId)
   const [functions, setFunctions] = useState<FunctionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -91,6 +95,10 @@ export default function FunctionsPage() {
   }, [])
 
   const handleDelete = async (name: string) => {
+    if (!envId) {
+      toast.error('环境未就绪，请刷新页面重试')
+      return
+    }
     if (!confirm(`确认删除云函数 "${name}"？此操作不可恢复。`)) return
     setDeleting(name)
     try {
@@ -106,7 +114,7 @@ export default function FunctionsPage() {
           action: 'DeleteFunction',
           params: {
             FunctionName: name,
-            Namespace: import.meta.env.VITE_TCB_ENV_ID || '',
+            Namespace: envId,
           },
           region: 'ap-shanghai',
         }),

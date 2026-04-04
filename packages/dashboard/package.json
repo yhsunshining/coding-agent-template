@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/CloudDashboard.tsx",
+    "./CloudDashboard": "./src/CloudDashboard.tsx",
     "./styles": "./src/styles/globals.css"
   },
   "scripts": {

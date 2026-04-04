@@ -46,10 +46,12 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     console.log('[AuthProvider] Checking session...')
     api
-      .get<{ user: { id: string; username: string; name?: string; email?: string; avatar?: string } }>('/api/auth/me')
+      .get<{ user: { id: string; username: string; name?: string; email?: string; avatar?: string }; envId?: string }>(
+        '/api/auth/me',
+      )
       .then((data) => {
         console.log('[AuthProvider] Session data:', data)
-        setSession({ user: data.user })
+        setSession({ user: data.user, envId: data.envId })
         setLoaded(true)
       })
       .catch((err) => {

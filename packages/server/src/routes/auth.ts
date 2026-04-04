@@ -232,7 +232,16 @@ auth.get('/me', async (c) => {
     return c.json({ user: undefined })
   }
 
-  return c.json({ user: session.user, authProvider: session.authProvider })
+  // 查询用户的 envId
+  let envId: string | undefined
+  try {
+    const [resource] = await db.select().from(userResources).where(eq(userResources.userId, session.user.id)).limit(1)
+    envId = resource?.envId || undefined
+  } catch {
+    // ignore
+  }
+
+  return c.json({ user: session.user, authProvider: session.authProvider, envId })
 })
 
 // 查询当前用户的 CloudBase 环境状态

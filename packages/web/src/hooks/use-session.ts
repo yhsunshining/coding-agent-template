@@ -17,9 +17,9 @@ export function useSession() {
 
   useEffect(() => {
     api
-      .get<{ user: SessionUserResponse }>('/api/auth/me')
+      .get<{ user: SessionUserResponse; authProvider?: string; envId?: string }>('/api/auth/me')
       .then((data) => {
-        setSession({ user: data.user })
+        setSession({ user: data.user, envId: data.envId })
         setLoaded(true)
       })
       .catch(() => {

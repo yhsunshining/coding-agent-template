@@ -3,9 +3,9 @@
  * 不依赖 React Router，内部用 state 切换页面
  * 供外部项目直接 import 使用
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Toaster } from 'sonner'
-import { Provider as JotaiProvider } from 'jotai'
+import { Provider as JotaiProvider, useSetAtom } from 'jotai'
 import { Home, Database, HardDrive, Code2, Zap, PanelLeftClose, PanelLeft, PanelLeftOpen } from 'lucide-react'
 import HomePage from './pages/HomePage'
 import DatabasePage from './pages/DatabasePage'
@@ -15,6 +15,7 @@ import FunctionsPage from './pages/FunctionsPage'
 import { DatabaseMenu } from './components/navigation/DatabaseMenu'
 import { StorageMenu } from './components/navigation/StorageMenu'
 import { cn } from './utils/helpers'
+import { envIdAtom } from './atoms/env'
 
 export type CloudPage = 'home' | 'database' | 'storage' | 'sql' | 'functions'
 type SidebarMode = 'icon' | 'hover' | 'expanded'
@@ -172,13 +173,24 @@ function CloudShell({ defaultPage }: { defaultPage?: CloudPage }) {
 
 interface CloudDashboardProps {
   defaultPage?: CloudPage
+  envId?: string
   className?: string
   style?: React.CSSProperties
 }
 
-export function CloudDashboard({ defaultPage, className = '', style }: CloudDashboardProps) {
+function EnvIdSetter({ envId }: { envId?: string }) {
+  const setEnvId = useSetAtom(envIdAtom)
+  useEffect(() => {
+    console.log('[Dashboard] EnvIdSetter envId:', envId)
+    if (envId) setEnvId(envId)
+  }, [envId, setEnvId])
+  return null
+}
+
+export function CloudDashboard({ defaultPage, envId, className = '', style }: CloudDashboardProps) {
   return (
     <JotaiProvider>
+      <EnvIdSetter envId={envId} />
       <div className={className} style={{ height: '100%', ...style }}>
         <CloudShell defaultPage={defaultPage} />
       </div>

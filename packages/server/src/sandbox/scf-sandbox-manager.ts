@@ -126,7 +126,7 @@ export class ScfSandboxManager {
 
   private getEnvConfig() {
     return {
-      envId: process.env.SCF_SANDBOX_ENV_ID || process.env.TCB_ENV_ID || '',
+      envId: process.env.TCB_ENV_ID || '',
       secretId: process.env.TCB_SECRET_ID || '',
       secretKey: process.env.TCB_SECRET_KEY || '',
       token: process.env.TCB_TOKEN || '',
