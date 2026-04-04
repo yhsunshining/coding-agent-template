@@ -611,8 +611,17 @@ async function setupServerEnv() {
   const env = loadEnvFile()
   const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
 
-  // 已有 server/.env，询问是否覆盖
+  // 读取已有的 server/.env（用于保留 CodeBuddy / Git Archive 等手动配置的值）
+  const existingServerEnv = {}
   if (existsSync(serverEnvFile)) {
+    readFileSync(serverEnvFile, 'utf-8').split('\n').forEach(line => {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...rest] = trimmed.split('=')
+        if (key) existingServerEnv[key.trim()] = rest.join('=').trim()
+      }
+    })
+
     const overwrite = await askYesNo('packages/server/.env 已存在，是否覆盖？（否则跳过此步骤）', false)
     if (!overwrite) {
       log('跳过服务端环境变量配置', 'info')
@@ -620,7 +629,11 @@ async function setupServerEnv() {
     }
   }
 
+  // 常规 key：root .env.local 优先
   const get = (key, fallback = '') => env[key] || process.env[key] || fallback
+
+  // 保留型 key：优先读已有 server/.env，没有再用静态默认值
+  const getPreserved = (key, fallback = '') => existingServerEnv[key] || fallback
 
   const jweSecret = get('JWE_SECRET')
   const encryptionKey = get('ENCRYPTION_KEY')
@@ -662,13 +675,13 @@ TCB_PROVISION_MODE=${get('TCB_PROVISION_MODE', 'shared')}
 
 # ==================== CodeBuddy OAuth & Git Archive ====================
 
-CODEBUDDY_CLIENT_ID=${get('CODEBUDDY_CLIENT_ID')}
-CODEBUDDY_CLIENT_SECRET=${get('CODEBUDDY_CLIENT_SECRET')}
-CODEBUDDY_OAUTH_ENDPOINT=${get('CODEBUDDY_OAUTH_ENDPOINT', 'https://copilot.tencent.com/oauth2/token')}
+CODEBUDDY_CLIENT_ID=${getPreserved('CODEBUDDY_CLIENT_ID')}
+CODEBUDDY_CLIENT_SECRET=${getPreserved('CODEBUDDY_CLIENT_SECRET')}
+CODEBUDDY_OAUTH_ENDPOINT=${getPreserved('CODEBUDDY_OAUTH_ENDPOINT', 'https://copilot.tencent.com/oauth2/token')}
 
-GIT_ARCHIVE_REPO=${get('GIT_ARCHIVE_REPO')}
-GIT_ARCHIVE_USER=${get('GIT_ARCHIVE_USER')}
-GIT_ARCHIVE_TOKEN=${get('GIT_ARCHIVE_TOKEN')}
+GIT_ARCHIVE_REPO=${getPreserved('GIT_ARCHIVE_REPO')}
+GIT_ARCHIVE_USER=${getPreserved('GIT_ARCHIVE_USER')}
+GIT_ARCHIVE_TOKEN=${getPreserved('GIT_ARCHIVE_TOKEN')}
 
 # ==================== SCF Sandbox ====================
 
