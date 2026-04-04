@@ -119,17 +119,8 @@ echo -e "${BOLD}${CYAN}╚══════════════════
 check_node
 check_pnpm
 
-# Check if tsx is available (needed to run TypeScript scripts)
-print_step "Checking dependencies"
-
-# Install tsx if needed (for running TypeScript scripts)
-if ! pnpm ls tsx &> /dev/null || ! command -v tsx &> /dev/null; then
-    print_info "Installing tsx for running TypeScript scripts..."
-    pnpm add -D tsx
-fi
-
 print_ok "Ready to run initialization"
 
 # Run the main initialization script
 print_step "Running initialization"
-exec pnpm tsx scripts/init.ts "$@"
+exec node scripts/init.mjs "$@"

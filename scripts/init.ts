@@ -76,25 +76,22 @@ function runCommandSafe(cmd: string): { success: boolean; output: string } {
 
 async function promptInput(prompt: string, hidden = false): Promise<string> {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    })
-
     if (hidden) {
+      // Raw mode: disable echo so password is not shown
       process.stdout.write(`${prompt}: `)
       process.stdin.setRawMode(true)
-      let password = ''
       process.stdin.resume()
-      process.stdin.on('data', (char: Buffer) => {
+      let password = ''
+      const onData = (char: Buffer) => {
         const c = char.toString('utf8')
         switch (c) {
           case '\n':
           case '\r':
           case '\u0004':
             process.stdin.setRawMode(false)
-            console.log('')
-            rl.close()
+            process.stdin.pause()
+            process.stdin.removeListener('data', onData)
+            process.stdout.write('\n')
             resolve(password)
             break
           case '\u0003':
@@ -108,8 +105,10 @@ async function promptInput(prompt: string, hidden = false): Promise<string> {
             }
             break
         }
-      })
+      }
+      process.stdin.on('data', onData)
     } else {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
       rl.question(`${prompt}: `, (answer) => {
         rl.close()
         resolve(answer.trim())
@@ -351,9 +350,13 @@ async function setupTcr(): Promise<boolean> {
   saveEnvVar('TCR_PASSWORD', password)
 
   // Run the full TCR setup script
+  // Pass password via environment variable instead of CLI arg to avoid it appearing in process list
   log('Running TCR setup...')
   try {
-    runCommand(`pnpm setup:tcr --password '${password}'`)
+    execSync('pnpm setup:tcr', {
+      stdio: 'inherit',
+      env: { ...process.env, TCR_PASSWORD: password },
+    })
     log('TCR setup completed', 'success')
     return true
   } catch (error) {

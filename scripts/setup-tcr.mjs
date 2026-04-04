@@ -21,61 +21,14 @@ import { execSync, spawn } from 'child_process'
 import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
 import { resolve } from 'path'
 import { homedir } from 'os'
-import * as crypto from 'crypto'
-import * as readline from 'readline'
+import crypto from 'crypto'
+import readline from 'readline'
+import { createRequire } from 'module'
+
+const require = createRequire(import.meta.url)
 
 // Use require for tencentcloud-sdk-nodejs due to ESM/CJS compatibility
 const tencentcloud = require('tencentcloud-sdk-nodejs')
-
-// ===================== Types =====================
-
-interface SetupConfig {
-  // Tencent Cloud credentials
-  secretId: string
-  secretKey: string
-  token?: string // For temporary credentials
-  accountId: string
-
-  // TCR configuration
-  region: string
-  namespace: string
-  namespacePrefix: string // Base namespace without suffix
-  visibility: 'private' | 'public'
-
-  // Docker configuration
-  localImage: string
-  repoName: string
-  tag: string
-
-  // Password for TCR (will be generated if not provided)
-  password?: string
-
-  // Flag to indicate if using temporary credentials
-  isTemporaryCredential?: boolean
-
-  // Skip cloudbase login check
-  skipCloudbaseLogin?: boolean
-}
-
-interface CloudbaseCredential {
-  credential: {
-    uin: string
-    tokenId: string
-    tmpSecretId: string
-    tmpSecretKey: string
-    tmpExpired: number
-    expired: number
-    authTime: number
-    refreshToken: string
-    tmpToken: string
-  }
-}
-
-interface NamespaceInfo {
-  Namespace: string
-  CreationTime?: string
-  Public?: boolean
-}
 
 // ===================== Constants =====================
 
@@ -86,7 +39,7 @@ const DEFAULT_NAMESPACE_PREFIX = 'cloudbase-vibecoding'
 
 // ===================== Helper Functions =====================
 
-function log(message: string, type: 'info' | 'success' | 'error' | 'warn' = 'info') {
+function log(message, type = 'info') {
   const prefix = {
     info: '→',
     success: '✓',
@@ -96,7 +49,7 @@ function log(message: string, type: 'info' | 'success' | 'error' | 'warn' = 'inf
   console.log(`${prefix} ${message}`)
 }
 
-function runCommand(cmd: string, silent = false): string {
+function runCommand(cmd, silent = false) {
   try {
     return execSync(cmd, {
       encoding: 'utf-8',
@@ -107,7 +60,7 @@ function runCommand(cmd: string, silent = false): string {
   }
 }
 
-function generatePassword(): string {
+function generatePassword() {
   // Generate a password that meets TCR requirements:
   // 8-16 characters, includes uppercase, lowercase, numbers, and special characters
   const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -139,7 +92,7 @@ function generatePassword(): string {
 /**
  * Generate a 4-character random suffix for namespace
  */
-function generateNamespaceSuffix(): string {
+function generateNamespaceSuffix() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   let suffix = ''
   for (let i = 0; i < 6; i++) {
@@ -148,8 +101,8 @@ function generateNamespaceSuffix(): string {
   return suffix
 }
 
-function loadEnvFile(): Record<string, string> {
-  const env: Record<string, string> = {}
+function loadEnvFile() {
+  const env = {}
   if (existsSync(ENV_FILE)) {
     const content = readFileSync(ENV_FILE, 'utf-8')
     content.split('\n').forEach((line) => {
@@ -165,7 +118,7 @@ function loadEnvFile(): Record<string, string> {
   return env
 }
 
-function saveEnvVar(key: string, value: string) {
+function saveEnvVar(key, value) {
   const env = loadEnvFile()
 
   if (env[key]) {
@@ -188,7 +141,7 @@ function saveEnvVar(key: string, value: string) {
 /**
  * Prompt user for input
  */
-function promptInput(prompt: string, hidden = false): Promise<string> {
+function promptInput(prompt, hidden = false) {
   return new Promise((resolve) => {
     if (hidden) {
       // Raw mode: disable echo so password is not shown
@@ -196,7 +149,7 @@ function promptInput(prompt: string, hidden = false): Promise<string> {
       process.stdin.setRawMode(true)
       process.stdin.resume()
       let password = ''
-      const onData = (char: Buffer) => {
+      const onData = (char) => {
         const c = char.toString('utf8')
         switch (c) {
           case '\n':
@@ -234,7 +187,7 @@ function promptInput(prompt: string, hidden = false): Promise<string> {
 /**
  * Ask user yes/no question
  */
-async function askYesNo(prompt: string, defaultValue = false): Promise<boolean> {
+async function askYesNo(prompt, defaultValue = false) {
   const hint = defaultValue ? '[Y/n]' : '[y/N]'
   const answer = await promptInput(`${prompt} ${hint}`)
   if (!answer) return defaultValue
@@ -246,7 +199,7 @@ async function askYesNo(prompt: string, defaultValue = false): Promise<boolean> 
 /**
  * Check if cloudbase CLI is installed
  */
-function isCloudbaseInstalled(): boolean {
+function isCloudbaseInstalled() {
   try {
     execSync('which cloudbase', { stdio: 'pipe' })
     return true
@@ -258,7 +211,7 @@ function isCloudbaseInstalled(): boolean {
 /**
  * Install cloudbase CLI globally
  */
-async function installCloudbase(): Promise<boolean> {
+async function installCloudbase() {
   log('Installing cloudbase CLI...')
 
   try {
@@ -266,7 +219,7 @@ async function installCloudbase(): Promise<boolean> {
     log('cloudbase CLI installed successfully', 'success')
     return true
   } catch (error) {
-    log(`Failed to install cloudbase CLI: ${error}`, 'error')
+    log('Failed to install cloudbase CLI', 'error')
     return false
   }
 }
@@ -275,7 +228,7 @@ async function installCloudbase(): Promise<boolean> {
  * Run cloudbase login interactively
  * This will open a browser for user to authorize
  */
-async function runCloudbaseLogin(): Promise<boolean> {
+async function runCloudbaseLogin() {
   log('Running cloudbase login...')
   log('Please complete the login in your browser...', 'info')
 
@@ -291,13 +244,13 @@ async function runCloudbaseLogin(): Promise<boolean> {
         log('cloudbase login completed', 'success')
         resolve(true)
       } else {
-        log(`cloudbase login exited with code ${code}`, 'error')
+        log('cloudbase login exited with non-zero code', 'error')
         resolve(false)
       }
     })
 
     child.on('error', (error) => {
-      log(`Failed to run cloudbase login: ${error.message}`, 'error')
+      log('Failed to run cloudbase login', 'error')
       resolve(false)
     })
   })
@@ -307,14 +260,14 @@ async function runCloudbaseLogin(): Promise<boolean> {
  * Get credentials from cloudbase-cli login state
  * This allows using temporary credentials from `cloudbase login`
  */
-function getCloudbaseCredential(): CloudbaseCredential | null {
+function getCloudbaseCredential() {
   if (!existsSync(CLOUDBASE_AUTH_FILE)) {
     return null
   }
 
   try {
     const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
-    const auth = JSON.parse(content) as CloudbaseCredential
+    const auth = JSON.parse(content)
 
     // Check if credential exists and not expired
     if (!auth.credential?.tmpSecretId || !auth.credential?.tmpSecretKey) {
@@ -330,7 +283,7 @@ function getCloudbaseCredential(): CloudbaseCredential | null {
 
     return auth
   } catch (error) {
-    log(`Failed to read cloudbase credential`, 'warn')
+    log('Failed to read cloudbase credential', 'warn')
     return null
   }
 }
@@ -338,7 +291,7 @@ function getCloudbaseCredential(): CloudbaseCredential | null {
 /**
  * Ensure cloudbase CLI is installed and user is logged in
  */
-async function ensureCloudbaseAuth(skipLogin = false): Promise<CloudbaseCredential | null> {
+async function ensureCloudbaseAuth(skipLogin = false) {
   // Step 1: Check if cloudbase CLI is installed
   if (!isCloudbaseInstalled()) {
     log('cloudbase CLI not found', 'warn')
@@ -378,10 +331,10 @@ async function ensureCloudbaseAuth(skipLogin = false): Promise<CloudbaseCredenti
 
 // ===================== TCR SDK Functions =====================
 
-const TcrClient = (tencentcloud as any).tcr.v20190924.Client
+const TcrClient = tencentcloud.tcr.v20190924.Client
 
-function createTcrClient(secretId: string, secretKey: string, region: string, token?: string) {
-  const credential: { secretId: string; secretKey: string; token?: string } = {
+function createTcrClient(secretId, secretKey, region, token) {
+  const credential = {
     secretId,
     secretKey,
   }
@@ -405,12 +358,12 @@ function createTcrClient(secretId: string, secretKey: string, region: string, to
 /**
  * Check if TCR Personal Edition user already exists
  */
-async function checkUserExists(client: any): Promise<boolean> {
+async function checkUserExists(client) {
   try {
     // DescribeUserPersonal will succeed if user exists
     await client.DescribeUserPersonal({})
     return true
-  } catch (error: any) {
+  } catch (error) {
     // If user doesn't exist, it will return an error
     if (error.code === 'ResourceNotFound' || error.message?.includes('not found')) {
       return false
@@ -425,7 +378,7 @@ async function checkUserExists(client: any): Promise<boolean> {
  * Returns true if successful, false otherwise
  * Returns 'exists' if user already exists
  */
-async function initTcrPersonal(client: any, password: string): Promise<{ success: boolean; userExists: boolean }> {
+async function initTcrPersonal(client, password) {
   log('Initializing TCR Personal Edition...')
 
   try {
@@ -434,12 +387,12 @@ async function initTcrPersonal(client: any, password: string): Promise<{ success
     })
     log('TCR Personal Edition initialized successfully', 'success')
     return { success: true, userExists: false }
-  } catch (error: any) {
+  } catch (error) {
     if (error.code === 'ResourceInUse' || error.message?.includes('already')) {
       log('TCR Personal Edition user already exists', 'warn')
       return { success: true, userExists: true }
     }
-    log(`Failed to initialize TCR Personal Edition: ${error.message}`, 'error')
+    log('Failed to initialize TCR Personal Edition', 'error')
     return { success: false, userExists: false }
   }
 }
@@ -447,16 +400,16 @@ async function initTcrPersonal(client: any, password: string): Promise<{ success
 /**
  * List all namespaces for the user
  */
-async function listNamespaces(client: any, prefix?: string): Promise<NamespaceInfo[]> {
+async function listNamespaces(client, prefix) {
   try {
     const result = await client.DescribeNamespacePersonal({
       Namespace: prefix || '',
       Limit: 100,
       Offset: 0,
     })
-    return (result?.Data?.NamespaceInfo || []).map((ns: any) => ({ Namespace: ns.Namespace }))
-  } catch (error: any) {
-    log(`Failed to list namespaces: ${error.code} - ${error.message}`, 'warn')
+    return (result?.Data?.NamespaceInfo || []).map((ns) => ({ Namespace: ns.Namespace }))
+  } catch (error) {
+    log('Failed to list namespaces', 'warn')
     return []
   }
 }
@@ -464,7 +417,7 @@ async function listNamespaces(client: any, prefix?: string): Promise<NamespaceIn
 /**
  * Find namespace by prefix
  */
-async function findNamespaceByPrefix(client: any, prefix: string): Promise<string | null> {
+async function findNamespaceByPrefix(client, prefix) {
   const namespaces = await listNamespaces(client, prefix)
   const found = namespaces.find((ns) => ns.Namespace.startsWith(prefix))
   return found?.Namespace || null
@@ -474,7 +427,7 @@ async function findNamespaceByPrefix(client: any, prefix: string): Promise<strin
  * Create namespace with random suffix
  * Returns the full namespace name
  */
-async function createNamespaceWithSuffix(client: any, prefix: string, maxRetries = 10): Promise<string | null> {
+async function createNamespaceWithSuffix(client, prefix, maxRetries = 10) {
   for (let i = 0; i < maxRetries; i++) {
     const suffix = generateNamespaceSuffix()
     const namespace = `${prefix}-${suffix}`
@@ -487,9 +440,9 @@ async function createNamespaceWithSuffix(client: any, prefix: string, maxRetries
       })
       log(`Namespace '${namespace}' created successfully`, 'success')
       return namespace
-    } catch (error: any) {
+    } catch (error) {
       if (error.code?.startsWith('LimitExceeded')) {
-        log(`Namespace limit reached: ${error.message}`, 'error')
+        log('Namespace limit reached', 'error')
         log('Please delete an existing namespace at: https://console.cloud.tencent.com/tcr/namespace', 'info')
         return null
       }
@@ -497,7 +450,7 @@ async function createNamespaceWithSuffix(client: any, prefix: string, maxRetries
         log(`Namespace '${namespace}' already taken globally, trying another suffix...`, 'warn')
         continue
       }
-      log(`Failed to create namespace: ${error.code} - ${error.message}`, 'error')
+      log('Failed to create namespace', 'error')
       return null
     }
   }
@@ -511,7 +464,7 @@ async function createNamespaceWithSuffix(client: any, prefix: string, maxRetries
  * Note: TCR Personal Edition doesn't have a reset password API
  * Users need to reset password through Tencent Cloud Console
  */
-async function resetTcrPassword(_client: any, _password: string): Promise<boolean> {
+async function resetTcrPassword(_client, _password) {
   log('TCR Personal Edition does not support resetting password via API.', 'error')
   log('Please reset your password at:', 'info')
   log('  https://console.cloud.tencent.com/tcr', 'info')
@@ -520,7 +473,16 @@ async function resetTcrPassword(_client: any, _password: string): Promise<boolea
 
 // ===================== Docker Functions =====================
 
-function dockerLogin(domain: string, username: string, password: string): boolean {
+function checkDocker() {
+  try {
+    execSync('docker info', { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function dockerLogin(domain, username, password) {
   log('Logging in to TCR registry...')
 
   try {
@@ -536,20 +498,20 @@ function dockerLogin(domain: string, username: string, password: string): boolea
   }
 }
 
-function pullImage(image: string): boolean {
+function pullImage(image) {
   log(`Pulling image '${image}'...`)
 
   try {
     runCommand(`docker pull ${image}`)
-    log(`Image '${image}' pulled successfully`, 'success')
+    log(`Image pulled successfully`, 'success')
     return true
   } catch (error) {
-    log(`Failed to pull image '${image}'`, 'error')
+    log(`Failed to pull image`, 'error')
     return false
   }
 }
 
-function tagImage(sourceImage: string, targetImage: string): boolean {
+function tagImage(sourceImage, targetImage) {
   log(`Tagging image '${sourceImage}' -> '${targetImage}'...`)
 
   try {
@@ -562,12 +524,12 @@ function tagImage(sourceImage: string, targetImage: string): boolean {
   }
 }
 
-function pushImage(image: string): boolean {
+function pushImage(image) {
   log(`Pushing image '${image}'...`)
 
   try {
     runCommand(`docker push ${image}`)
-    log(`Image '${image}' pushed successfully`, 'success')
+    log(`Image pushed successfully`, 'success')
     return true
   } catch (error) {
     log('Failed to push image', 'error')
@@ -577,7 +539,7 @@ function pushImage(image: string): boolean {
 
 // ===================== Setup Functions =====================
 
-async function validateAndPrepareEnv(config: SetupConfig): Promise<boolean> {
+async function validateAndPrepareEnv(config) {
   log('Validating credentials...')
 
   const env = loadEnvFile()
@@ -598,7 +560,7 @@ async function validateAndPrepareEnv(config: SetupConfig): Promise<boolean> {
       config.accountId = cloudbaseCred.credential.uin
       config.isTemporaryCredential = true
       log('Using temporary credentials from cloudbase-cli login', 'success')
-      log(`Account ID: ${config.accountId}`, 'info')
+      log('Account ID retrieved', 'info')
       return true
     }
   }
@@ -667,7 +629,16 @@ function generateSecrets() {
   }
 }
 
-async function setupTcr(config: SetupConfig): Promise<boolean> {
+async function setupTcr(config) {
+  // Step 0: Check Docker before doing anything else
+  if (!checkDocker()) {
+    log('Docker daemon is not running or not installed', 'error')
+    log('Please start Docker and retry:', 'info')
+    log('  colima start', 'info')
+    log('  # or open Docker Desktop', 'info')
+    return false
+  }
+
   const client = createTcrClient(config.secretId, config.secretKey, config.region, config.token)
 
   // Step 1: Get password from config or env
@@ -734,7 +705,7 @@ async function setupTcr(config: SetupConfig): Promise<boolean> {
   log('TCR password saved to .env.local', 'info')
 
   // Step 3: Find or create namespace
-  let namespace: string | null = null
+  let namespace = null
 
   // First, try to find existing namespace by prefix
   log(`Looking for existing namespace with prefix '${config.namespacePrefix}'...`)
@@ -754,41 +725,134 @@ async function setupTcr(config: SetupConfig): Promise<boolean> {
   // Save namespace to config
   config.namespace = namespace
   saveEnvVar('TCR_NAMESPACE', namespace)
-  log(`Namespace saved to .env.local: ${namespace}`, 'info')
+  log('Namespace saved to .env.local', 'info')
+
 
   // Step 4: Docker login
+  // Step 5 (was 4): Docker login
   if (!dockerLogin(TCR_DOMAIN, config.accountId, password)) {
     return false
   }
 
-  // Step 5: Pull local image (optional, skip if already exists)
+  // Step 6 (was 5): Check local image, pull only if not present
   log(`Checking for local image '${config.localImage}'...`)
   try {
     runCommand(`docker inspect ${config.localImage}`, true)
-    log('Local image found', 'success')
+    log('Local image found, skipping pull', 'success')
   } catch {
-    log('Local image not found, pulling...')
+    log('Local image not found locally, pulling from registry...')
     if (!pullImage(config.localImage)) {
+      log('Cannot pull image. Make sure Docker can reach ghcr.io, or pull manually:', 'error')
+      log(`  docker pull ${config.localImage}`, 'info')
       return false
     }
   }
 
-  // Step 6: Tag image
+  // Step 7 (was 6): Tag image
   const fullImage = `${TCR_DOMAIN}/${config.namespace}/${config.repoName}:${config.tag}`
   if (!tagImage(config.localImage, fullImage)) {
     return false
   }
 
-  // Step 7: Push image
+  // Step 8 (was 7): Push image
   if (!pushImage(fullImage)) {
     return false
   }
 
   // Save image reference
   saveEnvVar('TCR_IMAGE', fullImage)
-  log(`Image reference saved: ${fullImage}`, 'info')
+  log('Image reference saved', 'info')
 
   return true
+}
+
+// ===================== CloudBase Env Selection =====================
+
+async function selectTcbEnv(config) {
+  const env = loadEnvFile()
+
+  // Already set via CLI or env file — skip
+  if (config.tcbEnvId || env['TCB_ENV_ID']) {
+    const envId = config.tcbEnvId || env['TCB_ENV_ID']
+    log(`Using TCB_ENV_ID: ${envId}`, 'success')
+    saveEnvVar('TCB_ENV_ID', envId)
+    config.tcbEnvId = envId
+    return true
+  }
+
+  log('Fetching CloudBase environment list...')
+
+  let envList = []
+  try {
+    const output = execSync('cloudbase env list --json 2>/dev/null', { encoding: 'utf-8', stdio: 'pipe' })
+    // Strip non-JSON prefix lines (e.g. spinner lines)
+    const jsonStart = output.indexOf('{')
+    if (jsonStart !== -1) {
+      const parsed = JSON.parse(output.slice(jsonStart))
+      envList = (parsed.data || []).filter(e => e.status === 'NORMAL')
+    }
+  } catch {
+    log('Failed to fetch environment list', 'warn')
+  }
+
+  if (envList.length === 0) {
+    log('No available CloudBase environments found', 'warn')
+    console.log('')
+    console.log('Please create one first:')
+    console.log('  cloudbase env:create <envName>')
+    console.log('  # then re-run this script')
+    console.log('')
+    const envId = await promptInput('Or enter an existing TCB_ENV_ID manually')
+    if (!envId) {
+      log('TCB_ENV_ID is required', 'error')
+      return false
+    }
+    saveEnvVar('TCB_ENV_ID', envId)
+    config.tcbEnvId = envId
+    return true
+  }
+
+  // Show numbered list
+  console.log('')
+  console.log('Available CloudBase environments:')
+  envList.forEach((e, i) => {
+    console.log(`  ${i + 1}) ${e.envId}`)
+  })
+  console.log(`  c) Create a new environment`)
+  console.log('')
+
+  while (true) {
+    const answer = await promptInput('Select environment (number or c)')
+    if (!answer) continue
+
+    if (answer.toLowerCase() === 'c') {
+      console.log('')
+      console.log('Run the following command to create a new environment:')
+      console.log('  cloudbase env:create <envName>')
+      console.log('')
+      console.log('After creation, re-run this script or enter the new envId below.')
+      console.log('')
+      const envId = await promptInput('Enter the new TCB_ENV_ID')
+      if (!envId) {
+        log('TCB_ENV_ID is required', 'error')
+        return false
+      }
+      saveEnvVar('TCB_ENV_ID', envId)
+      config.tcbEnvId = envId
+      return true
+    }
+
+    const idx = parseInt(answer, 10) - 1
+    if (idx >= 0 && idx < envList.length) {
+      const envId = envList[idx].envId
+      log(`Selected: ${envId}`, 'success')
+      saveEnvVar('TCB_ENV_ID', envId)
+      config.tcbEnvId = envId
+      return true
+    }
+
+    log('Invalid selection, please try again', 'warn')
+  }
 }
 
 // ===================== Main =====================
@@ -798,10 +862,11 @@ async function main() {
 
   // Parse command line arguments
   const args = process.argv.slice(2)
-  const config: SetupConfig = {
+  const config = {
     secretId: process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || '',
     secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || '',
     accountId: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
+    tcbEnvId: process.env.TCB_ENV_ID || '',
     // Token for temporary credentials: read from env only, never persisted to disk
     token: process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || undefined,
     isTemporaryCredential: !!(process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN),
@@ -812,7 +877,7 @@ async function main() {
     localImage: 'ghcr.io/yhsunshining/cloudbase-workspace:latest',
     repoName: 'sandbox',
     tag: 'latest',
-    // Password from env var (passed by init.ts to avoid exposing in process list)
+    // Password from env var (passed by init.mjs to avoid exposing in process list)
     password: process.env.TCR_PASSWORD || undefined,
   }
 
@@ -833,7 +898,7 @@ async function main() {
         config.namespacePrefix = args[++i]
         break
       case '--visibility':
-        config.visibility = args[++i] as 'private' | 'public'
+        config.visibility = args[++i]
         break
       case '--local-image':
         config.localImage = args[++i]
@@ -853,7 +918,7 @@ async function main() {
       case '--help':
       case '-h':
         console.log(`
-Usage: tsx scripts/setup-tcr.ts [options]
+Usage: node scripts/setup-tcr.mjs [options]
 
 Options:
   --secret-id <id>        Tencent Cloud Secret ID (optional if cloudbase login)
@@ -887,19 +952,19 @@ Image Configuration from .env.local:
 
 Examples:
   # Simple usage (will auto-install cloudbase and login if needed)
-  pnpm setup:tcr
+  node scripts/setup-tcr.mjs
 
   # Custom namespace prefix
-  pnpm setup:tcr --namespace my-app
+  node scripts/setup-tcr.mjs --namespace my-app
 
   # With explicit credentials (skip cloudbase login)
-  pnpm setup:tcr \\
+  node scripts/setup-tcr.mjs \\
     --secret-id YOUR_SECRET_ID \\
     --secret-key YOUR_SECRET_KEY \\
     --account-id 123456789
 
   # Custom image
-  pnpm setup:tcr \\
+  node scripts/setup-tcr.mjs \\
     --namespace my-app \\
     --local-image node:20 \\
     --repo-name my-app \\
@@ -922,6 +987,22 @@ Examples:
 
   // Validate environment
   if (!(await validateAndPrepareEnv(config))) {
+    process.exit(1)
+  }
+
+  // If using temporary credentials, token is required
+  if (config.isTemporaryCredential && !config.token) {
+    log('Temporary credentials detected but TCB_SESSION_TOKEN / TENCENTCLOUD_SESSION_TOKEN is not set', 'warn')
+    const token = await promptInput('Enter session token (TCB_SESSION_TOKEN)', true)
+    if (!token) {
+      log('Session token is required for temporary credentials', 'error')
+      process.exit(1)
+    }
+    config.token = token
+  }
+
+  // Select CloudBase environment
+  if (!(await selectTcbEnv(config))) {
     process.exit(1)
   }
 
