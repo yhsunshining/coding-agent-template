@@ -1,5 +1,5 @@
 import * as fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import * as path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 import CloudBase from '@cloudbase/node-sdk'
@@ -26,17 +26,17 @@ function getProjectHash(cwd: string): string {
 }
 
 function getLocalMessageFilePath(sessionId: string, cwd: string): string {
-  const projectDirName = getProjectHash(cwd)
+  // Resolve symlinks (e.g. macOS /tmp → /private/tmp) to match CLI's realpath behavior
+  let resolvedCwd = cwd
+  try {
+    resolvedCwd = realpathSync(cwd)
+  } catch {
+    // cwd may not exist yet, use as-is
+  }
+  const projectDirName = getProjectHash(resolvedCwd)
   const homeDir = getHomeDir()
   const coderProjectsDir = path.join(homeDir, '.codebuddy', 'projects')
-
-  // Try without prefix first, then with 'private-' prefix (used by some SDK versions)
-  const pathWithoutPrefix = path.join(coderProjectsDir, projectDirName, `${sessionId}.jsonl`)
-  const pathWithPrefix = path.join(coderProjectsDir, `private-${projectDirName}`, `${sessionId}.jsonl`)
-
-  // Return whichever exists; if neither exists, return the default (without prefix)
-  if (existsSync(pathWithPrefix)) return pathWithPrefix
-  return pathWithoutPrefix
+  return path.join(coderProjectsDir, projectDirName, `${sessionId}.jsonl`)
 }
 
 // ─── Persistence Service ───────────────────────────────────────────────────
