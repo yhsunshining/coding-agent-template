@@ -138,11 +138,9 @@ function App() {
           <Route
             path="/"
             element={
-              <RequireAuth>
-                <AppLayout>
-                  <HomePage />
-                </AppLayout>
-              </RequireAuth>
+              <AppLayout>
+                <HomePage />
+              </AppLayout>
             }
           />
           <Route

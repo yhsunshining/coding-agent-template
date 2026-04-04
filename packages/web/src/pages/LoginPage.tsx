@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
+import { useSetAtom } from 'jotai'
 import { api } from '../lib/api'
+import { sessionAtom } from '../lib/atoms/session'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,13 +16,16 @@ export function LoginPage() {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
+  const setSession = useSetAtom(sessionAtom)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setIsLoading(true)
     try {
-      await api.post(`/api/auth/${mode}`, { username, password })
+      const data = await api.post<{ user: { id: string; username: string; name?: string; email?: string; avatar?: string }; envId?: string }>(`/api/auth/${mode}`, { username, password })
+      // Update session atom so RequireAuth / protected routes see the user immediately
+      setSession({ user: data.user, envId: data.envId })
       navigate('/')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed')
