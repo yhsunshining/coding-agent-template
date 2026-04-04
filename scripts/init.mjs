@@ -284,17 +284,45 @@ async function runCloudbaseLogin() {
   })
 }
 
+// In-memory store for TCB credentials (not persisted to .env.local)
+const tcbConfig = {
+  secretId: '',
+  secretKey: '',
+  token: '',
+  envId: '',
+  provisionMode: 'shared',
+}
+
 async function setupCloudbaseConfig() {
   logSection('CloudBase 配置')
 
   const env = loadEnvFile()
 
+  // Check server/.env for existing TCB config (already-configured state)
+  const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
+  const serverEnv = {}
+  if (existsSync(serverEnvFile)) {
+    readFileSync(serverEnvFile, 'utf-8').split('\n').forEach(line => {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...rest] = trimmed.split('=')
+        if (key) serverEnv[key.trim()] = rest.join('=').trim()
+      }
+    })
+  }
+
   // ── 永久密钥询问 ──────────────────────────────────────────────
-  // 已有永久密钥（有 SECRET_ID/KEY 且无 TOKEN）则跳过询问
-  const hasPermanentKey = env['TCB_SECRET_ID'] && env['TCB_SECRET_KEY'] && !env['TCB_TOKEN']
+  const savedId = serverEnv['TCB_SECRET_ID'] || ''
+  const savedKey = serverEnv['TCB_SECRET_KEY'] || ''
+  const savedToken = serverEnv['TCB_TOKEN'] || ''
+  const hasPermanentKey = savedId && savedKey && !savedToken
   let usePermanentKey = hasPermanentKey
 
-  if (!hasPermanentKey) {
+  if (hasPermanentKey) {
+    log(`已检测到永久密钥（${savedId.slice(0, 10)}...）`, 'success')
+    tcbConfig.secretId = savedId
+    tcbConfig.secretKey = savedKey
+  } else {
     console.log('')
     console.log('  永久密钥无需 Token、不会过期，推荐用于本地开发。')
     console.log('  获取方式：腾讯云控制台 → 访问管理 → API 密钥管理')
@@ -307,10 +335,9 @@ async function setupCloudbaseConfig() {
     if (secretId) {
       const secretKey = await promptInput('SecretKey', true)
       if (secretKey) {
-        saveEnvVar('TCB_SECRET_ID', secretId)
-        saveEnvVar('TCB_SECRET_KEY', secretKey)
-        saveEnvVar('TCB_TOKEN', '')
-        log('永久密钥已保存', 'success')
+        tcbConfig.secretId = secretId
+        tcbConfig.secretKey = secretKey
+        log('永久密钥已记录（将写入 packages/server/.env）', 'success')
 
         // 使用永久密钥登录 cloudbase CLI
         log('正在使用永久密钥登录 cloudbase CLI...')
@@ -324,16 +351,6 @@ async function setupCloudbaseConfig() {
           log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
         }
 
-        // 获取账号 ID
-        try {
-          const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
-          const uin = auth?.credential?.uin
-          if (uin) {
-            saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', uin)
-            log(`账号 ID：${uin}`, 'info')
-          }
-        } catch { /* ignore */ }
-
         usePermanentKey = true
       } else {
         log('SecretKey 为空，跳过永久密钥', 'warn')
@@ -341,22 +358,20 @@ async function setupCloudbaseConfig() {
     } else {
       log('跳过永久密钥，将使用 cloudbase 临时凭证', 'info')
     }
-  } else {
-    log(`已检测到永久密钥（${env['TCB_SECRET_ID'].slice(0, 10)}...）`, 'success')
   }
 
   // ── Token check ──────────────────────────────────────────────
-  // 永久密钥无需 token；临时凭证需要保存 token
-  let token = env['TCB_TOKEN'] || ''
   if (!usePermanentKey) {
+    let token = savedToken || ''
     if (!token && existsSync(CLOUDBASE_AUTH_FILE)) {
       try {
         const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
         const tmpToken = auth?.credential?.tmpToken
         if (tmpToken) {
-          saveEnvVar('TCB_TOKEN', tmpToken)
           token = tmpToken
-          log('已从 cloudbase 凭证中保存 TCB_TOKEN', 'success')
+          tcbConfig.secretId = tcbConfig.secretId || auth?.credential?.tmpSecretId || ''
+          tcbConfig.secretKey = tcbConfig.secretKey || auth?.credential?.tmpSecretKey || ''
+          log('已从 cloudbase 凭证中读取 TCB_TOKEN', 'success')
         }
       } catch { /* ignore */ }
     }
@@ -364,19 +379,20 @@ async function setupCloudbaseConfig() {
     if (!token) {
       log('TCB_TOKEN 未设置（临时凭证必填）', 'warn')
       token = await promptInput('请输入 TCB_TOKEN（使用永久密钥可直接回车跳过）', false)
-      if (token) {
-        saveEnvVar('TCB_TOKEN', token)
-        log('TCB_TOKEN 已保存', 'success')
-      }
-    } else {
-      log('TCB_TOKEN 已设置', 'success')
+    }
+
+    if (token) {
+      tcbConfig.token = token
+      log('TCB_TOKEN 已记录', 'success')
     }
   }
 
   // ── TCB_ENV_ID selection ──────────────────────────────────────
-  const existingEnvId = env['TCB_ENV_ID'] || ''
+  const existingEnvId = serverEnv['TCB_ENV_ID'] || ''
   if (existingEnvId) {
     log(`TCB_ENV_ID 已设置：${existingEnvId}`, 'success')
+    tcbConfig.envId = existingEnvId
+    tcbConfig.provisionMode = serverEnv['TCB_PROVISION_MODE'] || 'shared'
     return true
   }
 
@@ -438,40 +454,35 @@ async function setupCloudbaseConfig() {
     return false
   }
 
-  saveEnvVar('TCB_ENV_ID', selectedEnvId)
-  log(`TCB_ENV_ID 已保存：${selectedEnvId}`, 'success')
+  tcbConfig.envId = selectedEnvId
+  log(`TCB_ENV_ID 已记录：${selectedEnvId}`, 'success')
 
   // ── TCB_PROVISION_MODE 选择 ───────────────────────────────────
-  const existingMode = loadEnvFile()['TCB_PROVISION_MODE'] || ''
-  if (existingMode) {
-    log(`TCB_PROVISION_MODE 已设置：${existingMode}`, 'success')
-  } else {
-    console.log('')
-    console.log('━━━ 用户环境模式 ━━━')
-    console.log('')
-    console.log('  1) 共享模式（shared）— 默认推荐')
-    console.log('     所有用户共用同一个 CloudBase 环境，无需额外资源。')
-    console.log('')
-    console.log('  2) 独立模式（isolated）')
-    console.log('     每个用户自动创建独立的 CloudBase 环境。')
-    console.log('     ⚠ 需要账号有足够余额，且密钥具备 CAM 权限。')
-    console.log('')
+  console.log('')
+  console.log('━━━ 用户环境模式 ━━━')
+  console.log('')
+  console.log('  1) 共享模式（shared）— 默认推荐')
+  console.log('     所有用户共用同一个 CloudBase 环境，无需额外资源。')
+  console.log('')
+  console.log('  2) 独立模式（isolated）')
+  console.log('     每个用户自动创建独立的 CloudBase 环境。')
+  console.log('     ⚠ 需要账号有足够余额，且密钥具备 CAM 权限。')
+  console.log('')
 
-    let mode = ''
-    while (!mode) {
-      const answer = await promptInput('请选择模式（1 或 2，回车默认选 1）')
-      if (!answer || answer === '1') {
-        mode = 'shared'
-      } else if (answer === '2') {
-        mode = 'isolated'
-      } else {
-        log('请输入 1 或 2', 'warn')
-      }
+  let mode = ''
+  while (!mode) {
+    const answer = await promptInput('请选择模式（1 或 2，回车默认选 1）')
+    if (!answer || answer === '1') {
+      mode = 'shared'
+    } else if (answer === '2') {
+      mode = 'isolated'
+    } else {
+      log('请输入 1 或 2', 'warn')
     }
-
-    saveEnvVar('TCB_PROVISION_MODE', mode)
-    log(`TCB_PROVISION_MODE 已保存：${mode}`, 'success')
   }
+
+  tcbConfig.provisionMode = mode
+  log(`TCB_PROVISION_MODE 已记录：${mode}`, 'success')
 
   return true
 }
@@ -629,8 +640,18 @@ async function setupServerEnv() {
     }
   }
 
-  // 常规 key：root .env.local 优先
-  const get = (key, fallback = '') => env[key] || process.env[key] || fallback
+  // TCB config from in-memory tcbConfig (collected during setupCloudbaseConfig)
+  // This avoids persisting TCB credentials to root .env.local
+  const tcbKeyMap = {
+    TCB_SECRET_ID: tcbConfig.secretId,
+    TCB_SECRET_KEY: tcbConfig.secretKey,
+    TCB_TOKEN: tcbConfig.token,
+    TCB_ENV_ID: tcbConfig.envId,
+    TCB_PROVISION_MODE: tcbConfig.provisionMode,
+  }
+
+  // 常规 key：tcbConfig 内存值 > root .env.local > process.env > fallback
+  const get = (key, fallback = '') => (tcbKeyMap[key] !== undefined && tcbKeyMap[key] !== '') ? tcbKeyMap[key] : (env[key] || process.env[key] || fallback)
 
   // 保留型 key：优先读已有 server/.env，没有再用静态默认值
   const getPreserved = (key, fallback = '') => existingServerEnv[key] || fallback
