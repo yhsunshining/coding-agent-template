@@ -216,7 +216,7 @@ async function installCloudbase() {
 
   try {
     execSync('npm install -g @cloudbase/cli', { stdio: 'inherit' })
-    log('cloudbase CLI installed successfully', 'success')
+    log('cloudbase CLI 安装成功', 'success')
     return true
   } catch (error) {
     log('Failed to install cloudbase CLI', 'error')
@@ -294,13 +294,13 @@ function getCloudbaseCredential() {
 async function ensureCloudbaseAuth(skipLogin = false) {
   // Step 1: Check if cloudbase CLI is installed
   if (!isCloudbaseInstalled()) {
-    log('cloudbase CLI not found', 'warn')
+    log('未找到 cloudbase CLI', 'warn')
     const installed = await installCloudbase()
     if (!installed) {
       return null
     }
   } else {
-    log('cloudbase CLI is installed', 'success')
+    log('cloudbase CLI 已安装', 'success')
   }
 
   // Step 2: Check if already logged in
@@ -317,7 +317,7 @@ async function ensureCloudbaseAuth(skipLogin = false) {
     return null
   }
 
-  log('No valid cloudbase credentials found', 'warn')
+  log('未找到有效的 cloudbase 凭证', 'warn')
   const loginSuccess = await runCloudbaseLogin()
 
   if (!loginSuccess) {
@@ -562,6 +562,15 @@ async function setupPermanentKey(config) {
     } else {
       config.isTemporaryCredential = false
     }
+
+    // 如果缺少 accountId，尝试从 cloudbase auth.json 获取
+    if (!config.accountId) {
+      const cred = getCloudbaseCredential()
+      if (cred) {
+        config.accountId = cred.credential.uin
+      }
+    }
+
     return true
   }
 
@@ -637,13 +646,17 @@ async function setupPermanentKey(config) {
 }
 
 async function validateAndPrepareEnv(config) {
-  log('Validating credentials...')
+  log('正在验证凭证...')
 
   const env = loadEnvFile()
 
-  // Step 1: Try command line arguments first
-  if (config.secretId && config.secretKey && config.accountId) {
-    log('Using credentials from command line arguments', 'success')
+  // Step 1: Try command line arguments / setupPermanentKey results
+  if (config.secretId && config.secretKey) {
+    if (!config.accountId) {
+      // accountId 不是 API 鉴权必需，但 Docker login 需要，尝试从 env/.env.local 补充
+      config.accountId = env['TENCENTCLOUD_ACCOUNT_ID'] || ''
+    }
+    log('使用已有凭证', 'success')
     return true
   }
 
@@ -656,8 +669,8 @@ async function validateAndPrepareEnv(config) {
       config.token = cloudbaseCred.credential.tmpToken
       config.accountId = cloudbaseCred.credential.uin
       config.isTemporaryCredential = true
-      log('Using temporary credentials from cloudbase-cli login', 'success')
-      log('Account ID retrieved', 'info')
+      log('使用 cloudbase 临时凭证登录', 'success')
+      log('已获取账号 ID', 'info')
       return true
     }
   }
@@ -684,23 +697,26 @@ async function validateAndPrepareEnv(config) {
     }
   }
 
-  if (config.secretId && config.secretKey && config.accountId) {
+  if (config.secretId && config.secretKey) {
     if (config.isTemporaryCredential && !config.token) {
-      log('Temporary credentials found but missing session token (TCB_SESSION_TOKEN)', 'warn')
-      log('Temporary credentials require a session token to authenticate', 'error')
+      log('检测到临时凭证但缺少 TCB_SESSION_TOKEN', 'warn')
+      log('临时凭证需要 session token 才能认证', 'error')
       return false
     }
-    log('Using credentials from environment variables', 'success')
+    if (!config.accountId) {
+      config.accountId = env['TENCENTCLOUD_ACCOUNT_ID'] || ''
+    }
+    log('使用环境变量中的凭证', 'success')
     return true
   }
 
   // Step 4 (fallback): No credentials found
-  log('No valid credentials found', 'error')
+  log('未找到有效凭证', 'error')
   log('', 'info')
-  log('Please provide credentials via:', 'info')
-  log('  1. Command line: --secret-id, --secret-key, --account-id', 'info')
-  log('  2. Environment variables: TCB_SECRET_ID, TCB_SECRET_KEY, TENCENTCLOUD_ACCOUNT_ID', 'info')
-  log('  3. cloudbase login (will be prompted automatically)', 'info')
+  log('请通过以下方式提供凭证：', 'info')
+  log('  1. 命令行参数：--secret-id, --secret-key', 'info')
+  log('  2. 环境变量：TCB_SECRET_ID, TCB_SECRET_KEY', 'info')
+  log('  3. cloudbase login（将自动引导登录）', 'info')
   return false
 }
 
