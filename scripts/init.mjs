@@ -75,10 +75,36 @@ function runCommandSafe(cmd) {
   }
 }
 
-async function promptInput(prompt, hidden = false) {
+// Shared readline state
+let _rl = null
+
+// Drain any leftover data in stdin buffer
+function drainStdin() {
   return new Promise((resolve) => {
+    if (process.stdin.readable) {
+      process.stdin.resume()
+      const drain = () => {
+        while (process.stdin.read() !== null) { /* discard */ }
+      }
+      drain()
+      // Give a tick for any pending data
+      setTimeout(() => {
+        drain()
+        process.stdin.pause()
+        resolve()
+      }, 10)
+    } else {
+      resolve()
+    }
+  })
+}
+
+async function promptInput(prompt, hidden = false) {
+  return new Promise(async (resolve) => {
     if (hidden) {
-      // Raw mode: disable echo so password is not shown
+      // Close shared rl temporarily for raw mode
+      if (_rl) { _rl.close(); _rl = null }
+      await drainStdin()
       process.stdout.write(`${prompt}: `)
       process.stdin.setRawMode(true)
       process.stdin.resume()
@@ -109,9 +135,13 @@ async function promptInput(prompt, hidden = false) {
       }
       process.stdin.on('data', onData)
     } else {
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-      rl.question(`${prompt}: `, (answer) => {
-        rl.close()
+      // Close any existing rl to reset state
+      if (_rl) { _rl.close(); _rl = null }
+      await drainStdin()
+      _rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+      _rl.question(`${prompt}: `, (answer) => {
+        _rl.close()
+        _rl = null
         resolve(answer.trim())
       })
     }
@@ -316,84 +346,74 @@ async function setupCloudbaseConfig() {
   const savedKey = serverEnv['TCB_SECRET_KEY'] || ''
   const savedToken = serverEnv['TCB_TOKEN'] || ''
   const hasPermanentKey = savedId && savedKey && !savedToken
-  let usePermanentKey = hasPermanentKey
+  let usePermanentKey = false
 
   if (hasPermanentKey) {
-    log(`已检测到永久密钥（${savedId.slice(0, 10)}...）`, 'success')
-    tcbConfig.secretId = savedId
-    tcbConfig.secretKey = savedKey
-  } else {
     console.log('')
-    console.log('  永久密钥无需 Token、不会过期，推荐用于本地开发。')
+    console.log(`  当前密钥：${savedId.slice(0, 10)}...`)
+    console.log('')
+    console.log('  1) 继续使用当前密钥')
+    console.log('  2) 输入新的永久密钥')
+    console.log('')
+
+    const choice = await promptInput('请选择（1 或 2，回车默认选 1）')
+    if (!choice || choice === '1') {
+      tcbConfig.secretId = savedId
+      tcbConfig.secretKey = savedKey
+      usePermanentKey = true
+      log('使用已有密钥', 'success')
+    }
+    // choice === '2' 或其他：继续进入密钥输入
+  }
+
+  if (!usePermanentKey) {
+    console.log('')
+    console.log('  请输入腾讯云永久密钥（SecretId / SecretKey）。')
     console.log('  获取方式：腾讯云控制台 → 访问管理 → API 密钥管理')
     console.log('  https://console.cloud.tencent.com/cam/capi')
     console.log('')
-    console.log('  如暂不填写，将使用 cloudbase login 临时凭证（按 Enter 跳过）。')
-    console.log('')
 
-    const secretId = await promptInput('SecretId（AKID 开头，回车跳过）')
-    if (secretId) {
-      const secretKey = await promptInput('SecretKey', true)
-      if (secretKey) {
-        tcbConfig.secretId = secretId
-        tcbConfig.secretKey = secretKey
-        log('永久密钥已记录（将写入 packages/server/.env）', 'success')
-
-        // 使用永久密钥登录 cloudbase CLI
-        log('正在使用永久密钥登录 cloudbase CLI...')
-        try {
-          execSync(`cloudbase login --apiKeyId "${secretId}" --apiKey "${secretKey}"`, {
-            stdio: 'pipe',
-            encoding: 'utf-8',
-          })
-          log('cloudbase CLI 登录成功', 'success')
-        } catch (e) {
-          log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
-        }
-
-        usePermanentKey = true
-      } else {
-        log('SecretKey 为空，跳过永久密钥', 'warn')
+    while (!usePermanentKey) {
+      const secretId = await promptInput('SecretId（AKID 开头）')
+      if (!secretId) {
+        log('SecretId 为必填项', 'warn')
+        continue
       }
-    } else {
-      log('跳过永久密钥，将使用 cloudbase 临时凭证', 'info')
-    }
-  }
+      const secretKey = await promptInput('SecretKey', true)
+      if (!secretKey) {
+        log('SecretKey 为必填项', 'warn')
+        continue
+      }
 
-  // ── Token check ──────────────────────────────────────────────
-  if (!usePermanentKey) {
-    let token = savedToken || ''
-    if (!token && existsSync(CLOUDBASE_AUTH_FILE)) {
+      tcbConfig.secretId = secretId
+      tcbConfig.secretKey = secretKey
+      log('永久密钥已记录（将写入 packages/server/.env）', 'success')
+
+      // 使用永久密钥登录 cloudbase CLI
+      log('正在使用永久密钥登录 cloudbase CLI...')
       try {
-        const auth = JSON.parse(readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8'))
-        const tmpToken = auth?.credential?.tmpToken
-        if (tmpToken) {
-          token = tmpToken
-          tcbConfig.secretId = tcbConfig.secretId || auth?.credential?.tmpSecretId || ''
-          tcbConfig.secretKey = tcbConfig.secretKey || auth?.credential?.tmpSecretKey || ''
-          log('已从 cloudbase 凭证中读取 TCB_TOKEN', 'success')
-        }
-      } catch { /* ignore */ }
-    }
+        execSync(`cloudbase login --apiKeyId "${secretId}" --apiKey "${secretKey}"`, {
+          stdio: 'pipe',
+          encoding: 'utf-8',
+        })
+        log('cloudbase CLI 登录成功', 'success')
+      } catch (e) {
+        log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
+      }
 
-    if (!token) {
-      log('TCB_TOKEN 未设置（临时凭证必填）', 'warn')
-      token = await promptInput('请输入 TCB_TOKEN（使用永久密钥可直接回车跳过）', false)
-    }
-
-    if (token) {
-      tcbConfig.token = token
-      log('TCB_TOKEN 已记录', 'success')
+      usePermanentKey = true
     }
   }
 
   // ── TCB_ENV_ID selection ──────────────────────────────────────
   const existingEnvId = serverEnv['TCB_ENV_ID'] || ''
   if (existingEnvId) {
-    log(`TCB_ENV_ID 已设置：${existingEnvId}`, 'success')
-    tcbConfig.envId = existingEnvId
-    tcbConfig.provisionMode = serverEnv['TCB_PROVISION_MODE'] || 'shared'
-    return true
+    const useExisting = await askYesNo(`TCB_ENV_ID 已设置为 ${existingEnvId}，是否继续使用？`, true)
+    if (useExisting) {
+      tcbConfig.envId = existingEnvId
+      tcbConfig.provisionMode = serverEnv['TCB_PROVISION_MODE'] || 'shared'
+      return true
+    }
   }
 
   log('正在获取 CloudBase 环境列表...')
@@ -491,13 +511,6 @@ async function setupTcr() {
   logSection('配置 TCR（容器镜像服务）')
 
   const env = loadEnvFile()
-
-  // Check if already configured
-  if (env['TCR_IMAGE']) {
-    log('TCR 已在 .env.local 中配置', 'success')
-    log(`镜像：${env['TCR_IMAGE']}`, 'info')
-    return true
-  }
 
   // Run the full TCR setup script, passing credentials via env
   log('正在运行 TCR 配置脚本...')
@@ -832,7 +845,10 @@ async function main() {
   console.log('')
 }
 
-main().catch((error) => {
+main().then(() => {
+  if (_rl) _rl.close()
+}).catch((error) => {
+  if (_rl) _rl.close()
   console.error('初始化失败：', error)
   process.exit(1)
 })

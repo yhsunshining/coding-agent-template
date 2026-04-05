@@ -1128,19 +1128,11 @@ Examples:
     config.token = token
   }
 
-  // Select CloudBase environment
-  if (!(await selectTcbEnv(config))) {
-    process.exit(1)
-  }
-
   // Ensure .env.local exists
   if (!existsSync(ENV_FILE)) {
     log(`Creating ${ENV_FILE}...`)
     writeFileSync(ENV_FILE, '# Environment variables\n')
   }
-
-  // Generate secrets for local development
-  generateSecrets()
 
   // Run TCR setup
   const success = await setupTcr(config)
