@@ -55,6 +55,7 @@ export class PersistenceService {
   private async getCloudBaseApp(): Promise<ReturnType<typeof CloudBase.init>> {
     const config = loadConfig()
     const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId
+    const region = process.env.TCB_REGION || config.cloudbase?.region || 'ap-shanghai'
 
     if (!envId) {
       throw new Error('缺少支撑环境配置，请设置 TCB_ENV_ID 环境变量')
@@ -70,6 +71,7 @@ export class PersistenceService {
 
     return CloudBase.init({
       env: envId,
+      region,
       secretId,
       secretKey,
       ...(token ? { sessionToken: token } : {}),

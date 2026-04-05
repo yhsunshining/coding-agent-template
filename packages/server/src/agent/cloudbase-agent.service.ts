@@ -14,12 +14,65 @@ import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage } from '@code
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-const MODEL = 'glm-5.0'
+const DEFAULT_MODEL = 'glm-5.0'
 const OAUTH_TOKEN_ENDPOINT = 'https://copilot.tencent.com/oauth2/token'
 const CONNECT_TIMEOUT_MS = 60_000
 const ITERATION_TIMEOUT_MS = 30 * 1000
 const HEALTH_MAX_RETRIES = 20
 const HEALTH_INTERVAL_MS = 2000
+
+// ─── Supported Models Cache ───────────────────────────────────────────────
+
+export interface ModelInfo {
+  id: string
+  name: string
+  vendor?: string
+  credits?: string
+  supportsImages?: boolean
+  supportsReasoning?: boolean
+  supportsToolCall?: boolean
+  tags?: string[]
+  [key: string]: any
+}
+
+let cachedModels: ModelInfo[] | null = null
+
+// Static model list (temporary, replace with dynamic fetch when ready)
+const STATIC_MODELS: ModelInfo[] = [
+  { id: 'minimax-m2.5', name: 'MiniMax-M2.5' },
+  { id: 'kimi-k2.5', name: 'Kimi-K2.5' },
+  { id: 'kimi-k2-thinking', name: 'Kimi-K2-Thinking' },
+  { id: 'glm-5.0', name: 'GLM-5.0' },
+  { id: 'glm-4.7', name: 'GLM-4.7' },
+  { id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2' },
+]
+
+// Dynamic model fetch from SDK (reserved for future use)
+async function fetchSupportedModels(): Promise<ModelInfo[]> {
+  try {
+    const q = query({ prompt: '', options: { permissionMode: 'bypassPermissions' } })
+    const models = await q.supportedModels()
+    q.return?.()
+    if (Array.isArray(models) && models.length > 0) {
+      return models.map((m: any) =>
+        typeof m === 'string'
+          ? { id: m, name: m }
+          : { id: m.id || m.name || DEFAULT_MODEL, name: m.name || m.id || DEFAULT_MODEL, ...m },
+      )
+    }
+  } catch (e) {
+    console.warn('[Agent] Failed to fetch supported models from SDK:', e)
+  }
+  return [{ id: DEFAULT_MODEL, name: DEFAULT_MODEL }]
+}
+
+export async function getSupportedModels(): Promise<ModelInfo[]> {
+  if (cachedModels) return cachedModels
+  // TODO: switch to dynamic fetch when SDK is ready
+  // cachedModels = await fetchSupportedModels()
+  cachedModels = STATIC_MODELS
+  return cachedModels
+}
 
 // ─── Sandbox Helpers ──────────────────────────────────────────────────────
 
@@ -257,8 +310,17 @@ export class CloudbaseAgentService {
       cwd,
       askAnswers,
       toolConfirmation,
+      model,
     } = options
-    console.log('[Agent] chatStream start, conversationId:', conversationId, 'prompt:', prompt.slice(0, 50))
+    const modelId = model || DEFAULT_MODEL
+    console.log(
+      '[Agent] chatStream start, model:',
+      modelId,
+      'conversationId:',
+      conversationId,
+      'prompt:',
+      prompt.slice(0, 50),
+    )
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
     console.log('[Agent] userContext:', JSON.stringify(userContext))
@@ -500,6 +562,8 @@ export class CloudbaseAgentService {
       envVars.CODEBUDDY_AUTH_TOKEN = authToken
     }
 
+    let connectTimer: ReturnType<typeof setTimeout> | undefined
+    let iterationTimeoutTimer: ReturnType<typeof setTimeout> | undefined
     try {
       const sessionOpts: Record<string, unknown> = hasHistory
         ? { resume: conversationId, sessionId: conversationId }
@@ -521,8 +585,6 @@ export class CloudbaseAgentService {
 
       // ── 执行 query ─────────────────────────────────────────────────
       const abortController = new AbortController()
-      let connectTimer: ReturnType<typeof setTimeout> | undefined
-      let iterationTimeoutTimer: ReturnType<typeof setTimeout> | undefined
 
       // 用于在 canUseTool 中捕获被中断的写工具调用信息
       const pendingToolInterrupt: {
@@ -534,7 +596,7 @@ export class CloudbaseAgentService {
       const queryArgs = {
         prompt,
         options: {
-          model: MODEL,
+          model: modelId,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           maxTurns,
@@ -698,7 +760,7 @@ export class CloudbaseAgentService {
         },
       }
 
-      console.log('[Agent] calling query(), model:', MODEL, 'sessionOpts:', JSON.stringify(sessionOpts))
+      console.log('[Agent] calling query(), model:', modelId, 'sessionOpts:', JSON.stringify(sessionOpts))
       const q = query(queryArgs as any)
       console.log('[Agent] query() returned, entering message loop...')
 

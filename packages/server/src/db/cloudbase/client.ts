@@ -20,6 +20,7 @@ function getApp(): ReturnType<typeof CloudBase.init> {
   if (app) return app
 
   const envId = process.env.TCB_ENV_ID
+  const region = process.env.TCB_REGION || 'ap-shanghai'
   const secretId = process.env.TCB_SECRET_ID
   const secretKey = process.env.TCB_SECRET_KEY
   const token = process.env.TCB_TOKEN || undefined
@@ -30,6 +31,7 @@ function getApp(): ReturnType<typeof CloudBase.init> {
 
   app = CloudBase.init({
     env: envId,
+    region,
     secretId,
     secretKey,
     ...(token ? { sessionToken: token } : {}),

@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { AlertCircle, Trash2, Square, StopCircle, CheckSquare, X, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
+import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { PRStatusIcon } from '@/components/pr-status-icon'
 import { PRCheckStatus } from '@/components/pr-check-status'
 import { SharedHeader } from '@/components/shared-header'
@@ -87,6 +87,8 @@ function getAgentLogo(agent: string | null | undefined) {
       return Gemini
     case 'opencode':
       return OpenCode
+    case 'codebuddy':
+      return CodeBuddy
     default:
       return null
   }

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { AlertCircle, Plus, Trash2, GitBranch, Loader2, Search, X, MoreVertical } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Link, useLocation } from 'react-router'
-import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
+import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -377,6 +377,8 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
         return Gemini
       case 'opencode':
         return OpenCode
+      case 'codebuddy':
+        return CodeBuddy
       default:
         return null
     }

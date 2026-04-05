@@ -89,11 +89,24 @@ export const JSON_RPC_ERRORS = {
 /**
  * initialize 方法响应
  */
+export interface ModelInfo {
+  id: string
+  name: string
+  vendor?: string
+  credits?: string
+  supportsImages?: boolean
+  supportsReasoning?: boolean
+  supportsToolCall?: boolean
+  tags?: string[]
+  [key: string]: unknown
+}
+
 export interface InitializeResult {
   protocolVersion: number
   agentCapabilities: AgentCapabilities
   agentInfo: AgentInfo
   authMethods: string[]
+  supportedModels?: ModelInfo[]
 }
 
 /**

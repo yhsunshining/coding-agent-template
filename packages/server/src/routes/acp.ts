@@ -13,7 +13,7 @@ import {
   type AgentCallbackMessage,
   type ExtendedSessionUpdate,
 } from '@coder/shared'
-import { cloudbaseAgentService } from '../agent/cloudbase-agent.service.js'
+import { cloudbaseAgentService, getSupportedModels } from '../agent/cloudbase-agent.service.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { loadConfig } from '../config/store.js'
 import { getDb } from '../db/index.js'
@@ -188,8 +188,8 @@ acp.delete('/conversation/:conversationId', async (c) => {
  * 简单的聊天端点，返回 SSE 流式响应
  */
 acp.post('/chat', async (c) => {
-  const body = await c.req.json<{ prompt: string; conversationId?: string }>()
-  const { prompt, conversationId } = body
+  const body = await c.req.json<{ prompt: string; conversationId?: string; model?: string }>()
+  const { prompt, conversationId, model } = body
 
   const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
@@ -270,6 +270,7 @@ acp.post('/chat', async (c) => {
         userId,
         userCredentials,
         cwd,
+        model,
       })
     } catch (error) {
       stopReason = 'error'
@@ -337,6 +338,9 @@ acp.post('/acp', async (c) => {
 // ─── ACP Method Handlers ───────────────────────────────────────────────────
 
 async function handleInitialize(c: any, id: number | string) {
+  // 异步获取支持的模型列表（首次会调 SDK，后续走缓存）
+  getSupportedModels().catch(() => {})
+  const models = await getSupportedModels()
   const result: InitializeResult = {
     protocolVersion: ACP_PROTOCOL_VERSION,
     agentCapabilities: {
@@ -349,6 +353,7 @@ async function handleInitialize(c: any, id: number | string) {
     },
     agentInfo: NEX_AGENT_INFO,
     authMethods: [],
+    supportedModels: models,
   }
   return c.json(rpcOk(id, result))
 }
@@ -430,6 +435,15 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
   }
 
   const cwd = `/tmp/workspace/${sessionId}`
+
+  // 读取 task 的 selectedModel
+  let selectedModel: string | undefined
+  try {
+    const task = await getDb().tasks.findById(sessionId)
+    selectedModel = task?.selectedModel || undefined
+  } catch {
+    // read failure doesn't affect main flow
+  }
 
   // Update task status to pending
   try {
@@ -612,6 +626,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
         userId,
         userCredentials,
         cwd,
+        model: selectedModel,
       })
     } catch (error) {
       stopReason = 'error'

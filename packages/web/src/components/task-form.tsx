@@ -14,14 +14,16 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Loader2, ArrowUp, Settings, X, Cable, Users, Globe } from 'lucide-react'
-import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
+import { CodeBuddy, ProviderLogos, type ProviderKey } from '@/components/logos'
+// import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { setInstallDependencies, setMaxDuration, setKeepAlive, setEnableBrowser } from '@/lib/utils/cookies'
 import { useConnectors } from '@/components/connectors-provider'
 import { ConnectorDialog } from '@/components/connectors/manage-connectors'
 import { toast } from 'sonner'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { taskPromptAtom } from '@/lib/atoms/task'
-import { lastSelectedAgentAtom, lastSelectedModelAtomFamily, githubReposAtomFamily } from '@/lib/atoms/github'
+import { lastSelectedModelAtomFamily, githubReposAtomFamily } from '@/lib/atoms/github'
+import type { ModelInfo } from '@coder/shared'
 import { useLocation } from 'react-router'
 
 interface GitHubRepo {
@@ -56,75 +58,63 @@ interface TaskFormProps {
 }
 
 const CODING_AGENTS = [
-  { value: 'multi-agent', label: 'Compare', icon: Users, isLogo: false },
-  { value: 'divider', label: '', icon: () => null, isLogo: false, isDivider: true },
-  { value: 'claude', label: 'Claude', icon: Claude, isLogo: true },
-  { value: 'codex', label: 'Codex', icon: Codex, isLogo: true },
-  { value: 'copilot', label: 'Copilot', icon: Copilot, isLogo: true },
-  { value: 'cursor', label: 'Cursor', icon: Cursor, isLogo: true },
-  { value: 'gemini', label: 'Gemini', icon: Gemini, isLogo: true },
-  { value: 'opencode', label: 'opencode', icon: OpenCode, isLogo: true },
+  // CodeBuddy agent (default)
+  { value: 'codebuddy', label: 'CodeBuddy', icon: CodeBuddy, isLogo: true },
+  // --- Other agents (commented out, kept for reference) ---
+  // { value: 'multi-agent', label: 'Compare', icon: Users, isLogo: false },
+  // { value: 'claude', label: 'Claude', icon: Claude, isLogo: true },
+  // { value: 'codex', label: 'Codex', icon: Codex, isLogo: true },
+  // { value: 'copilot', label: 'Copilot', icon: Copilot, isLogo: true },
+  // { value: 'cursor', label: 'Cursor', icon: Cursor, isLogo: true },
+  // { value: 'gemini', label: 'Gemini', icon: Gemini, isLogo: true },
+  // { value: 'opencode', label: 'opencode', icon: OpenCode, isLogo: true },
 ] as const
 
+// Map model name prefix to provider logo key
+const MODEL_PROVIDER_MAP: [string[], ProviderKey][] = [
+  [['gpt', 'openai'], 'openai'],
+  [['claude', 'anthropic'], 'anthropic'],
+  [['gemini', 'google'], 'google'],
+  [['glm', 'chatglm'], 'zhipu'],
+  [['deepseek'], 'deepseek'],
+  [['hunyuan'], 'tencent'],
+  [['kimi', 'moonshot'], 'kimi'],
+  [['qwen', 'tongyi'], 'alibaba'],
+  [['doubao', 'bytedance'], 'bytedance'],
+  [['ernie', 'wenxin', 'baidu'], 'baidu'],
+  [['llama', 'meta'], 'generic'],
+  [['minimax'], 'minimax'],
+]
+
+function getModelProviderKey(modelId: string): ProviderKey {
+  const lower = modelId.toLowerCase()
+  for (const [prefixes, key] of MODEL_PROVIDER_MAP) {
+    if (prefixes.some((p) => lower.includes(p))) return key
+  }
+  return 'generic'
+}
+
 // Model options for each agent
-const AGENT_MODELS = {
-  claude: [
-    { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-    { value: 'anthropic/claude-opus-4.6', label: 'Opus 4.6' },
-    { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-  ],
-  codex: [
-    { value: 'openai/gpt-5.1', label: 'GPT-5.1' },
-    { value: 'openai/gpt-5.1-codex', label: 'GPT-5.1-Codex' },
-    { value: 'openai/gpt-5.1-codex-mini', label: 'GPT-5.1-Codex mini' },
-    { value: 'openai/gpt-5', label: 'GPT-5' },
-    { value: 'gpt-5-codex', label: 'GPT-5-Codex' },
-    { value: 'openai/gpt-5-mini', label: 'GPT-5 mini' },
-    { value: 'openai/gpt-5-nano', label: 'GPT-5 nano' },
-    { value: 'gpt-5-pro', label: 'GPT-5 pro' },
-    { value: 'openai/gpt-4.1', label: 'GPT-4.1' },
-  ],
-  copilot: [
-    { value: 'claude-sonnet-4.5', label: 'Sonnet 4.5' },
-    { value: 'claude-sonnet-4', label: 'Sonnet 4' },
-    { value: 'claude-haiku-4.5', label: 'Haiku 4.5' },
-    { value: 'gpt-5', label: 'GPT-5' },
-  ],
-  cursor: [
-    { value: 'auto', label: 'Auto' },
-    { value: 'composer-1', label: 'Composer' },
-    { value: 'sonnet-4.5', label: 'Sonnet 4.5' },
-    { value: 'sonnet-4.5-thinking', label: 'Sonnet 4.5 Thinking' },
-    { value: 'gpt-5', label: 'GPT-5' },
-    { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
-    { value: 'opus-4.5', label: 'Opus 4.5' },
-    { value: 'opus-4.1', label: 'Opus 4.1' },
-    { value: 'grok', label: 'Grok' },
-  ],
-  gemini: [
-    { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' },
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  ],
-  opencode: [
-    { value: 'gpt-5', label: 'GPT-5' },
-    { value: 'gpt-5-mini', label: 'GPT-5 mini' },
-    { value: 'gpt-5-nano', label: 'GPT-5 nano' },
-    { value: 'gpt-4.1', label: 'GPT-4.1' },
-    { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-    { value: 'claude-opus-4-5', label: 'Opus 4.5' },
-    { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-  ],
-} as const
+const AGENT_MODELS: Record<string, Array<{ value: string; label: string }>> = {
+  codebuddy: [{ value: 'glm-5.0', label: 'GLM 5.0' }],
+  // --- Other agents (commented out, kept for reference) ---
+  // claude: [
+  //   { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+  //   { value: 'anthropic/claude-opus-4.6', label: 'Opus 4.6' },
+  //   { value: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+  // ],
+}
 
 // Default models for each agent
 const DEFAULT_MODELS = {
-  claude: 'claude-sonnet-4-5',
-  codex: 'openai/gpt-5.1',
-  copilot: 'claude-sonnet-4.5',
-  cursor: 'auto',
-  gemini: 'gemini-3-pro-preview',
-  opencode: 'gpt-5',
+  codebuddy: 'glm-5.0',
+  // --- Other agents (commented out) ---
+  // claude: 'claude-sonnet-4-5',
+  // codex: 'openai/gpt-5.1',
+  // copilot: 'claude-sonnet-4.5',
+  // cursor: 'auto',
+  // gemini: 'gemini-3-pro-preview',
+  // opencode: 'gpt-5',
 } as const
 
 export function TaskForm({
@@ -139,12 +129,9 @@ export function TaskForm({
   maxSandboxDuration = 300,
 }: TaskFormProps) {
   const [prompt, setPrompt] = useAtom(taskPromptAtom)
-  // Agent 固定为 claude，不再从 atom 读取
-  // const [savedAgent, setSavedAgent] = useAtom(lastSelectedAgentAtom)
-  // const [selectedAgent, setSelectedAgent] = useState(savedAgent || 'claude')
-  const selectedAgent = 'claude'
-  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODELS.claude)
-  const [selectedModels] = useState<string[]>([])
+  const selectedAgent = 'codebuddy'
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODELS.codebuddy)
+  const [codebuddyModels, setCodebuddyModels] = useState<ModelInfo[]>([{ id: 'glm-5.0', name: 'GLM 5.0' }])
   const [repos, setRepos] = useAtom(githubReposAtomFamily(selectedOwner))
   const [, setLoadingRepos] = useState(false)
 
@@ -157,6 +144,30 @@ export function TaskForm({
 
   // Connectors state
   const { connectors } = useConnectors()
+
+  // Fetch supported models from backend on mount
+  useEffect(() => {
+    fetch('/api/agent/acp', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: { protocolVersion: 1 } }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        const models = data?.result?.supportedModels
+        if (Array.isArray(models) && models.length > 0) {
+          setCodebuddyModels(models)
+          const ids = models.map((m: ModelInfo) => m.id)
+          if (!ids.includes(selectedModel)) {
+            setSelectedModel(models[0].id)
+          }
+        }
+      })
+      .catch(() => {
+        // Silently ignore - fall back to static defaults
+      })
+  }, [])
 
   // Ref for the textarea to focus it programmatically
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -360,21 +371,12 @@ export function TaskForm({
         <p className="text-lg text-muted-foreground mb-2">
           Multi-agent AI coding platform powered by{' '}
           <a
-            href="https://vercel.com/docs/sandbox"
+            href="https://tcb.cloud.tencent.com"
             target="_blank"
             rel="noopener noreferrer"
             className="underline hover:no-underline"
           >
-            Vercel Sandbox
-          </a>{' '}
-          and{' '}
-          <a
-            href="https://vercel.com/docs/ai-gateway"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:no-underline"
-          >
-            AI Gateway
+            CloudBase
           </a>
         </p>
       </div>
@@ -397,7 +399,7 @@ export function TaskForm({
             />
           </div>
 
-          {/* Agent/Model display (fixed to claude) */}
+          {/* Agent/Model selector (fixed to codebuddy) */}
           <div className="p-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -412,10 +414,33 @@ export function TaskForm({
                     ) : null
                   })()}
                   <span className="text-muted-foreground/50">·</span>
-                  <span>
-                    {AGENT_MODELS[selectedAgent as keyof typeof AGENT_MODELS]?.find((m) => m.value === selectedModel)
-                      ?.label || selectedModel}
-                  </span>
+                  <Select value={selectedModel} onValueChange={setSelectedModel}>
+                    <SelectTrigger className="h-7 border-0 shadow-none px-1 py-0 text-sm text-muted-foreground hover:text-foreground bg-transparent focus:ring-0 gap-1 w-auto min-w-[120px]">
+                      {(() => {
+                        const current = codebuddyModels.find((m) => m.id === selectedModel)
+                        const ProviderIcon = ProviderLogos[getModelProviderKey(selectedModel)]
+                        return (
+                          <>
+                            <ProviderIcon className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                            <span className="truncate">{current?.name || selectedModel}</span>
+                          </>
+                        )
+                      })()}
+                    </SelectTrigger>
+                    <SelectContent>
+                      {codebuddyModels.map((m) => {
+                        const ProviderIcon = ProviderLogos[getModelProviderKey(m.id)]
+                        return (
+                          <SelectItem key={m.id} value={m.id}>
+                            <span className="flex items-center gap-2">
+                              <ProviderIcon className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                              <span>{m.name}</span>
+                            </span>
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {/* Option Chips - Only visible on desktop */}

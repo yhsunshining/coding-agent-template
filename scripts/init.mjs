@@ -702,6 +702,7 @@ async function setupTcr() {
         TCB_SECRET_KEY: tcbConfig.secretKey || process.env.TCB_SECRET_KEY || '',
         TCB_TOKEN: tcbConfig.token || process.env.TCB_TOKEN || '',
         TCB_ENV_ID: tcbConfig.envId || process.env.TCB_ENV_ID || '',
+        TCB_REGION: process.env.TCB_REGION || 'ap-shanghai',
         TENCENTCLOUD_ACCOUNT_ID: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
         TCR_PASSWORD: env['TCR_PASSWORD'] || '',
       },
@@ -777,6 +778,7 @@ async function setupServerEnv() {
     TCB_SECRET_KEY: tcbConfig.secretKey,
     TCB_TOKEN: tcbConfig.token,
     TCB_ENV_ID: tcbConfig.envId,
+    TCB_REGION: process.env.TCB_REGION || 'ap-shanghai',
     TCB_PROVISION_MODE: tcbConfig.provisionMode,
   }
 
@@ -825,6 +827,7 @@ NEXT_PUBLIC_AUTH_PROVIDERS=${get('NEXT_PUBLIC_AUTH_PROVIDERS', 'local')}
 # ==================== CloudBase ====================
 
 TCB_ENV_ID=${get('TCB_ENV_ID')}
+TCB_REGION=${get('TCB_REGION', 'ap-shanghai')}
 TCB_SECRET_ID=${get('TCB_SECRET_ID')}
 TCB_SECRET_KEY=${get('TCB_SECRET_KEY')}
 TCB_TOKEN=${get('TCB_TOKEN')}

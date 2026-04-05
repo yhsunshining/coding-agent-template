@@ -40,7 +40,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
-import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
+import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { useTasks } from '@/components/app-layout'
 import {
   getShowFilesPane,
@@ -689,6 +689,8 @@ export function TaskDetails({ task, maxSandboxDuration = 300, onStreamComplete, 
         return Gemini
       case 'opencode':
         return OpenCode
+      case 'codebuddy':
+        return CodeBuddy
       default:
         return null
     }
