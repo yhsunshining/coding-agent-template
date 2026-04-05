@@ -738,51 +738,54 @@ async function setupTcr(config) {
 
   const client = createTcrClient(config.secretId, config.secretKey, config.region, config.token)
 
-  // Step 1: Get password from config or env
+  // Step 1: Check if TCR user already exists
   const env = loadEnvFile()
-  let password = config.password || env['TCR_PASSWORD']
-  const hasPasswordFromCli = !!config.password // Track if password came from CLI
-
-  // Step 2: Check if TCR user already exists
+  let password = config.password || env['TCR_PASSWORD'] || ''
   const userExists = await checkUserExists(client)
 
   if (userExists) {
-    // User exists
-    log('TCR Personal Edition user already exists.', 'warn')
+    log('TCR 个人版用户已存在', 'info')
 
-    // If password provided from CLI, use it directly
-    if (hasPasswordFromCli) {
-      log('Using provided password for TCR login', 'info')
-    } else if (!password) {
-      // No password available, need to ask user
-      if (env['TCR_PASSWORD']) {
-        const useSaved = await askYesNo('Use saved password from .env.local?', true)
-        if (useSaved) {
-          password = env['TCR_PASSWORD']
-        }
-      }
+    if (!password) {
+      console.log('')
+      console.log('  请输入 TCR 登录密码。')
+      console.log('  如忘记密码，可前往控制台重置：')
+      console.log('  https://console.cloud.tencent.com/tcr/instance?rid=1')
+      console.log('')
+
+      password = await promptInput('请输入 TCR 密码', true)
 
       if (!password) {
-        log('', 'info')
-        log('No password available. You can:', 'info')
-        log('  1. Enter your TCR password below', 'info')
-        log('  2. Reset password at: https://console.cloud.tencent.com/tcr', 'info')
-        log('', 'info')
+        const resetNow = await askYesNo('是否前往控制台重置密码？', true)
+        if (resetNow) {
+          log('请在控制台重置密码后，重新运行此脚本', 'info')
+          log('  https://console.cloud.tencent.com/tcr/instance?rid=1', 'info')
+        }
+        return false
+      }
+    } else {
+      log('使用已有的 TCR 密码', 'success')
+    }
+  } else {
+    // 新用户：初始化个人仓库
+    log('首次使用 TCR 个人版，需要设置登录密码', 'info')
+    console.log('')
+    console.log('  密码要求：8-16 位，包含大写、小写字母、数字和特殊字符')
+    console.log('')
 
-        const enterPassword = await askYesNo('Do you want to enter your TCR password?', true)
-        if (enterPassword) {
-          password = await promptInput('Enter your TCR password', true)
-        } else {
-          log('Please reset your password in Tencent Cloud Console and run this script again.', 'error')
+    if (!password) {
+      const useGenerated = await askYesNo('是否自动生成密码？', true)
+      if (useGenerated) {
+        password = generatePassword()
+        log(`已生成密码：${password}`, 'success')
+        log('请妥善保存此密码', 'warn')
+      } else {
+        password = await promptInput('请设置 TCR 密码', true)
+        if (!password) {
+          log('密码为必填项', 'error')
           return false
         }
       }
-    }
-  } else {
-    // New user, need to initialize with password
-    if (!password) {
-      password = generatePassword()
-      log('Generated new TCR password', 'info')
     }
 
     // Initialize TCR Personal Edition
@@ -793,7 +796,7 @@ async function setupTcr(config) {
   }
 
   if (!password) {
-    log('Password is required', 'error')
+    log('密码为必填项', 'error')
     return false
   }
 
