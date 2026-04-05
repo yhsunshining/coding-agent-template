@@ -574,7 +574,14 @@ async function setupTcr() {
   try {
     execSync('node scripts/setup-tcr.mjs', {
       stdio: 'inherit',
-      env: { ...process.env, TCR_PASSWORD: password },
+      env: {
+        ...process.env,
+        TCR_PASSWORD: password,
+        TCB_SECRET_ID: tcbConfig.secretId || process.env.TCB_SECRET_ID || '',
+        TCB_SECRET_KEY: tcbConfig.secretKey || process.env.TCB_SECRET_KEY || '',
+        TCB_TOKEN: tcbConfig.token || process.env.TCB_TOKEN || '',
+        TENCENTCLOUD_ACCOUNT_ID: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
+      },
     })
     log('TCR 配置完成', 'success')
     return true
