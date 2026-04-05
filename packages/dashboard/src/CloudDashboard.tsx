@@ -16,6 +16,8 @@ import { DatabaseMenu } from './components/navigation/DatabaseMenu'
 import { StorageMenu } from './components/navigation/StorageMenu'
 import { cn } from './utils/helpers'
 import { envIdAtom } from './atoms/env'
+import type { Theme } from './hooks/useTheme'
+export type { Theme }
 
 export type CloudPage = 'home' | 'database' | 'storage' | 'sql' | 'functions'
 type SidebarMode = 'icon' | 'hover' | 'expanded'
@@ -45,7 +47,7 @@ const PAGE_TITLE: Record<CloudPage, string> = {
   functions: '云函数',
 }
 
-function CloudShell({ defaultPage }: { defaultPage?: CloudPage }) {
+function CloudShell({ defaultPage, theme = 'dark' }: { defaultPage?: CloudPage; theme?: Theme }) {
   const [page, setPage] = useState<CloudPage>(defaultPage || 'home')
   const [mode, setMode] = useState<SidebarMode>('hover')
   const [hovered, setHovered] = useState(false)
@@ -166,7 +168,7 @@ function CloudShell({ defaultPage }: { defaultPage?: CloudPage }) {
         {page === 'functions' && <FunctionsPage />}
       </div>
 
-      <Toaster theme="dark" position="bottom-right" richColors />
+      <Toaster theme={theme} position="bottom-right" richColors />
     </div>
   )
 }
@@ -174,6 +176,7 @@ function CloudShell({ defaultPage }: { defaultPage?: CloudPage }) {
 interface CloudDashboardProps {
   defaultPage?: CloudPage
   envId?: string
+  theme?: Theme
   className?: string
   style?: React.CSSProperties
 }
@@ -187,12 +190,14 @@ function EnvIdSetter({ envId }: { envId?: string }) {
   return null
 }
 
-export function CloudDashboard({ defaultPage, envId, className = '', style }: CloudDashboardProps) {
+export function CloudDashboard({ defaultPage, envId, theme, className = '', style }: CloudDashboardProps) {
+  const resolvedTheme = theme ?? 'dark'
+
   return (
     <JotaiProvider>
       <EnvIdSetter envId={envId} />
-      <div className={className} style={{ height: '100%', ...style }}>
-        <CloudShell defaultPage={defaultPage} />
+      <div className={className} data-theme={resolvedTheme} style={{ height: '100%', ...style }}>
+        <CloudShell defaultPage={defaultPage} theme={resolvedTheme} />
       </div>
     </JotaiProvider>
   )

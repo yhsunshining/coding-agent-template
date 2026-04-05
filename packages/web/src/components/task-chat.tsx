@@ -1,4 +1,5 @@
 import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
+import type { Theme } from '@coder/dashboard/CloudDashboard'
 import type { Task, ExtendedSessionUpdate, LogUpdate } from '@coder/shared'
 
 interface TaskMessage {
@@ -9,6 +10,7 @@ interface TaskMessage {
   createdAt: number
 }
 import { useState, useEffect, useRef, useCallback, Children, isValidElement } from 'react'
+import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -211,6 +213,8 @@ function ToolCallCard({
 }
 
 export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: TaskChatProps) {
+  const { resolvedTheme } = useTheme()
+  const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
   const [messages, setMessages] = useState<TaskMessage[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1406,7 +1410,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     if (activeTab === 'cloud') {
       return (
         <div className="flex-1 overflow-hidden -mx-3 -mt-3">
-          <CloudDashboard envId={session.envId} style={{ height: '100%' }} />
+          <CloudDashboard envId={session.envId} theme={dashboardTheme} style={{ height: '100%' }} />
         </div>
       )
     }

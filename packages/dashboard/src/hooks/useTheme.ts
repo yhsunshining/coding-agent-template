@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
-type Theme = 'dark' | 'light'
+export type Theme = 'dark' | 'light'
 
 const STORAGE_KEY = 'dashboard-theme'
 
@@ -10,15 +10,26 @@ function getInitialTheme(): Theme {
   return 'dark'
 }
 
-export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+/**
+ * When `externalTheme` is provided (embedded mode), it takes priority
+ * and the dashboard no longer manages theme independently.
+ */
+export function useTheme(externalTheme?: Theme) {
+  const [internalTheme, setInternalTheme] = useState<Theme>(getInitialTheme)
+  const containerRef = useRef<HTMLDivElement | null>(null)
 
+  const theme = externalTheme ?? internalTheme
+
+  // Apply data-theme to the scoped container (if provided) or documentElement
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
-    localStorage.setItem(STORAGE_KEY, theme)
-  }, [theme])
+    const target = containerRef.current ?? document.documentElement
+    target.setAttribute('data-theme', theme)
+    if (!externalTheme) {
+      localStorage.setItem(STORAGE_KEY, theme)
+    }
+  }, [theme, externalTheme])
 
-  const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
+  const toggleTheme = () => setInternalTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
 
-  return { theme, toggleTheme }
+  return { theme, toggleTheme, containerRef }
 }
