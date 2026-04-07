@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router'
 import { useTask } from '@/hooks/use-task'
 import { TaskDetails } from '@/components/task-details'
@@ -56,6 +56,10 @@ export function TaskPageClient({
     }
   }, [searchParams, setSearchParams])
 
+  const handleInitialPromptConsumed = useCallback(() => {
+    setInitialPrompt(undefined)
+  }, [])
+
   const repoInfo = useMemo(() => parseRepoFromUrl(task?.repoUrl ?? null), [task?.repoUrl])
 
   const headerLeftActions = repoInfo ? (
@@ -106,6 +110,7 @@ export function TaskPageClient({
           maxSandboxDuration={maxSandboxDuration}
           onStreamComplete={refetch}
           initialPrompt={initialPrompt}
+          onInitialPromptConsumed={handleInitialPromptConsumed}
         />
       </div>
 

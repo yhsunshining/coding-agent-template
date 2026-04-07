@@ -107,12 +107,106 @@ export async function archiveToGit(
 }
 
 /**
+ * 删除远端归档分支上指定会话的目录
+ *
+ * 由于 session 共享改造后，分支名 = envId，同一分支上有多个 conversation 目录。
+ * 此函数通过 CNB API 删除分支上的 {conversationId} 目录，而不是删除整个分支。
+ *
+ * @param envId 环境ID（分支名）
+ * @param conversationId 会话ID（目录名）
+ */
+export async function deleteArchiveDirectory(envId: string, conversationId: string): Promise<void> {
+  const config = getConfig()
+  if (!config) {
+    return // Git 归档未配置，跳过
+  }
+
+  const repoPath = getRepoPath(config.repo)
+  // CNB API: 删除分支上的文件/目录
+  // DELETE {apiDomain}/{repo}/-/git/files/{branch}/{path}
+  const apiUrl = `${config.apiDomain}/${repoPath}/-/git/files/${encodeURIComponent(envId)}/${encodeURIComponent(conversationId)}`
+
+  const res = await fetch(apiUrl, {
+    method: 'DELETE',
+    headers: {
+      Accept: 'application/vnd.cnb.api+json',
+      Authorization: config.token,
+    },
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  if (res.ok || res.status === 404) {
+    // 200/204 = 删除成功, 404 = 目录不存在（等价于已删除）
+    console.log(`[GitArchive] Directory deleted: ${envId}/${conversationId} (status=${res.status})`)
+  } else {
+    const body = await res.text().catch(() => '')
+    const msg = `[GitArchive] Delete directory failed: ${envId}/${conversationId} (status=${res.status}, body=${body})`
+    console.warn(msg)
+    throw new Error(msg)
+  }
+}
+
+/**
+ * 批量删除远端归档目录
+ *
+ * @param items 要删除的 {envId, conversationId} 列表
+ */
+export async function deleteArchiveDirectories(items: Array<{ envId: string; conversationId: string }>): Promise<void> {
+  if (items.length === 0) return
+
+  if (!isGitArchiveConfigured()) return
+
+  // 并发删除，但限制并发数避免 CNB API 压力
+  const CONCURRENCY = 5
+  for (let i = 0; i < items.length; i += CONCURRENCY) {
+    const batch = items.slice(i, i + CONCURRENCY)
+    await Promise.allSettled(batch.map((item) => deleteArchiveDirectory(item.envId, item.conversationId)))
+  }
+}
+
+/**
+ * 通过沙箱删除会话工作目录并触发 git 归档同步
+ *
+ * 在沙箱中执行 rm -rf 删除 conversationId 目录，然后通过 git_push 同步到归档仓库。
+ * 沙箱不可用时静默跳过。
+ *
+ * @param sandbox 沙箱实例
+ * @param envId 环境ID（用于构建目录路径）
+ * @param conversationId 会话ID（目录名）
+ */
+export async function deleteConversationViaSandbox(
+  sandbox: SandboxInstance,
+  envId: string,
+  conversationId: string,
+): Promise<void> {
+  const workspace = `/tmp/workspace/${envId}/${conversationId}`
+
+  try {
+    const res = await sandbox.request('/api/tools/bash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: `rm -rf "${workspace}"`, timeout: 10000 }),
+      signal: AbortSignal.timeout(15_000),
+    })
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      return
+    }
+
+    // Sync deletion to git archive
+    await archiveToGit(sandbox, conversationId, `delete conversation ${conversationId}`)
+  } catch (err) {
+    console.warn(`[GitArchive] deleteConversationViaSandbox failed: ${(err as Error).message}`)
+  }
+}
+
+/**
+ * @deprecated 使用 deleteArchiveDirectory 替代
  * 删除远端归档分支（分支名 = sessionId）
  *
- * 通过 CNB HTTP API 直接删除，无需本地 git 仓库。
- * DELETE {apiDomain}/{repo}/-/git/branches/{branch}
- *
- * @param sessionId 要删除的分支名（即 session ID）
+ * 注意：session 共享改造后，此函数不再适用，因为分支名 = envId，
+ * 删除分支会影响同一 envId 下所有 conversation 的归档。
  */
 export async function deleteArchiveBranch(sessionId: string): Promise<void> {
   const config = getConfig()
@@ -144,6 +238,7 @@ export async function deleteArchiveBranch(sessionId: string): Promise<void> {
 }
 
 /**
+ * @deprecated 使用 deleteArchiveDirectories 替代
  * 批量删除远端归档分支
  *
  * @param sessionIds 要删除的分支名列表

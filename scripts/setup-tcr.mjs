@@ -290,20 +290,41 @@ function getCloudbaseCredential() {
 
 /**
  * 从 cloudbase auth.json 读取账号 uin（不区分临时/永久凭证）
+ * 永久密钥登录时 auth.json 不含 uin，回退到 STS.GetCallerIdentity 查询
  */
-function getCloudbaseAccountId() {
-  if (!existsSync(CLOUDBASE_AUTH_FILE)) {
-    return null
+async function getCloudbaseAccountId(secretId, secretKey) {
+  // 1. 优先从 auth.json 读取
+  if (existsSync(CLOUDBASE_AUTH_FILE)) {
+    try {
+      const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
+      const auth = JSON.parse(content)
+      if (auth.credential?.uin) {
+        return auth.credential.uin
+      }
+    } catch {
+      // ignore parse errors
+    }
   }
-  try {
-    const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
-    const auth = JSON.parse(content)
-    // 永久凭证: auth.credential.uin
-    // 临时凭证: auth.credential.uin
-    return auth.credential?.uin || null
-  } catch {
-    return null
+
+  // 2. 通过 STS.GetCallerIdentity 获取 accountId
+  if (secretId && secretKey) {
+    try {
+      const StsClient = tencentcloud.sts.v20180813.Client
+      const stsClient = new StsClient({
+        credential: { secretId, secretKey },
+        region: 'ap-guangzhou',
+        profile: { httpProfile: { endpoint: 'sts.tencentcloudapi.com' } },
+      })
+      const resp = await stsClient.GetCallerIdentity({})
+      if (resp?.AccountId) {
+        return resp.AccountId
+      }
+    } catch {
+      // ignore API errors
+    }
   }
+
+  return null
 }
 
 /**
@@ -583,7 +604,7 @@ async function setupPermanentKey(config) {
 
     // 如果缺少 accountId，尝试从 cloudbase auth.json 获取
     if (!config.accountId) {
-      config.accountId = getCloudbaseAccountId() || ''
+      config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
     }
 
     return true
@@ -650,13 +671,13 @@ async function setupPermanentKey(config) {
   config.isTemporaryCredential = false
 
   // 获取账号 ID（从 auth.json 刷新，登录后会更新）
-  const accountId = getCloudbaseAccountId()
+  const accountId = await getCloudbaseAccountId(config.secretId, config.secretKey)
   if (accountId) {
     config.accountId = accountId
     saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', accountId)
     log(`账号 ID：${accountId}`, 'info')
   } else {
-    log('未能从 cloudbase auth.json 获取账号 ID', 'warn')
+    log('未能自动获取账号 ID', 'warn')
   }
 
   return true
@@ -870,12 +891,20 @@ async function setupTcr(config) {
 
   // 确保有 accountId（Docker login 需要）
   if (!config.accountId) {
-    config.accountId = getCloudbaseAccountId() || ''
+    config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
   }
   if (!config.accountId) {
-    log('缺少账号 ID，Docker login 需要 username', 'error')
-    log('请手动执行：docker login ccr.ccs.tencentyun.com --username <你的AppID> --password-stdin', 'info')
-    return false
+    log('未能自动获取账号 ID（AppID）', 'warn')
+    log('可在腾讯云控制台「账号信息」页面查看', 'info')
+    log('  https://console.cloud.tencent.com/developer', 'info')
+    const accountId = await promptInput('请输入你的腾讯云 AppID')
+    if (!accountId) {
+      log('缺少账号 ID，Docker login 需要 username', 'error')
+      return false
+    }
+    config.accountId = accountId.trim()
+    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', config.accountId)
+    log('账号 ID 已保存', 'success')
   }
 
   // Step 4: Docker login

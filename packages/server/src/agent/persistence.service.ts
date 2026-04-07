@@ -292,15 +292,18 @@ export class PersistenceService {
           envId: _.eq(envId),
           userId: _.eq(userId),
           agentId: _.eq(AGENT_ID),
-          status: _.eq('done'),
         })
         .orderBy('createTime', 'desc')
         .limit(limit)
         .get()
 
-      const records = (data as any[]).reverse()
+      const sorted = (data as any[]).reverse()
 
-      return records.map((r) => ({
+      // 保证 QA 成对：从后往前找到第一条 user 消息，丢弃它之前的 assistant
+      const firstUserIdx = sorted.findIndex((r) => r.role === 'user')
+      const valid = firstUserIdx >= 0 ? sorted.slice(firstUserIdx) : sorted
+
+      return valid.map((r) => ({
         recordId: r.recordId,
         conversationId: r.conversationId,
         replyTo: r.replyTo,
@@ -990,6 +993,33 @@ export class PersistenceService {
       return toolName ? { toolName, input } : null
     } catch {
       return null
+    }
+  }
+
+  /**
+   * 删除指定会话的所有消息记录
+   *
+   * @param conversationId 会话 ID
+   * @param envId 用户环境 ID
+   * @param userId 用户 ID
+   */
+  async deleteConversationMessages(conversationId: string, envId: string, userId: string): Promise<void> {
+    try {
+      const collection = await this.getCollection()
+      const app = await this.getCloudBaseApp()
+      const _ = app.database().command
+
+      await collection
+        .where({
+          conversationId: _.eq(conversationId),
+          envId: _.eq(envId),
+          userId: _.eq(userId),
+          agentId: _.eq(AGENT_ID),
+        })
+        .remove()
+    } catch {
+      // 删除失败不影响主流程，仅记录服务端日志
+      console.error('Failed to delete conversation messages')
     }
   }
 }

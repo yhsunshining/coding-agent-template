@@ -161,7 +161,7 @@ function CloudShell({ defaultPage, theme = 'dark' }: { defaultPage?: CloudPage; 
 
       {/* 主内容区 */}
       <div className="flex-1 overflow-hidden min-w-0">
-        {page === 'home' && <HomePage />}
+        {page === 'home' && <HomePage onNavigate={setPage} />}
         {page === 'database' && <DatabasePage />}
         {page === 'storage' && <StoragePage />}
         {page === 'sql' && <SqlPage />}

@@ -160,6 +160,13 @@ export type AcpContentBlock = AcpTextBlock | AcpImageBlock
 export interface SessionPromptParams {
   sessionId: string
   prompt: AcpContentBlock[]
+  /** AskUserQuestion 的用户回答 { [assistantMessageId]: { toolCallId, answers: { [header]: value } } } */
+  askAnswers?: Record<string, { toolCallId: string; answers: Record<string, string> }>
+  /** 工具确认结果 */
+  toolConfirmation?: {
+    interruptId: string
+    payload: { action: 'allow' | 'deny' }
+  }
 }
 
 /**
@@ -194,11 +201,21 @@ export interface SessionUpdateParams {
 /**
  * Session update 类型
  */
-export type SessionUpdate = AgentMessageChunkUpdate | ToolCallUpdate | ToolCallStatusUpdate | AvailableCommandsUpdate
+export type SessionUpdate =
+  | AgentMessageChunkUpdate
+  | ToolCallUpdate
+  | ToolCallStatusUpdate
+  | AvailableCommandsUpdate
+  | AgentToughtChunkUpdate
 
 export interface AgentMessageChunkUpdate {
   sessionUpdate: 'agent_message_chunk'
   content: AcpTextBlock
+}
+
+interface AgentToughtChunkUpdate {
+  sessionUpdate: 'agent_thought_chunk'
+  content: string
 }
 
 export interface ToolCallUpdate {

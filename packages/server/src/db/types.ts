@@ -192,6 +192,7 @@ export interface UserRepository {
   findByProviderAndExternalId(provider: string, externalId: string): Promise<User | null>
   create(user: NewUser): Promise<User>
   update(id: string, data: Partial<Omit<User, 'id'>>): Promise<User | null>
+  deleteById(id: string): Promise<void>
 }
 
 export interface LocalCredentialRepository {
@@ -203,8 +204,10 @@ export interface TaskRepository {
   findById(id: string): Promise<Task | null>
   findByIdAndUserId(id: string, userId: string): Promise<Task | null>
   findByUserId(userId: string): Promise<Task[]>
+  findByRepoAndPr(userId: string, prNumber: number, repoUrl: string): Promise<Task[]>
   create(task: NewTask): Promise<Task>
   update(id: string, data: Partial<Omit<Task, 'id'>>): Promise<Task | null>
+  updateUserId(fromUserId: string, toUserId: string): Promise<void>
   softDelete(id: string): Promise<void>
 }
 
@@ -213,13 +216,16 @@ export interface ConnectorRepository {
   findByIdAndUserId(id: string, userId: string): Promise<Connector | null>
   create(connector: NewConnector): Promise<Connector>
   update(id: string, userId: string, data: Partial<Omit<Connector, 'id' | 'userId'>>): Promise<Connector | null>
+  updateUserId(fromUserId: string, toUserId: string): Promise<void>
   delete(id: string, userId: string): Promise<void>
 }
 
 export interface AccountRepository {
   findByUserIdAndProvider(userId: string, provider: string): Promise<Account | null>
+  findByProviderAndExternalUserId(provider: string, externalUserId: string): Promise<Account | null>
   create(account: NewAccount): Promise<Account>
   update(id: string, data: Partial<Omit<Account, 'id'>>): Promise<Account | null>
+  updateUserId(fromUserId: string, toUserId: string): Promise<void>
   delete(userId: string, provider: string): Promise<void>
 }
 
@@ -227,6 +233,7 @@ export interface KeyRepository {
   findByUserId(userId: string): Promise<Key[]>
   findByUserIdAndProvider(userId: string, provider: string): Promise<Key | null>
   upsert(key: NewKey): Promise<Key>
+  updateUserId(fromUserId: string, toUserId: string): Promise<void>
   delete(userId: string, provider: string): Promise<void>
 }
 
@@ -245,6 +252,7 @@ export interface SettingRepository {
 export interface DeploymentRepository {
   findByTaskId(taskId: string): Promise<Deployment[]>
   findByTaskIdAndTypePath(taskId: string, type: string, path: string | null): Promise<Deployment | null>
+  findByTaskIdAndUserId(taskId: string, userId: string): Promise<Deployment | null>
   create(deployment: NewDeployment): Promise<Deployment>
   update(id: string, data: Partial<Omit<Deployment, 'id'>>): Promise<Deployment | null>
   softDelete(id: string): Promise<void>

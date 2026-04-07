@@ -20,8 +20,11 @@ export { createSandboxMcpClient, type SandboxMcpDeps } from './sandbox-mcp-proxy
 
 export {
   archiveToGit,
+  deleteArchiveDirectory,
+  deleteArchiveDirectories,
   deleteArchiveBranch,
   deleteArchiveBranches,
+  deleteConversationViaSandbox,
   isGitArchiveConfigured,
   type GitArchiveConfig,
 } from './git-archive.js'

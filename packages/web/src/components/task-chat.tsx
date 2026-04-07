@@ -1,14 +1,20 @@
 import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
 import type { Theme } from '@coder/dashboard/CloudDashboard'
-import type { Task, ExtendedSessionUpdate, LogUpdate } from '@coder/shared'
-
-interface TaskMessage {
-  id: string
-  taskId: string
-  role: 'user' | 'agent'
-  content: string
-  createdAt: number
-}
+import type { Task } from '@coder/shared'
+import type {
+  TaskMessage,
+  AskUserQuestionData,
+  TaskChatProps,
+  PRComment,
+  CheckRun,
+  DeploymentInfo,
+  ArtifactInfo,
+} from '@/types/task-chat'
+import { useChatStream } from '@/hooks/use-chat-stream'
+import { ThinkingBlock } from '@/components/chat/thinking-block'
+import { ToolCallCard } from '@/components/chat/tool-call-card'
+import { AskUserForm } from '@/components/chat/ask-user-form'
+import { ToolConfirmDialog } from '@/components/chat/tool-confirm-dialog'
 import { useState, useEffect, useRef, useCallback, Children, isValidElement } from 'react'
 import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
@@ -27,13 +33,6 @@ import {
   RefreshCw,
   MoreVertical,
   MessageSquare,
-  Shield,
-  ShieldAlert,
-  HelpCircle,
-  ChevronDown,
-  ChevronRight,
-  Brain,
-  Wrench,
   Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -42,1091 +41,283 @@ import { useAtom, useAtomValue } from 'jotai'
 import { taskChatInputAtomFamily } from '@/lib/atoms/task'
 import { sessionAtom } from '@/lib/atoms/session'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
 
-interface AskUserQuestionData {
-  toolCallId: string
-  assistantMessageId: string
-  questions: Array<{
-    question: string
-    header: string
-    options: Array<{ label: string; description: string }>
-    multiSelect: boolean
-  }>
-}
-
-interface ToolConfirmData {
-  toolCallId: string
-  assistantMessageId: string
-  toolName: string
-  input: Record<string, unknown>
-}
-
-interface TaskChatProps {
-  taskId: string
-  task: Task
-  /** 当 ACP 对话轮次完成时（stream DONE）通知父组件刷新 task */
-  onStreamComplete?: () => void
-  /** 从 URL 参数传入的初始 prompt，存在时自动发起 ACP 请求 */
-  initialPrompt?: string
-}
-
-interface PRComment {
-  id: number
-  user: {
-    login: string
-    avatar_url: string
-  }
-  body: string
-  created_at: string
-  html_url: string
-}
-
-interface CheckRun {
-  id: number
-  name: string
-  status: string
-  conclusion: string | null
-  html_url: string
-  started_at: string
-  completed_at: string | null
-}
-
-interface DeploymentInfo {
-  id: string
-  taskId: string
-  type: 'web' | 'miniprogram'
-  url: string | null
-  path: string | null
-  qrCodeUrl: string | null
-  pagePath: string | null
-  appId: string | null
-  label: string | null
-  metadata: Record<string, unknown> | null
-  createdAt: number
-  updatedAt: number
-}
-
-interface ArtifactInfo {
-  title: string
-  description?: string
-  contentType: 'image' | 'link' | 'json'
-  data: string
-  metadata?: Record<string, unknown>
-}
-
-// ─── Thinking Block ────────────────────────────────────────────────────
-
-function ThinkingBlock({ text, isThinking }: { text: string; isThinking: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="border border-border/50 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground hover:bg-muted/30 transition-colors"
-      >
-        <Brain className="h-3.5 w-3.5 flex-shrink-0" />
-        <span className="font-medium">{isThinking ? '思考中...' : '已思考'}</span>
-        {isThinking && <Loader2 className="h-3 w-3 animate-spin" />}
-        <span className="ml-auto">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-3 pb-2 border-t border-border/30">
-          <p className="text-xs text-muted-foreground/80 whitespace-pre-wrap mt-2 leading-relaxed italic">{text}</p>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Tool Call Card ────────────────────────────────────────────────────
-
-function ToolCallCard({
-  toolName,
-  toolCallId,
-  input,
-  result,
-  isError,
-  isPending,
-}: {
-  toolName: string
-  toolCallId?: string
-  input?: unknown
-  result?: string
-  isError?: boolean
-  isPending: boolean
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="border border-border/50 rounded-lg overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-muted/30 transition-colors"
-      >
-        {isPending ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-400 flex-shrink-0" />
-        ) : isError ? (
-          <XCircle className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
-        ) : (
-          <CheckCircle className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
-        )}
-        <Wrench className="h-3 w-3 text-muted-foreground/60 flex-shrink-0" />
-        <span className="font-medium text-foreground">{toolName !== 'tool' ? toolName : 'Tool'}</span>
-        {toolCallId && <span className="text-muted-foreground/50">{toolCallId}</span>}
-        <span className="ml-auto">
-          {expanded ? (
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          )}
-        </span>
-      </button>
-      {expanded && (
-        <div className="border-t border-border/30 text-xs">
-          {input && (
-            <div className="px-3 py-2">
-              <div className="text-muted-foreground font-medium mb-1">参数</div>
-              <pre className="bg-muted/30 rounded p-2 overflow-x-auto text-[11px] leading-relaxed whitespace-pre-wrap break-all">
-                {typeof input === 'string' ? input : JSON.stringify(input, null, 2)}
-              </pre>
-            </div>
-          )}
-          {result && (
-            <div className="px-3 py-2 border-t border-border/20">
-              <div className="text-muted-foreground font-medium mb-1">结果</div>
-              <pre
-                className={`bg-muted/30 rounded p-2 overflow-x-auto text-[11px] leading-relaxed whitespace-pre-wrap break-all max-h-[300px] overflow-y-auto ${isError ? 'text-red-400' : ''}`}
-              >
-                {result}
-              </pre>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: TaskChatProps) {
+export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInitialPromptConsumed }: TaskChatProps) {
   const { resolvedTheme } = useTheme()
   const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
-  const [messages, setMessages] = useState<TaskMessage[]>([])
+  const session = useAtomValue(sessionAtom)
+
+  // ─── Local UI state ───────────────────────────────────────────────
+
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [newMessage, setNewMessage] = useAtom(taskChatInputAtomFamily(taskId))
-  const session = useAtomValue(sessionAtom)
-  const [isSending, setIsSending] = useState(false)
-  const [isStreamingResponse, setIsStreamingResponse] = useState(false)
-  const isStreamingRef = useRef(false) // ref 版本，供 fetchMessages 使用（不触发重建）
-  const acpSessionReady = useRef(false)
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [isStopping, setIsStopping] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const previousMessageCountRef = useRef(0)
-  const previousMessagesHashRef = useRef('')
-  const wasAtBottomRef = useRef(true)
-  const [activeTab, setActiveTab] = useState<'chat' | 'comments' | 'actions' | 'deployments' | 'cloud'>('chat')
+  const [activeTab, setActiveTab] = useState('chat')
+
+  // Tab data
   const [prComments, setPrComments] = useState<PRComment[]>([])
+  const [checkRuns, setCheckRuns] = useState<CheckRun[]>([])
+  const [deployments, setDeployments] = useState<DeploymentInfo[]>([])
   const [loadingComments, setLoadingComments] = useState(false)
   const [commentsError, setCommentsError] = useState<string | null>(null)
-  const [checkRuns, setCheckRuns] = useState<CheckRun[]>([])
   const [loadingActions, setLoadingActions] = useState(false)
   const [actionsError, setActionsError] = useState<string | null>(null)
-  const [deployments, setDeployments] = useState<DeploymentInfo[]>([])
   const [loadingDeployment, setLoadingDeployment] = useState(false)
   const [deploymentError, setDeploymentError] = useState<string | null>(null)
-  const [deploymentNotifications, setDeploymentNotifications] = useState<DeploymentInfo[]>([])
-  const [artifacts, setArtifacts] = useState<ArtifactInfo[]>([])
+
+  // Scroll refs
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const wasAtBottomRef = useRef(true)
+  const previousMessageCountRef = useRef(0)
+  const previousMessagesHashRef = useRef('')
   const [userMessageHeights, setUserMessageHeights] = useState<Record<string, number>>({})
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [overflowingMessages, setOverflowingMessages] = useState<Set<string>>(new Set())
   const contentRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
-  // AskUserQuestion and ToolConfirm state
-  const [askUserQuestion, setAskUserQuestion] = useState<AskUserQuestionData | null>(null)
-  const [toolConfirm, setToolConfirm] = useState<ToolConfirmData | null>(null)
-  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({})
-  const [manualInputs, setManualInputs] = useState<Record<string, string>>({})
-
-  // Track if each tab has been loaded to avoid refetching on tab switch
+  // Tab loading cache
   const commentsLoadedRef = useRef(false)
   const actionsLoadedRef = useRef(false)
 
-  const isNearBottom = () => {
-    const container = scrollContainerRef.current
-    if (!container) return true // Default to true if no container
+  const sessionEnvId = session?.envId || ''
 
-    const threshold = 100 // pixels from bottom
-    const position = container.scrollTop + container.clientHeight
-    const bottom = container.scrollHeight
+  // ─── Scroll helpers (defined before useChatStream — needed by hook options) ──
 
-    return position >= bottom - threshold
-  }
-
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current
     if (!container) return
     container.scrollTop = container.scrollHeight
-  }
+  }, [])
+
+  // ─── Chat stream hook ──────────────────────────────────────────────
+
+  const chat = useChatStream(taskId, {
+    onStreamComplete,
+    onDeploymentDetected: () => fetchDeployments(false),
+    scrollToBottom,
+    wasAtBottomRef,
+  })
+
+  const {
+    messages,
+    setMessages,
+    isSending,
+    setIsSending,
+    isStreamingResponse,
+    toolConfirm,
+    questionAnswersByTool,
+    setQuestionAnswersByTool,
+    manualInputsByTool,
+    setManualInputsByTool,
+    deploymentNotifications,
+    setDeploymentNotifications,
+    artifacts,
+    canFetchMessages,
+    sendInitialPrompt,
+    sendMessage: chatSendMessage,
+    answerQuestion: chatAnswerQuestion,
+    confirmTool: chatConfirmTool,
+  } = chat
+
+  // useEffect(()=>{
+  //   console.log('>>>>>>>>>>>>>messages', messages)
+  // },[messages])
+
+  // ─── Data fetching ──────────────────────────────────────────────────
 
   const fetchMessages = useCallback(
     async (showLoading = true) => {
-      // 流式响应期间不覆盖 optimistic messages（用 ref，不依赖 state 避免重建循环）
-      if (isStreamingRef.current) return
-      if (showLoading) {
-        setIsLoading(true)
-      }
+      // Don't overwrite optimistic messages during streaming or interaction wait
+      if (!canFetchMessages()) return
+      if (showLoading) setIsLoading(true)
       setError(null)
 
       try {
         const response = await fetch(`/api/tasks/${taskId}/messages`)
         const data = await response.json()
-
-        // 再次检查：异步请求期间可能已开始流式响应
-        if (isStreamingRef.current) return
-
+        // Re-check after async
+        if (!canFetchMessages()) return
         if (response.ok && data.messages) {
           setMessages(data.messages)
         } else {
           setError(data.error || 'Failed to fetch messages')
         }
-      } catch (err) {
-        console.error('Error fetching messages:', err)
+      } catch {
         setError('Failed to fetch messages')
       } finally {
-        if (showLoading) {
-          setIsLoading(false)
-        }
+        if (showLoading) setIsLoading(false)
       }
     },
-    [taskId],
+    [canFetchMessages, setMessages, taskId],
   )
 
-  const fetchPRComments = useCallback(
-    async (showLoading = true) => {
-      if (!task.prNumber || !task.repoUrl) return
+  const fetchPRComments = useCallback(async () => {
+    if (!task.prNumber || !task.repoUrl) return
+    setLoadingComments(true)
+    setCommentsError(null)
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/pr-comments`)
+      const data = await res.json()
+      if (res.ok) setPrComments(data.comments || [])
+      else setCommentsError(data.error || 'Failed to fetch PR comments')
+    } catch {
+      setCommentsError('Failed to fetch PR comments')
+    } finally {
+      setLoadingComments(false)
+    }
+  }, [task.prNumber, task.repoUrl, taskId])
 
-      // Don't refetch if already loaded
-      if (commentsLoadedRef.current && showLoading) return
-
-      if (showLoading) {
-        setLoadingComments(true)
-      }
-      setCommentsError(null)
-
-      try {
-        const response = await fetch(`/api/tasks/${taskId}/pr-comments`)
-        const data = await response.json()
-
-        if (response.ok && data.success) {
-          setPrComments(data.comments || [])
-          commentsLoadedRef.current = true
-        } else {
-          setCommentsError(data.error || 'Failed to fetch comments')
-        }
-      } catch (err) {
-        console.error('Error fetching PR comments:', err)
-        setCommentsError('Failed to fetch comments')
-      } finally {
-        if (showLoading) {
-          setLoadingComments(false)
-        }
-      }
-    },
-    [taskId, task.prNumber, task.repoUrl],
-  )
-
-  const fetchCheckRuns = useCallback(
-    async (showLoading = true) => {
-      if (!task.branchName || !task.repoUrl) return
-
-      // Don't refetch if already loaded
-      if (actionsLoadedRef.current && showLoading) return
-
-      if (showLoading) {
-        setLoadingActions(true)
-      }
-      setActionsError(null)
-
-      try {
-        const response = await fetch(`/api/tasks/${taskId}/check-runs`)
-        const data = await response.json()
-
-        if (response.ok && data.success) {
-          setCheckRuns(data.checkRuns || [])
-          actionsLoadedRef.current = true
-        } else {
-          setActionsError(data.error || 'Failed to fetch check runs')
-        }
-      } catch (err) {
-        console.error('Error fetching check runs:', err)
-        setActionsError('Failed to fetch check runs')
-      } finally {
-        if (showLoading) {
-          setLoadingActions(false)
-        }
-      }
-    },
-    [taskId, task.branchName, task.repoUrl],
-  )
+  const fetchCheckRuns = useCallback(async () => {
+    if (!task.branchName) return
+    setLoadingActions(true)
+    setActionsError(null)
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/check-runs`)
+      const data = await res.json()
+      if (res.ok) setCheckRuns(data.checkRuns || [])
+      else setActionsError(data.error || 'Failed to fetch check runs')
+    } catch {
+      setActionsError('Failed to fetch check runs')
+    } finally {
+      setLoadingActions(false)
+    }
+  }, [task.branchName, taskId])
 
   const fetchDeployments = useCallback(
     async (showLoading = true) => {
-      if (showLoading) {
-        setLoadingDeployment(true)
-      }
+      if (showLoading) setLoadingDeployment(true)
       setDeploymentError(null)
-
       try {
-        const response = await fetch(`/api/tasks/${taskId}/deployments`)
-        const data = await response.json()
-
-        if (response.ok) {
+        const res = await fetch(`/api/tasks/${taskId}/deployments`)
+        const data = await res.json()
+        if (res.ok) {
           setDeployments(data.deployments || [])
+          if (data.artifacts) setDeploymentNotifications((prev) => [...prev, ...data.artifacts])
         } else {
           setDeploymentError(data.error || 'Failed to fetch deployments')
         }
-      } catch (err) {
-        console.error('Error fetching deployments:', err)
+      } catch {
         setDeploymentError('Failed to fetch deployments')
       } finally {
-        if (showLoading) {
-          setLoadingDeployment(false)
-        }
+        if (showLoading) setLoadingDeployment(false)
       }
     },
-    [taskId],
+    [setDeploymentNotifications, taskId],
   )
 
-  const handleRefresh = useCallback(() => {
-    switch (activeTab) {
-      case 'chat':
-        fetchMessages(false)
-        break
-      case 'comments':
-        if (task.prNumber) {
-          commentsLoadedRef.current = false
-          fetchPRComments()
-        }
-        break
-      case 'actions':
-        if (task.branchName) {
-          actionsLoadedRef.current = false
-          fetchCheckRuns()
-        }
-        break
-      case 'deployments':
-        fetchDeployments()
-        break
-    }
-  }, [activeTab, task.prNumber, task.branchName, fetchMessages, fetchPRComments, fetchCheckRuns, fetchDeployments])
+  // ─── Effects ────────────────────────────────────────────────────────
 
+  // Load messages on mount
   useEffect(() => {
-    // Load historical messages once on mount (no polling)
     fetchMessages(true)
   }, [fetchMessages])
 
-  // Auto-refresh for active tab (Comments, Checks, Deployments)
-  useEffect(() => {
-    if (activeTab === 'chat') return // Chat already has its own refresh
-
-    const refreshInterval = 30000 // 30 seconds
-
-    const interval = setInterval(() => {
-      switch (activeTab) {
-        case 'comments':
-          if (task.prNumber) {
-            commentsLoadedRef.current = false
-            fetchPRComments(false) // Don't show loading on auto-refresh
-          }
-          break
-        case 'actions':
-          if (task.branchName) {
-            actionsLoadedRef.current = false
-            fetchCheckRuns(false) // Don't show loading on auto-refresh
-          }
-          break
-        case 'deployments':
-          fetchDeployments(false) // Don't show loading on auto-refresh
-          break
-      }
-    }, refreshInterval)
-
-    return () => clearInterval(interval)
-  }, [activeTab, task.prNumber, task.branchName, fetchPRComments, fetchCheckRuns, fetchDeployments])
-
-  // Reset cache and refetch when PR number changes (PR created/updated)
+  // Reset tab caches when data becomes available
   useEffect(() => {
     if (task.prNumber) {
       commentsLoadedRef.current = false
-      if (activeTab === 'comments') {
-        fetchPRComments()
-      }
     }
-  }, [task.prNumber, activeTab, fetchPRComments])
+  }, [task.prNumber])
 
-  // Reset cache and refetch when branch name changes (branch created)
   useEffect(() => {
     if (task.branchName) {
       actionsLoadedRef.current = false
-      if (activeTab === 'actions') {
-        fetchCheckRuns()
-      }
     }
-  }, [task.branchName, activeTab, fetchCheckRuns])
+  }, [task.branchName])
 
-  // Fetch PR comments when tab switches to comments
+  // Auto-refresh non-chat tabs
   useEffect(() => {
-    if (activeTab === 'comments' && task.prNumber) {
+    if (activeTab === 'chat') return
+    const interval = setInterval(() => {
+      if (activeTab === 'comments') fetchPRComments()
+      else if (activeTab === 'actions') fetchCheckRuns()
+      else if (activeTab === 'deployments') fetchDeployments(false)
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [activeTab, fetchPRComments, fetchCheckRuns, fetchDeployments])
+
+  // Load tab data on switch
+  useEffect(() => {
+    if (activeTab === 'comments' && !commentsLoadedRef.current && task.prNumber) {
+      commentsLoadedRef.current = true
       fetchPRComments()
     }
   }, [activeTab, task.prNumber, fetchPRComments])
 
-  // Fetch check runs when tab switches to actions
   useEffect(() => {
-    if (activeTab === 'actions' && task.branchName) {
+    if (activeTab === 'actions' && !actionsLoadedRef.current && task.branchName) {
+      actionsLoadedRef.current = true
       fetchCheckRuns()
     }
   }, [activeTab, task.branchName, fetchCheckRuns])
 
-  // Fetch deployment when tab switches to deployments
   useEffect(() => {
-    if (activeTab === 'deployments') {
-      fetchDeployments()
-    }
+    if (activeTab === 'deployments') fetchDeployments(false)
   }, [activeTab, fetchDeployments])
 
-  // Track scroll position to maintain scroll at bottom when content updates
+  // Scroll tracking
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
-
-    const handleScroll = () => {
-      wasAtBottomRef.current = isNearBottom()
+    const onScroll = () => {
+      wasAtBottomRef.current = container.scrollTop + container.clientHeight >= container.scrollHeight - 100
     }
-
-    container.addEventListener('scroll', handleScroll)
-    return () => container.removeEventListener('scroll', handleScroll)
+    container.addEventListener('scroll', onScroll, { passive: true })
+    return () => container.removeEventListener('scroll', onScroll)
   }, [])
 
-  // Calculate heights for user messages to create proper sticky stacking
+  // Auto-scroll on new content
   useEffect(() => {
-    const displayMessages = messages.slice(-10)
-    const userMessages = displayMessages.filter((m) => m.role === 'user')
-
-    if (userMessages.length === 0) return
-
-    const measureHeights = () => {
-      const newHeights: Record<string, number> = {}
-      const newOverflowing = new Set<string>()
-
-      userMessages.forEach((message) => {
-        const el = messageRefs.current[message.id]
-        const contentEl = contentRefs.current[message.id]
-
-        if (el) {
-          newHeights[message.id] = el.offsetHeight
-        }
-
-        // Check if content is overflowing the max-height (72px ~ 4 lines)
-        if (contentEl && contentEl.scrollHeight > 72) {
-          newOverflowing.add(message.id)
-        }
-      })
-
-      setUserMessageHeights(newHeights)
-      setOverflowingMessages(newOverflowing)
+    const count = messages.length
+    const hash = messages.map((m) => `${m.id}:${(m.content || '').slice(-20)}`).join('|')
+    if (count !== previousMessageCountRef.current || hash !== previousMessagesHashRef.current) {
+      if (wasAtBottomRef.current) requestAnimationFrame(scrollToBottom)
+      previousMessageCountRef.current = count
+      previousMessagesHashRef.current = hash
     }
+  }, [messages, scrollToBottom])
 
-    // Measure after render
-    setTimeout(measureHeights, 0)
-
-    // Remeasure on window resize
-    window.addEventListener('resize', measureHeights)
-    return () => window.removeEventListener('resize', measureHeights)
-  }, [messages])
-
-  // Auto-scroll when messages change if user was at bottom
+  // Measure user message heights
   useEffect(() => {
-    const currentMessageCount = messages.length
-    const previousMessageCount = previousMessageCountRef.current
-
-    // Create a hash of current messages to detect actual content changes
-    const currentHash = messages.map((m) => `${m.id}:${m.content.length}`).join('|')
-    const previousHash = previousMessagesHashRef.current
-
-    // Only proceed if content actually changed
-    const contentChanged = currentHash !== previousHash
-
-    // Always scroll on initial load
-    if (previousMessageCount === 0 && currentMessageCount > 0) {
-      setTimeout(() => scrollToBottom(), 0)
-      wasAtBottomRef.current = true
-      previousMessageCountRef.current = currentMessageCount
-      previousMessagesHashRef.current = currentHash
-      return
+    for (const [id, el] of Object.entries(contentRefs.current)) {
+      if (!el) continue
+      const height = el.scrollHeight
+      if (height > 72 && !userMessageHeights[id]) {
+        setUserMessageHeights((prev) => ({ ...prev, [id]: height }))
+        setOverflowingMessages((prev) => new Set([...prev, id]))
+      }
     }
+  }, [messages, userMessageHeights])
 
-    // Only scroll if content changed AND user was at bottom
-    if (contentChanged && wasAtBottomRef.current) {
-      // Use setTimeout to ensure DOM has updated with new content
-      setTimeout(() => {
-        if (wasAtBottomRef.current) {
-          scrollToBottom()
-        }
-      }, 50)
-    }
-
-    previousMessageCountRef.current = currentMessageCount
-    previousMessagesHashRef.current = currentHash
-  }, [messages])
-
-  // Timer for duration display
+  // Duration timer
   useEffect(() => {
-    if (task.status === 'processing' || task.status === 'pending') {
-      const interval = setInterval(() => {
-        setCurrentTime(Date.now())
-      }, 1000)
-      return () => clearInterval(interval)
-    }
+    if (task.status !== 'processing' && task.status !== 'pending') return
+    const interval = setInterval(() => setCurrentTime(Date.now()), 1000)
+    return () => clearInterval(interval)
   }, [task.status])
 
-  const formatDuration = (messageCreatedAt: Date | number) => {
-    const startTime = new Date(messageCreatedAt).getTime()
+  // ─── Initial prompt ────────────────────────────────────────────────
 
-    // Find the next agent message after this user message
-    const messageIndex = messages.findIndex((m) => new Date(m.createdAt).getTime() === startTime)
-    const nextAgentMessage = messages.slice(messageIndex + 1).find((m) => m.role === 'agent')
-
-    const endTime = nextAgentMessage
-      ? new Date(nextAgentMessage.createdAt).getTime()
-      : task.completedAt
-        ? new Date(task.completedAt).getTime()
-        : currentTime
-
-    const durationMs = Math.max(0, endTime - startTime) // Ensure non-negative
-    const durationSeconds = Math.floor(durationMs / 1000)
-
-    const minutes = Math.floor(durationSeconds / 60)
-    const seconds = durationSeconds % 60
-
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
-  }
-
-  // Ensure ACP session is ready
-  const ensureACPSession = useCallback(async () => {
-    if (acpSessionReady.current) return true
-    try {
-      // Initialize ACP
-      await fetch('/api/agent/acp', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1, params: { protocolVersion: 1 } }),
-      })
-      // Create or load session (taskId = sessionId)
-      const loadRes = await fetch('/api/agent/acp', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', method: 'session/load', id: 2, params: { sessionId: taskId } }),
-      })
-      const loadText = await loadRes.text()
-      if (loadText.includes('error')) {
-        // Session doesn't exist, create new one
-        await fetch('/api/agent/acp', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', method: 'session/new', id: 3, params: { conversationId: taskId } }),
-        })
-      }
-      acpSessionReady.current = true
-      return true
-    } catch (err) {
-      console.error('Failed to init ACP session:', err)
-      return false
-    }
-  }, [taskId])
-
-  // 从 URL 参数携带的初始 prompt 触发 ACP 请求
   const initialTriggered = useRef(false)
   useEffect(() => {
     if (!initialPrompt || initialTriggered.current) return
     initialTriggered.current = true
-    // 首页已完成 initialize + session/new，直接标记 ready
-    acpSessionReady.current = true
+    onInitialPromptConsumed?.()
+    sendInitialPrompt(initialPrompt)
+  }, [initialPrompt, onInitialPromptConsumed, sendInitialPrompt])
 
-    const userMsg: TaskMessage = {
-      id: `user-${Date.now()}`,
-      taskId,
-      role: 'user',
-      content: initialPrompt,
-      parts: [{ type: 'text', text: initialPrompt }],
-      createdAt: Date.now(),
-    }
-    const assistantMsgId = `stream-${Date.now()}`
-    const agentMsg: TaskMessage = {
-      id: assistantMsgId,
-      taskId,
-      role: 'agent',
-      content: '',
-      parts: [],
-      createdAt: Date.now(),
-    }
-
-    setMessages([userMsg, agentMsg])
-    isStreamingRef.current = true
-    setIsSending(true)
-    setIsStreamingResponse(true)
-    ;(async () => {
-      try {
-        // 首页已完成 initialize + session/new，直接发 session/prompt
-        const res = await fetch('/api/agent/acp', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'session/prompt',
-            id: Date.now(),
-            params: { sessionId: taskId, prompt: [{ type: 'text', text: initialPrompt }] },
-          }),
-        })
-        if (!res.ok || !res.body) {
-          const errData = await res.json().catch(() => ({ error: { message: 'Request failed' } }))
-          const errMsg = errData.error?.message || 'Agent request failed'
-          setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, content: `Error: ${errMsg}` } : m)))
-          toast.error(errMsg)
-          return
-        }
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-          for (const line of lines) {
-            if (line.trim() === 'data: [DONE]') continue
-            if (!line.startsWith('data: ')) continue
-            try {
-              const event = JSON.parse(line.slice(6))
-              if (event.error) {
-                const errMsg = event.error.message || 'Agent error'
-                setMessages((prev) =>
-                  prev.map((m) => (m.id === assistantMsgId ? { ...m, content: `Error: ${errMsg}` } : m)),
-                )
-                toast.error(errMsg)
-                continue
-              }
-              if (event.method === 'session/update') {
-                const update = event.params.update
-                if (update.sessionUpdate === 'agent_message_chunk') {
-                  setMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== assistantMsgId) return m
-                      const newText = (update as any).content?.text || ''
-                      const prevParts = m.parts || []
-                      const lastPart = prevParts[prevParts.length - 1]
-                      const newParts =
-                        lastPart?.type === 'text'
-                          ? [...prevParts.slice(0, -1), { ...lastPart, text: lastPart.text + newText }]
-                          : [...prevParts, { type: 'text' as const, text: newText }]
-                      return { ...m, content: (m.content || '') + newText, parts: newParts }
-                    }),
-                  )
-                  if (wasAtBottomRef.current) requestAnimationFrame(scrollToBottom)
-                } else if (update.sessionUpdate === 'agent_thought_chunk') {
-                  setMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== assistantMsgId) return m
-                      const prevParts = m.parts || []
-                      const lastPart = prevParts[prevParts.length - 1]
-                      // 追加到最后一个 thinking part（流式拼接），否则新建
-                      if (lastPart?.type === 'thinking') {
-                        return {
-                          ...m,
-                          parts: [
-                            ...prevParts.slice(0, -1),
-                            { ...lastPart, text: lastPart.text + ((update as any).content || '') },
-                          ],
-                        }
-                      }
-                      return {
-                        ...m,
-                        parts: [...prevParts, { type: 'thinking' as const, text: (update as any).content || '' }],
-                      }
-                    }),
-                  )
-                } else if (update.sessionUpdate === 'tool_call') {
-                  setMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== assistantMsgId) return m
-                      const prevParts = m.parts || []
-                      const existingIdx = prevParts.findIndex(
-                        (p) => p.type === 'tool_call' && p.toolCallId === (update as any).toolCallId,
-                      )
-                      const newPart = {
-                        type: 'tool_call' as const,
-                        toolCallId: (update as any).toolCallId || '',
-                        toolName: (update as any).title || 'tool',
-                        input: (update as any).input,
-                      }
-                      if (existingIdx >= 0) {
-                        // 更新已有的 tool_call（补充 input 等字段）
-                        const updated = [...prevParts]
-                        updated[existingIdx] = newPart
-                        return { ...m, parts: updated }
-                      }
-                      return { ...m, parts: [...prevParts, newPart] }
-                    }),
-                  )
-                } else if (update.sessionUpdate === 'tool_call_update') {
-                  setMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== assistantMsgId) return m
-                      const prevParts = m.parts || []
-                      const alreadyHasResult = prevParts.some(
-                        (p) => p.type === 'tool_result' && p.toolCallId === (update as any).toolCallId,
-                      )
-                      if (!alreadyHasResult) {
-                        const toolCallPart = prevParts.find(
-                          (p) => p.type === 'tool_call' && p.toolCallId === (update as any).toolCallId,
-                        )
-                        return {
-                          ...m,
-                          parts: [
-                            ...prevParts,
-                            {
-                              type: 'tool_result' as const,
-                              toolCallId: (update as any).toolCallId || '',
-                              toolName: toolCallPart?.type === 'tool_call' ? toolCallPart.toolName : undefined,
-                              content: String((update as any).result || ''),
-                              isError: (update as any).status === 'failed',
-                            },
-                          ],
-                        }
-                      }
-                      return m
-                    }),
-                  )
-                } else if (update.sessionUpdate === 'ask_user') {
-                  setAskUserQuestion({
-                    toolCallId: (update as any).toolCallId,
-                    assistantMessageId: (update as any).assistantMessageId,
-                    questions: (update as any).questions || [],
-                  })
-                } else if (update.sessionUpdate === 'tool_confirm') {
-                  setToolConfirm({
-                    toolCallId: (update as any).toolCallId,
-                    assistantMessageId: (update as any).assistantMessageId,
-                    toolName: (update as any).toolName,
-                    input: (update as any).input || {},
-                  })
-                } else if (update.sessionUpdate === 'deploy_url') {
-                  // Add deployment notification and refresh list
-                  const deployUpdate = update as any
-                  if (deployUpdate.url) {
-                    setDeploymentNotifications((prev) => {
-                      // Avoid duplicates by URL
-                      if (prev.some((d) => d.url === deployUpdate.url)) return prev
-                      return [
-                        ...prev,
-                        {
-                          id: `notify-${Date.now()}`,
-                          taskId: taskId,
-                          type: deployUpdate.type || 'web',
-                          url: deployUpdate.url,
-                          path: null,
-                          qrCodeUrl: deployUpdate.qrCodeUrl || null,
-                          pagePath: deployUpdate.pagePath || null,
-                          appId: deployUpdate.appId || null,
-                          label: deployUpdate.label || null,
-                          metadata: null,
-                          createdAt: Date.now(),
-                          updatedAt: Date.now(),
-                        },
-                      ]
-                    })
-                  }
-                  fetchDeployments(false)
-                } else if (update.sessionUpdate === 'artifact' && (update as any).artifact) {
-                  setArtifacts((prev) => [...prev, (update as any).artifact])
-                }
-              }
-            } catch {
-              // ignore parse errors
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Initial ACP trigger failed:', err)
-      } finally {
-        isStreamingRef.current = false
-        setIsSending(false)
-        setIsStreamingResponse(false)
-        onStreamComplete?.()
-      }
-    })()
-  }, [initialPrompt, taskId, ensureACPSession])
+  // ─── Handlers ──────────────────────────────────────────────────────
 
   const handleSendMessage = async () => {
     if (!newMessage.trim() || isSending) return
-
-    setIsSending(true)
-    const messageToSend = newMessage.trim()
+    const text = newMessage.trim()
     setNewMessage('')
-
-    // Add user message optimistically
-    const userMsg: TaskMessage = {
-      id: `local-${Date.now()}`,
-      taskId,
-      role: 'user',
-      content: messageToSend,
-      createdAt: Date.now(),
-    }
-    setMessages((prev) => [...prev, userMsg])
-
-    try {
-      // Ensure ACP session is ready
-      const ready = await ensureACPSession()
-      if (!ready) {
-        // Fallback to REST API
-        const response = await fetch(`/api/tasks/${taskId}/continue`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: messageToSend }),
-        })
-        if (!response.ok) {
-          const data = await response.json()
-          toast.error(data.error || 'Failed to send message')
-          setNewMessage(messageToSend)
-        } else {
-          await fetchMessages(false)
-        }
-        return
-      }
-
-      // Add placeholder assistant message
-      const assistantMsgId = `stream-${Date.now()}`
-      setMessages((prev) => [
-        ...prev,
-        { id: assistantMsgId, taskId, role: 'agent', content: '', parts: [], createdAt: Date.now() },
-      ])
-      isStreamingRef.current = true
-      setIsStreamingResponse(true)
-
-      // Send via ACP session/prompt (SSE stream)
-      const res = await fetch('/api/agent/acp', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'session/prompt',
-          id: Date.now(),
-          params: {
-            sessionId: taskId,
-            prompt: [{ type: 'text', text: messageToSend }],
-          },
-        }),
-      })
-
-      // Check for non-SSE error response
-      if (!res.ok || !res.body) {
-        const errData = await res.json().catch(() => ({ error: { message: 'Request failed' } }))
-        const errMsg = errData.error?.message || 'Agent request failed'
-        setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? { ...m, content: `Error: ${errMsg}` } : m)))
-        toast.error(errMsg)
-        return
-      }
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || '' // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ') || line.trim() === 'data: [DONE]') continue
-          try {
-            const event = JSON.parse(line.slice(6))
-            // Check for JSON-RPC error response
-            if (event.error) {
-              const errMsg = event.error.message || 'Agent error'
-              setMessages((prev) =>
-                prev.map((m) => (m.id === assistantMsgId ? { ...m, content: `Error: ${errMsg}` } : m)),
-              )
-              toast.error(errMsg)
-              continue
-            }
-            if (event.method === 'session/update') {
-              const update: ExtendedSessionUpdate = event.params.update
-              console.log('[ACP follow-up] update:', update.sessionUpdate)
-              if (update.sessionUpdate === 'agent_message_chunk') {
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.id !== assistantMsgId) return m
-                    const newText = (update as any).content?.text || ''
-                    const prevParts = m.parts || []
-                    const lastPart = prevParts[prevParts.length - 1]
-                    const newParts =
-                      lastPart?.type === 'text'
-                        ? [...prevParts.slice(0, -1), { ...lastPart, text: lastPart.text + newText }]
-                        : [...prevParts, { type: 'text' as const, text: newText }]
-                    return { ...m, content: (m.content || '') + newText, parts: newParts }
-                  }),
-                )
-                if (wasAtBottomRef.current) requestAnimationFrame(scrollToBottom)
-              } else if (update.sessionUpdate === 'agent_thought_chunk') {
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.id !== assistantMsgId) return m
-                    const prevParts = m.parts || []
-                    const lastPart = prevParts[prevParts.length - 1]
-                    if (lastPart?.type === 'thinking') {
-                      return {
-                        ...m,
-                        parts: [
-                          ...prevParts.slice(0, -1),
-                          { ...lastPart, text: lastPart.text + ((update as any).content || '') },
-                        ],
-                      }
-                    }
-                    return {
-                      ...m,
-                      parts: [...prevParts, { type: 'thinking' as const, text: (update as any).content || '' }],
-                    }
-                  }),
-                )
-              } else if (update.sessionUpdate === 'tool_call') {
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.id !== assistantMsgId) return m
-                    const prevParts = m.parts || []
-                    const existingIdx = prevParts.findIndex(
-                      (p) => p.type === 'tool_call' && p.toolCallId === (update as any).toolCallId,
-                    )
-                    const newPart = {
-                      type: 'tool_call' as const,
-                      toolCallId: (update as any).toolCallId || '',
-                      toolName: (update as any).title || 'tool',
-                      input: (update as any).input,
-                    }
-                    if (existingIdx >= 0) {
-                      const updated = [...prevParts]
-                      updated[existingIdx] = newPart
-                      return { ...m, parts: updated }
-                    }
-                    return { ...m, parts: [...prevParts, newPart] }
-                  }),
-                )
-              } else if (update.sessionUpdate === 'tool_call_update') {
-                setMessages((prev) =>
-                  prev.map((m) => {
-                    if (m.id !== assistantMsgId) return m
-                    const prevParts = m.parts || []
-                    const alreadyHasResult = prevParts.some(
-                      (p) => p.type === 'tool_result' && p.toolCallId === (update as any).toolCallId,
-                    )
-                    if (!alreadyHasResult) {
-                      const toolCallPart = prevParts.find(
-                        (p) => p.type === 'tool_call' && p.toolCallId === (update as any).toolCallId,
-                      )
-                      return {
-                        ...m,
-                        parts: [
-                          ...prevParts,
-                          {
-                            type: 'tool_result' as const,
-                            toolCallId: (update as any).toolCallId || '',
-                            toolName: toolCallPart?.type === 'tool_call' ? toolCallPart.toolName : undefined,
-                            content: String((update as any).result || ''),
-                            isError: (update as any).status === 'failed',
-                          },
-                        ],
-                      }
-                    }
-                    return m
-                  }),
-                )
-              } else if (update.sessionUpdate === 'ask_user') {
-                setAskUserQuestion({
-                  toolCallId: (update as any).toolCallId,
-                  assistantMessageId: (update as any).assistantMessageId,
-                  questions: (update as any).questions || [],
-                })
-              } else if (update.sessionUpdate === 'tool_confirm') {
-                setToolConfirm({
-                  toolCallId: (update as any).toolCallId,
-                  assistantMessageId: (update as any).assistantMessageId,
-                  toolName: (update as any).toolName,
-                  input: (update as any).input || {},
-                })
-              } else if (update.sessionUpdate === 'deploy_url') {
-                const deployUpdate = update as any
-                if (deployUpdate.url) {
-                  setDeploymentNotifications((prev) => {
-                    // Avoid duplicates by URL
-                    if (prev.some((d) => d.url === deployUpdate.url)) return prev
-                    return [
-                      ...prev,
-                      {
-                        id: `notify-${Date.now()}`,
-                        taskId: taskId,
-                        type: deployUpdate.type || 'web',
-                        url: deployUpdate.url,
-                        path: null,
-                        qrCodeUrl: deployUpdate.qrCodeUrl || null,
-                        pagePath: deployUpdate.pagePath || null,
-                        appId: deployUpdate.appId || null,
-                        label: deployUpdate.label || null,
-                        metadata: null,
-                        createdAt: Date.now(),
-                        updatedAt: Date.now(),
-                      },
-                    ]
-                  })
-                }
-              } else if (update.sessionUpdate === 'artifact' && (update as any).artifact) {
-                setArtifacts((prev) => [...prev, (update as any).artifact])
-              }
-            }
-          } catch {
-            // ignore parse errors
-          }
-        }
-      }
-
-      // Refresh from server to get persisted messages
-      await fetchMessages(false)
-    } catch (err) {
-      console.error('Error sending message:', err)
-      toast.error('Failed to send message')
-      setNewMessage(messageToSend)
-    } finally {
-      isStreamingRef.current = false
-      setIsSending(false)
-      setIsStreamingResponse(false)
-      onStreamComplete?.()
-    }
+    await chatSendMessage(text, (draft) => setNewMessage(draft))
+    await fetchMessages(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1141,38 +332,27 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
       await navigator.clipboard.writeText(content)
       setCopiedMessageId(messageId)
       setTimeout(() => setCopiedMessageId(null), 2000)
-    } catch (err) {
-      console.error('Failed to copy message:', err)
+    } catch {
       toast.error('Failed to copy message')
     }
   }
 
   const handleRetryMessage = async (content: string) => {
     if (isSending) return
-
     setIsSending(true)
-
     try {
       const response = await fetch(`/api/tasks/${taskId}/continue`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: content,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content }),
       })
-
       const data = await response.json()
-
       if (response.ok) {
-        // Refresh messages to show the new user message without loading state
         await fetchMessages(false)
       } else {
         toast.error(data.error || 'Failed to resend message')
       }
-    } catch (err) {
-      console.error('Error resending message:', err)
+    } catch {
       toast.error('Failed to resend message')
     } finally {
       setIsSending(false)
@@ -1181,211 +361,146 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
 
   const handleStopTask = async () => {
     setIsStopping(true)
-
     try {
       const response = await fetch(`/api/tasks/${taskId}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'stop' }),
       })
-
-      if (response.ok) {
-        toast.success('Task stopped successfully!')
-        // Task will update through polling
-      } else {
-        const error = await response.json()
-        toast.error(error.error || 'Failed to stop task')
+      if (response.ok) toast.success('Task stopped successfully!')
+      else {
+        const err = await response.json()
+        toast.error(err.error || 'Failed to stop task')
       }
-    } catch (error) {
-      console.error('Error stopping task:', error)
+    } catch {
       toast.error('Failed to stop task')
     } finally {
       setIsStopping(false)
     }
   }
 
-  // Process stream response
-  const processStreamResponse = useCallback(async (res: Response) => {
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ') || line.trim() === 'data: [DONE]') continue
-        try {
-          const event = JSON.parse(line.slice(6))
-          if (event.method === 'session/update') {
-            const update: ExtendedSessionUpdate = event.params.update
-            if (update.sessionUpdate === 'ask_user') {
-              setAskUserQuestion({
-                toolCallId: (update as any).toolCallId,
-                assistantMessageId: (update as any).assistantMessageId,
-                questions: (update as any).questions || [],
-              })
-            } else if (update.sessionUpdate === 'tool_confirm') {
-              setToolConfirm({
-                toolCallId: (update as any).toolCallId,
-                assistantMessageId: (update as any).assistantMessageId,
-                toolName: (update as any).toolName,
-                input: (update as any).input || {},
-              })
-            } else if (update.sessionUpdate === 'deploy_url' && (update as any).url) {
-              setDeployment({ hasDeployment: true, previewUrl: (update as any).url })
-            } else if (update.sessionUpdate === 'artifact' && (update as any).artifact) {
-              setArtifacts((prev) => [...prev, (update as any).artifact])
-            }
-          }
-        } catch {
-          // ignore parse errors
-        }
-      }
-    }
-  }, [])
-
-  // Answer AskUserQuestion
-  const handleAnswerQuestion = useCallback(async () => {
-    if (!askUserQuestion) return
-
-    // Collect answers from state
-    const answers: Record<string, string> = {}
-    for (const question of askUserQuestion.questions) {
-      const header = question.header
-      // Use manual input if provided, otherwise use selected answer
-      if (manualInputs[header]) {
-        answers[header] = manualInputs[header]
-      } else if (questionAnswers[header]) {
-        answers[header] = questionAnswers[header]
-      }
-    }
-
-    setAskUserQuestion(null)
-    setQuestionAnswers({})
-    setManualInputs({})
-    setIsSending(true)
-    setIsStreamingResponse(true)
-
-    try {
-      const res = await fetch('/api/agent/acp', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'session/prompt',
-          id: Date.now(),
-          params: {
-            sessionId: taskId,
-            prompt: [{ type: 'text', text: '' }],
-            askAnswers: {
-              [askUserQuestion.assistantMessageId]: {
-                toolCallId: askUserQuestion.toolCallId,
-                answers,
-              },
-            },
-          },
-        }),
+  const handleAnswerQuestion = (askData: AskUserQuestionData) => {
+    // Optimistically mark the tool_result as completed so the form hides immediately
+    const toolAnswers = questionAnswersByTool[askData.toolCallId] || {}
+    const toolInputs = manualInputsByTool[askData.toolCallId] || {}
+    const answerSummary = askData.questions
+      .map((q) => {
+        const val = toolInputs[q.question] || toolAnswers[q.question] || ''
+        return val ? `· ${q.question} -> ${val}` : null
       })
+      .filter(Boolean)
+      .join('\n')
 
-      await processStreamResponse(res)
-    } catch (err) {
-      console.error('Error answering question:', err)
-      toast.error('Failed to submit answer')
-    } finally {
-      isStreamingRef.current = false
-      setIsSending(false)
-      setIsStreamingResponse(false)
-    }
-  }, [askUserQuestion, questionAnswers, manualInputs, taskId, processStreamResponse])
-
-  // Confirm/Deny tool call
-  const handleConfirmTool = useCallback(
-    async (action: 'allow' | 'deny') => {
-      if (!toolConfirm) return
-
-      setToolConfirm(null)
-      setIsSending(true)
-      setIsStreamingResponse(true)
-
-      try {
-        const res = await fetch('/api/agent/acp', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'session/prompt',
-            id: Date.now(),
-            params: {
-              sessionId: taskId,
-              prompt: [{ type: 'text', text: '' }],
-              toolConfirmation: {
-                interruptId: toolConfirm.toolCallId,
-                payload: { action },
-              },
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (!m.parts?.some((p) => p.type === 'tool_call' && p.toolCallId === askData.toolCallId)) return m
+        // Skip if tool_result already exists
+        if (m.parts.some((p) => p.type === 'tool_result' && p.toolCallId === askData.toolCallId)) return m
+        return {
+          ...m,
+          parts: [
+            ...m.parts,
+            {
+              type: 'tool_result' as const,
+              toolCallId: askData.toolCallId,
+              content: answerSummary || '已提交',
+              isError: false,
             },
-          }),
-        })
+          ],
+        }
+      }),
+    )
 
-        await processStreamResponse(res)
-      } catch (err) {
-        console.error('Error confirming tool:', err)
-        toast.error('Failed to confirm tool')
-      } finally {
-        isStreamingRef.current = false
-        setIsSending(false)
-        setIsStreamingResponse(false)
-      }
-    },
-    [toolConfirm, taskId, processStreamResponse],
-  )
+    chatAnswerQuestion(askData).then(() => fetchMessages(false))
+  }
+
+  const handleConfirmTool = (action: 'allow' | 'deny') => chatConfirmTool(action)
+
+  const handleAnswerSelect = (toolCallId: string, question: string, label: string) => {
+    setQuestionAnswersByTool((prev) => ({
+      ...prev,
+      [toolCallId]: { ...(prev[toolCallId] || {}), [question]: label },
+    }))
+    setManualInputsByTool((prev) => {
+      const next = { ...(prev[toolCallId] || {}) }
+      delete next[question]
+      return { ...prev, [toolCallId]: next }
+    })
+  }
+
+  const handleManualInput = (toolCallId: string, question: string, value: string) => {
+    setManualInputsByTool((prev) => ({
+      ...prev,
+      [toolCallId]: { ...(prev[toolCallId] || {}), [question]: value },
+    }))
+    setQuestionAnswersByTool((prev) => {
+      const next = { ...(prev[toolCallId] || {}) }
+      delete next[question]
+      return { ...prev, [toolCallId]: next }
+    })
+  }
+
+  const handleSendCommentAsFollowUp = (comment: PRComment) => {
+    const formattedMessage = `**PR Comment from @${comment.user.login}:**\n\n${comment.body}\n\n---\n\nPlease address the above PR comment and make the necessary changes to ensure the feedback is accurately addressed.`
+    setNewMessage(formattedMessage)
+    setActiveTab('chat')
+    toast.success('Comment added to chat input')
+  }
+
+  const handleRefresh = () => {
+    if (activeTab === 'chat') fetchMessages(false)
+    else if (activeTab === 'comments' && task.prNumber) {
+      commentsLoadedRef.current = false
+      fetchPRComments()
+    } else if (activeTab === 'actions' && task.branchName) {
+      actionsLoadedRef.current = false
+      fetchCheckRuns()
+    } else if (activeTab === 'deployments') fetchDeployments(false)
+  }
+
+  // ─── Utilities ─────────────────────────────────────────────────────
+
+  const formatDuration = (userMessageCreatedAt: number) => {
+    const userMessages = messages.filter((m) => m.role === 'user')
+    if (userMessages.length === 0) return '00:00'
+    const lastUserMsg = userMessages[userMessages.length - 1]
+    const agentMessages = messages.filter((m) => m.role === 'agent')
+    const lastAgentMsg = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1] : null
+
+    const startTime = new Date(userMessageCreatedAt).getTime()
+    const endTime = lastAgentMsg
+      ? new Date(lastAgentMsg.createdAt).getTime()
+      : task.completedAt
+        ? new Date(task.completedAt).getTime()
+        : currentTime
+
+    const durationMs = Math.max(0, endTime - startTime)
+    const durationSeconds = Math.floor(durationMs / 1000)
+    const minutes = Math.floor(durationSeconds / 60)
+    const seconds = durationSeconds % 60
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+  }
 
   const parseAgentMessage = (message: TaskMessage): string => {
-    // 优先从 parts 提取文本
     if (message.parts && message.parts.length > 0) {
       return message.parts
         .filter((p) => p.type === 'text')
         .map((p) => (p.type === 'text' ? p.text : ''))
         .join('')
     }
-    // 兼容旧的纯文本 content
     const content = message.content || ''
     try {
       const parsed = JSON.parse(content)
       if (parsed && typeof parsed === 'object' && 'result' in parsed && typeof parsed.result === 'string') {
         return parsed.result
       }
-      return content
-    } catch {
-      return content
-    }
+    } catch {}
+    return content
   }
 
-  const handleSendCommentAsFollowUp = (comment: PRComment) => {
-    // Format the message to indicate it came from a PR comment
-    const formattedMessage = `**PR Comment from @${comment.user.login}:**\n\n${comment.body}\n\n---\n\nPlease address the above PR comment and make the necessary changes to ensure the feedback is accurately addressed.`
-
-    // Set the message in the chat input
-    setNewMessage(formattedMessage)
-
-    // Switch to chat tab
-    setActiveTab('chat')
-
-    // Show success toast
-    toast.success('Comment added to chat input')
-  }
-
-  // Use a non-narrowed variable for tab button comparisons
   const currentTab = activeTab as string
+
+  // ─── Loading / Error ───────────────────────────────────────────────
 
   if (isLoading) {
     return (
@@ -1405,12 +520,44 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     )
   }
 
-  // Render tab content
+  // ─── Shared markdown components ────────────────────────────────────
+
+  const mdComponents = {
+    code: ({ className, children, ...props }: React.ComponentPropsWithoutRef<'code'>) => (
+      <code className={`${className} !text-xs`} {...props}>
+        {children}
+      </code>
+    ),
+    pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
+      <pre className="!text-xs" {...props}>
+        {children}
+      </pre>
+    ),
+    p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => <p {...props}>{children}</p>,
+    ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
+      <ul className="text-xs list-disc ml-4" {...props}>
+        {children}
+      </ul>
+    ),
+    ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
+      <ol className="text-xs list-decimal ml-4" {...props}>
+        {children}
+      </ol>
+    ),
+    li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
+      <li className="text-xs mb-2" {...props}>
+        {Children.toArray(children).filter((c) => typeof c === 'string' || isValidElement(c))}
+      </li>
+    ),
+  }
+
+  // ─── Tab content ───────────────────────────────────────────────────
+
   const renderTabContent = () => {
     if (activeTab === 'cloud') {
       return (
         <div className="flex-1 overflow-hidden -mx-3 -mt-3">
-          <CloudDashboard envId={session.envId} theme={dashboardTheme} style={{ height: '100%' }} />
+          <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
         </div>
       )
     }
@@ -1418,12 +565,8 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     if (activeTab === 'deployments') {
       const handleDeleteDeployment = async (deploymentId: string) => {
         try {
-          const response = await fetch(`/api/tasks/${taskId}/deployments/${deploymentId}`, {
-            method: 'DELETE',
-          })
-          if (response.ok) {
-            setDeployments((prev) => prev.filter((d) => d.id !== deploymentId))
-          }
+          const response = await fetch(`/api/tasks/${taskId}/deployments/${deploymentId}`, { method: 'DELETE' })
+          if (response.ok) setDeployments((prev) => prev.filter((d) => d.id !== deploymentId))
         } catch (err) {
           console.error('Error deleting deployment:', err)
         }
@@ -1437,9 +580,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
             </div>
           ) : deploymentError ? (
             <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <p className="text-destructive mb-2 text-xs md:text-sm">{deploymentError}</p>
-              </div>
+              <p className="text-destructive text-xs md:text-sm">{deploymentError}</p>
             </div>
           ) : deployments.length === 0 && artifacts.length === 0 ? (
             <div className="flex items-center justify-center h-full text-center text-muted-foreground px-4">
@@ -1447,7 +588,6 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
             </div>
           ) : (
             <div className="space-y-2 px-2 pt-2">
-              {/* Web deployments */}
               {deployments
                 .filter((d) => d.type === 'web' && d.url)
                 .map((deployment) => (
@@ -1472,9 +612,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium">{deployment.label || 'Web Preview'}</div>
                         <div className="text-xs text-muted-foreground truncate">{deployment.url}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}
-                        </div>
+                        <div className="text-xs text-muted-foreground">{`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}</div>
                       </div>
                     </a>
                     <button
@@ -1485,8 +623,6 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                     </button>
                   </div>
                 ))}
-
-              {/* Miniprogram deployments */}
               {deployments
                 .filter((d) => d.type === 'miniprogram' && d.qrCodeUrl)
                 .map((deployment) => (
@@ -1501,9 +637,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                         {deployment.appId && (
                           <div className="text-xs text-muted-foreground">AppID: {deployment.appId}</div>
                         )}
-                        <div className="text-xs text-muted-foreground">
-                          {`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}
-                        </div>
+                        <div className="text-xs text-muted-foreground">{`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}</div>
                       </div>
                     </div>
                     <button
@@ -1514,8 +648,6 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                     </button>
                   </div>
                 ))}
-
-              {/* Artifacts（小程序二维码、上传结果等） */}
               {artifacts.map((artifact, idx) => (
                 <div key={idx} className="border border-border rounded-md p-3 space-y-2">
                   <div className="text-xs font-medium">{artifact.title}</div>
@@ -1555,13 +687,9 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     if (activeTab === 'actions') {
       const getStatusIcon = (status: string, conclusion: string | null) => {
         if (status === 'completed') {
-          if (conclusion === 'success') {
-            return <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
-          } else if (conclusion === 'failure') {
-            return <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-          } else if (conclusion === 'cancelled') {
-            return <XCircle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          }
+          if (conclusion === 'success') return <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
+          if (conclusion === 'failure') return <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
+          if (conclusion === 'cancelled') return <XCircle className="h-4 w-4 text-muted-foreground flex-shrink-0" />
         } else if (status === 'in_progress') {
           return <Loader2 className="h-4 w-4 text-blue-500 animate-spin flex-shrink-0" />
         }
@@ -1582,9 +710,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
             </div>
           ) : actionsError ? (
             <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <p className="text-destructive mb-2 text-xs md:text-sm">{actionsError}</p>
-              </div>
+              <p className="text-destructive text-xs md:text-sm">{actionsError}</p>
             </div>
           ) : checkRuns.length === 0 ? (
             <div className="flex items-center justify-center h-full text-center text-muted-foreground">
@@ -1632,9 +758,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
             </div>
           ) : commentsError ? (
             <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <p className="text-destructive mb-2 text-xs md:text-sm">{commentsError}</p>
-              </div>
+              <p className="text-destructive text-xs md:text-sm">{commentsError}</p>
             </div>
           ) : prComments.length === 0 ? (
             <div className="flex items-center justify-center h-full text-center text-muted-foreground">
@@ -1658,53 +782,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                         </span>
                       </div>
                       <div className="text-xs text-foreground">
-                        <Streamdown
-                          components={{
-                            code: ({ className, children, ...props }: React.ComponentPropsWithoutRef<'code'>) => (
-                              <code className={`${className} !text-xs`} {...props}>
-                                {children}
-                              </code>
-                            ),
-                            pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
-                              <pre className="!text-xs" {...props}>
-                                {children}
-                              </pre>
-                            ),
-                            p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
-                              <p className="text-xs" {...props}>
-                                {children}
-                              </p>
-                            ),
-                            a: ({ children, href, ...props }: React.ComponentPropsWithoutRef<'a'>) => (
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:underline"
-                                {...props}
-                              >
-                                {children}
-                              </a>
-                            ),
-                            ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
-                              <ul className="text-xs list-disc ml-4" {...props}>
-                                {children}
-                              </ul>
-                            ),
-                            ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
-                              <ol className="text-xs list-decimal ml-4" {...props}>
-                                {children}
-                              </ol>
-                            ),
-                            li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-                              <li className="text-xs mb-2" {...props}>
-                                {Children.toArray(children).filter((c) => typeof c === 'string' || isValidElement(c))}
-                              </li>
-                            ),
-                          }}
-                        >
-                          {comment.body}
-                        </Streamdown>
+                        <Streamdown components={mdComponents}>{comment.body}</Streamdown>
                       </div>
                     </div>
                     <DropdownMenu>
@@ -1729,8 +807,8 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
       )
     }
 
-    // Chat tab (default)
-    // 确保始终有 user 消息用于分组渲染
+    // ─── Chat tab ────────────────────────────────────────────────────
+
     if (messages.length === 0) {
       return (
         <div className="flex-1 flex items-center justify-center text-center text-muted-foreground">
@@ -1742,9 +820,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
     const displayMessages = messages.slice(-10)
     const hiddenMessagesCount = messages.length - displayMessages.length
 
-    // Group messages by user message boundaries and calculate min-heights
     const messageGroups: { userMessage: TaskMessage; agentMessages: TaskMessage[]; minHeight: number }[] = []
-
     displayMessages.forEach((message) => {
       if (message.role === 'user') {
         messageGroups.push({ userMessage: message, agentMessages: [], minHeight: 0 })
@@ -1753,14 +829,11 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
       }
     })
 
-    // Calculate min-height for each group based on subsequent user messages
     messageGroups.forEach((group, groupIndex) => {
       let minHeight = 0
       for (let i = groupIndex + 1; i < messageGroups.length; i++) {
         const height = userMessageHeights[messageGroups[i].userMessage.id]
-        if (height !== undefined) {
-          minHeight += height + 16 // 16px for mt-4 margin
-        }
+        if (height !== undefined) minHeight += height + 16
       }
       group.minHeight = minHeight
     })
@@ -1772,7 +845,8 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
             {hiddenMessagesCount} older message{hiddenMessagesCount !== 1 ? 's' : ''} hidden
           </div>
         )}
-        {messageGroups.map((group, groupIndex) => {
+        {messageGroups.map((group, groupIndex, groups) => {
+          const isLatestGroup = groupIndex === groups.length - 1
           return (
             <div
               key={group.userMessage.id}
@@ -1793,42 +867,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                     className="relative max-h-[72px] overflow-hidden"
                   >
                     <div className="text-xs">
-                      <Streamdown
-                        components={{
-                          code: ({ className, children, ...props }: React.ComponentPropsWithoutRef<'code'>) => (
-                            <code className={`${className} !text-xs`} {...props}>
-                              {children}
-                            </code>
-                          ),
-                          pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
-                            <pre className="!text-xs" {...props}>
-                              {children}
-                            </pre>
-                          ),
-                          p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
-                            <p className="text-xs" {...props}>
-                              {children}
-                            </p>
-                          ),
-                          ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
-                            <ul className="text-xs list-disc ml-4" {...props}>
-                              {children}
-                            </ul>
-                          ),
-                          ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
-                            <ol className="text-xs list-decimal ml-4" {...props}>
-                              {children}
-                            </ol>
-                          ),
-                          li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-                            <li className="text-xs mb-2" {...props}>
-                              {Children.toArray(children).filter((c) => typeof c === 'string' || isValidElement(c))}
-                            </li>
-                          ),
-                        }}
-                      >
-                        {group.userMessage.content}
-                      </Streamdown>
+                      <Streamdown components={mdComponents}>{group.userMessage.content}</Streamdown>
                     </div>
                     {overflowingMessages.has(group.userMessage.id) && (
                       <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent pointer-events-none" />
@@ -1856,140 +895,132 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                 </Card>
               </div>
 
-              {/* Render agent messages in this group */}
-              {group.agentMessages.map((agentMessage) => (
-                <div key={agentMessage.id} className="mt-4">
-                  <div className="space-y-1">
-                    <div className="text-xs text-muted-foreground px-2">
-                      {!agentMessage.content.trim() && (task.status === 'processing' || task.status === 'pending')
-                        ? (() => {
-                            return (
-                              <div className="opacity-50">
-                                <div className="italic">Generating response...</div>
-                                <div className="text-right font-mono opacity-70 mt-1">
-                                  {formatDuration(group.userMessage.createdAt)}
-                                </div>
-                              </div>
-                            )
-                          })()
-                        : (() => {
-                            // Determine if this is the last agent message
-                            const allAgentMessages = displayMessages.filter((m) => m.role === 'agent')
-                            const isLastAgentMessage =
-                              allAgentMessages.length > 0 &&
-                              allAgentMessages[allAgentMessages.length - 1].id === agentMessage.id
+              {group.agentMessages.map((agentMessage, messageIndex, messges) => {
+                const isLatestMessage = messageIndex === messges.length - 1
+                const toolCallPartsReverse = agentMessage.parts?.filter((item) => item.type === 'tool_call')?.reverse()
+                return (
+                  <div key={agentMessage.id} className="mt-4">
+                    <div className="space-y-1">
+                      <div className="text-xs text-muted-foreground px-2">
+                        {!agentMessage.content.trim() && (task.status === 'processing' || task.status === 'pending') ? (
+                          <div className="opacity-50">
+                            <div className="italic">Generating response...</div>
+                            <div className="text-right font-mono opacity-70 mt-1">
+                              {formatDuration(group.userMessage.createdAt)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {agentMessage.parts?.map((part, pi, parts) => {
+                              if (part.type === 'thinking' && part.text) {
+                                const hasMoreThinking = agentMessage.parts
+                                  ?.slice(pi + 1)
+                                  .some((p) => p.type === 'thinking')
+                                const isThinking =
+                                  isStreamingResponse &&
+                                  (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
+                                return <ThinkingBlock key={`thinking-${pi}`} text={part.text} isThinking={isThinking} />
+                              }
+                              if (part.type === 'tool_call') {
+                                let isLatestToolCallPart = toolCallPartsReverse?.[0]?.toolCallId === part.toolCallId
+                                const resultPart = agentMessage.parts?.find(
+                                  (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
+                                )
+                                const resultStatus = resultPart?.type === 'tool_result' ? resultPart.status : undefined
+                                const isPending = !resultPart || resultStatus === 'incomplete'
+                                const isAskUserQuestion = part.toolName === 'AskUserQuestion'
+                                let askQuestions = []
 
-                            return (
-                              <div className="space-y-2">
-                                {/* Render all parts in order: thinking, tool_call, text */}
-                                {agentMessage.parts &&
-                                  agentMessage.parts.map((part, pi) => {
-                                    if (part.type === 'thinking' && part.text) {
-                                      const hasMoreThinking = agentMessage.parts
-                                        ?.slice(pi + 1)
-                                        .some((p) => p.type === 'thinking')
-                                      const isThinking =
-                                        isStreamingResponse &&
-                                        (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
-                                      return (
-                                        <ThinkingBlock
-                                          key={`thinking-${pi}`}
-                                          text={part.text}
-                                          isThinking={isThinking}
-                                        />
-                                      )
-                                    }
-                                    if (part.type === 'tool_call') {
-                                      const resultPart = agentMessage.parts?.find(
-                                        (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
-                                      )
-                                      const isPending = !resultPart
-                                      return (
-                                        <ToolCallCard
-                                          key={`tool-${pi}`}
-                                          toolName={part.toolName || 'tool'}
-                                          toolCallId={part.toolCallId}
-                                          input={part.input}
-                                          result={resultPart?.type === 'tool_result' ? resultPart.content : undefined}
-                                          isError={resultPart?.type === 'tool_result' ? resultPart.isError : false}
-                                          isPending={isPending}
-                                        />
-                                      )
-                                    }
-                                    if (part.type === 'text' && part.text) {
-                                      return (
-                                        <Streamdown
-                                          key={`text-${pi}`}
-                                          components={{
-                                            code: ({
-                                              className,
-                                              children,
-                                              ...props
-                                            }: React.ComponentPropsWithoutRef<'code'>) => (
-                                              <code className={`${className} !text-xs`} {...props}>
-                                                {children}
-                                              </code>
-                                            ),
-                                            pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
-                                              <pre className="!text-xs" {...props}>
-                                                {children}
-                                              </pre>
-                                            ),
-                                            p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => (
-                                              <p {...props}>{children}</p>
-                                            ),
-                                            ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
-                                              <ul className="text-xs list-disc ml-4" {...props}>
-                                                {children}
-                                              </ul>
-                                            ),
-                                            ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
-                                              <ol className="text-xs list-decimal ml-4" {...props}>
-                                                {children}
-                                              </ol>
-                                            ),
-                                            li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-                                              <li className="text-xs mb-2" {...props}>
-                                                {Children.toArray(children).filter(
-                                                  (ch) => typeof ch === 'string' || isValidElement(ch),
-                                                )}
-                                              </li>
-                                            ),
-                                          }}
-                                        >
-                                          {part.text}
-                                        </Streamdown>
-                                      )
-                                    }
-                                    return null
-                                  })}
-                              </div>
-                            )
-                          })()}
-                    </div>
-                    <div className="flex items-center gap-0.5 justify-end">
-                      {/* Show copy button only when task is complete */}
-                      {task.status !== 'processing' && task.status !== 'pending' && (
-                        <button
-                          onClick={() => handleCopyMessage(agentMessage.id, parseAgentMessage(agentMessage))}
-                          className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
-                        >
-                          {copiedMessageId === agentMessage.id ? (
-                            <Check className="h-3 w-3" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </button>
-                      )}
+                                try {
+                                  const args =
+                                    typeof part.input === 'string' ? JSON.parse(part.input as any) : part.input
+                                  askQuestions = args.questions || []
+                                } catch (e) {}
+
+                                const resolvedAskData: AskUserQuestionData | undefined =
+                                  isAskUserQuestion &&
+                                  isPending &&
+                                  Array.isArray(askQuestions) &&
+                                  askQuestions.length > 0 &&
+                                  !!part.toolCallId
+                                    ? {
+                                        toolCallId: part.toolCallId || '',
+                                        assistantMessageId: (part as any).assistantMessageId || agentMessage.id,
+                                        questions: askQuestions,
+                                      }
+                                    : undefined
+
+                                return (
+                                  <div key={`tool-${pi}`} className="space-y-2">
+                                    <ToolCallCard
+                                      toolName={part.toolName || 'tool'}
+                                      toolCallId={part.toolCallId}
+                                      input={part.input}
+                                      result={resultPart?.type === 'tool_result' ? resultPart.content : undefined}
+                                      isError={resultPart?.type === 'tool_result' ? resultPart.isError : false}
+                                      isPending={isPending}
+                                    />
+                                    {resolvedAskData && isLatestGroup && isLatestMessage && isLatestToolCallPart && (
+                                      <AskUserForm
+                                        askData={resolvedAskData}
+                                        agentMessageId={resolvedAskData.assistantMessageId}
+                                        toolCallId={part.toolCallId || ''}
+                                        questionAnswers={questionAnswersByTool[part.toolCallId || ''] || {}}
+                                        manualInputs={manualInputsByTool[part.toolCallId || ''] || {}}
+                                        isSending={isSending}
+                                        onAnswerSelect={handleAnswerSelect}
+                                        onManualInput={handleManualInput}
+                                        onSubmit={handleAnswerQuestion}
+                                      />
+                                    )}
+                                    {isAskUserQuestion &&
+                                      resultPart?.type === 'tool_result' &&
+                                      resultPart.status !== 'incomplete' && (
+                                        <Card className="p-2 border-border/40 bg-muted/20">
+                                          <div className="text-xs text-muted-foreground mb-1">问答结果</div>
+                                          <pre className="text-[11px] whitespace-pre-wrap break-all">
+                                            {String(resultPart.content || '')}
+                                          </pre>
+                                        </Card>
+                                      )}
+                                  </div>
+                                )
+                              }
+                              if (part.type === 'text' && part.text) {
+                                return (
+                                  <Streamdown key={`text-${pi}`} components={mdComponents}>
+                                    {part.text}
+                                  </Streamdown>
+                                )
+                              }
+                              return null
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-0.5 justify-end">
+                        {task.status !== 'processing' && task.status !== 'pending' && (
+                          <button
+                            onClick={() => handleCopyMessage(agentMessage.id, parseAgentMessage(agentMessage))}
+                            className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
+                          >
+                            {copiedMessageId === agentMessage.id ? (
+                              <Check className="h-3 w-3" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )
         })}
 
-        {/* Show deployment notifications in chat */}
+        {/* Deployment notifications */}
         {deploymentNotifications.length > 0 && (
           <div className="mt-4 px-2">
             <div className="space-y-2">
@@ -2045,70 +1076,35 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
           </div>
         )}
 
-        {/* Show sandbox setup progress or "Awaiting response..." if task is processing and latest message is from user without response */}
+        {/* Sandbox setup / awaiting response placeholder */}
         {(task.status === 'processing' || task.status === 'pending') &&
           displayMessages.length > 0 &&
           (() => {
             const lastMessage = displayMessages[displayMessages.length - 1]
-            // Show placeholder if last message is a user message (no agent response yet)
-            if (lastMessage.role === 'user') {
-              // Check if this is the first user message (sandbox initialization)
-              const userMessages = displayMessages.filter((m) => m.role === 'user')
-              const isFirstMessage = userMessages.length === 1
-
-              // Get the latest logs to show progress (filter out server logs)
-              const setupLogs = (task.logs || []).filter((log) => !log.message.startsWith('[SERVER]')).slice(-8) // Show last 8 logs
-
-              // If first message and we have logs, show sandbox setup progress
-              if (isFirstMessage && setupLogs.length > 0) {
-                return (
-                  <div className="mt-4">
-                    <div className="text-xs px-2">
-                      <div className="space-y-1">
-                        <div className="text-muted-foreground font-medium mb-2 flex items-center gap-2">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          Setting up sandbox...
-                        </div>
-                        <div className="space-y-0.5 pl-5">
-                          {setupLogs.map((log, idx) => {
-                            const isLatest = idx === setupLogs.length - 1
-                            return (
-                              <div
-                                key={idx}
-                                className={`truncate ${
-                                  isLatest
-                                    ? 'text-foreground'
-                                    : log.type === 'error'
-                                      ? 'text-red-500/60'
-                                      : log.type === 'success'
-                                        ? 'text-green-500/60'
-                                        : 'text-muted-foreground/60'
-                                }`}
-                              >
-                                {log.message}
-                              </div>
-                            )
-                          })}
-                        </div>
-                        <div className="text-right font-mono text-muted-foreground/50 mt-2">
-                          {formatDuration(lastMessage.createdAt)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )
-              }
-
-              // Otherwise show simple awaiting response
+            if (lastMessage.role !== 'user') return null
+            const userMessages = displayMessages.filter((m) => m.role === 'user')
+            const isFirstMessage = userMessages.length === 1
+            const setupLogs = (task.logs || []).filter((log) => !log.message.startsWith('[SERVER]')).slice(-8)
+            if (isFirstMessage && setupLogs.length > 0) {
               return (
                 <div className="mt-4">
-                  <div className="text-xs text-muted-foreground px-2">
-                    <div className="opacity-50">
-                      <div className="italic flex items-center gap-2">
+                  <div className="text-xs px-2">
+                    <div className="space-y-1">
+                      <div className="text-muted-foreground font-medium mb-2 flex items-center gap-2">
                         <Loader2 className="h-3 w-3 animate-spin" />
-                        Awaiting response...
+                        Setting up sandbox...
                       </div>
-                      <div className="text-right font-mono opacity-70 mt-1">
+                      <div className="space-y-0.5 pl-5">
+                        {setupLogs.map((log, idx) => (
+                          <div
+                            key={idx}
+                            className={`truncate ${idx === setupLogs.length - 1 ? 'text-foreground' : log.type === 'error' ? 'text-red-500/60' : log.type === 'success' ? 'text-green-500/60' : 'text-muted-foreground/60'}`}
+                          >
+                            {log.message}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-right font-mono text-muted-foreground/50 mt-2">
                         {formatDuration(lastMessage.createdAt)}
                       </div>
                     </div>
@@ -2116,13 +1112,27 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
                 </div>
               )
             }
-            return null
+            return (
+              <div className="mt-4">
+                <div className="text-xs text-muted-foreground px-2">
+                  <div className="opacity-50">
+                    <div className="italic flex items-center gap-2">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Awaiting response...
+                    </div>
+                    <div className="text-right font-mono opacity-70 mt-1">{formatDuration(lastMessage.createdAt)}</div>
+                  </div>
+                </div>
+              </div>
+            )
           })()}
 
         <div ref={messagesEndRef} />
       </div>
     )
   }
+
+  // ─── Main layout ────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-col h-full">
@@ -2131,41 +1141,19 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('chat')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${
-              currentTab === 'chat' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
+            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'chat' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             Chat
           </button>
-          {/* <button
-            onClick={() => setActiveTab('comments')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${
-              currentTab === 'comments' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Comments
-          </button>
-          <button
-            onClick={() => setActiveTab('actions')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${
-              currentTab === 'actions' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            Checks
-          </button> */}
           <button
             onClick={() => setActiveTab('deployments')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${
-              currentTab === 'deployments' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
+            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'deployments' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             Deployments
           </button>
           <button
             onClick={() => setActiveTab('cloud')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${
-              currentTab === 'cloud' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
+            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'cloud' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
           >
             Cloud
           </button>
@@ -2178,138 +1166,14 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt }: Task
       {/* Tab Content */}
       <div className="flex-1 min-h-0 px-3 pt-3 flex flex-col overflow-hidden">{renderTabContent()}</div>
 
-      {/* AskUserQuestion Dialog */}
-      {activeTab === 'chat' && askUserQuestion && (
-        <div className="flex-shrink-0 px-3 pb-2">
-          <Card className="p-3 border-primary/50 bg-primary/5">
-            <div className="flex items-center gap-2 mb-3">
-              <HelpCircle className="h-4 w-4 text-primary" />
-              <span className="text-sm font-medium">Agent需要您的输入</span>
-            </div>
-            <div className="space-y-3">
-              {askUserQuestion.questions.map((question, idx) => (
-                <div key={idx} className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="text-xs">
-                      {question.header}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">{question.question}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {question.options.map((option, optIdx) => (
-                      <Button
-                        key={optIdx}
-                        variant={questionAnswers[question.header] === option.label ? 'default' : 'outline'}
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => {
-                          setQuestionAnswers((prev) => ({
-                            ...prev,
-                            [question.header]: option.label,
-                          }))
-                          setManualInputs((prev) => {
-                            const next = { ...prev }
-                            delete next[question.header]
-                            return next
-                          })
-                        }}
-                      >
-                        {option.label}
-                      </Button>
-                    ))}
-                  </div>
-                  {question.options.length > 0 && (
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xs text-muted-foreground">或手动输入:</span>
-                      <Input
-                        className="h-7 text-xs flex-1"
-                        placeholder="输入自定义值..."
-                        value={manualInputs[question.header] || ''}
-                        onChange={(e) => {
-                          setManualInputs((prev) => ({
-                            ...prev,
-                            [question.header]: e.target.value,
-                          }))
-                          setQuestionAnswers((prev) => {
-                            const next = { ...prev }
-                            delete next[question.header]
-                            return next
-                          })
-                        }}
-                      />
-                    </div>
-                  )}
-                  {question.options.length === 0 && (
-                    <Input
-                      className="h-7 text-xs"
-                      placeholder="输入您的回答..."
-                      value={manualInputs[question.header] || ''}
-                      onChange={(e) => {
-                        setManualInputs((prev) => ({
-                          ...prev,
-                          [question.header]: e.target.value,
-                        }))
-                      }}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2 mt-3">
-              <Button
-                size="sm"
-                onClick={handleAnswerQuestion}
-                disabled={
-                  isSending ||
-                  !askUserQuestion.questions.every((q) => questionAnswers[q.header] || manualInputs[q.header])
-                }
-              >
-                {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : '提交'}
-              </Button>
-            </div>
-          </Card>
-        </div>
-      )}
-
       {/* ToolConfirm Dialog */}
       {activeTab === 'chat' && toolConfirm && (
         <div className="flex-shrink-0 px-3 pb-2">
-          <Card className="p-3 border-orange-500/50 bg-orange-500/5">
-            <div className="flex items-center gap-2 mb-2">
-              <ShieldAlert className="h-4 w-4 text-orange-500" />
-              <span className="text-sm font-medium">工具调用需要确认</span>
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {toolConfirm.toolName}
-                </Badge>
-              </div>
-              <div className="bg-muted/50 rounded p-2 max-h-32 overflow-auto">
-                <pre className="text-xs whitespace-pre-wrap break-all">
-                  {JSON.stringify(toolConfirm.input, null, 2)}
-                </pre>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 mt-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleConfirmTool('deny')}
-                disabled={isSending}
-                className="text-red-500 border-red-500/50 hover:bg-red-500/10"
-              >
-                拒绝
-              </Button>
-              <Button size="sm" onClick={() => handleConfirmTool('allow')} disabled={isSending}>
-                {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : '允许'}
-              </Button>
-            </div>
-          </Card>
+          <ToolConfirmDialog data={toolConfirm} isSending={isSending} onConfirm={handleConfirmTool} />
         </div>
       )}
 
-      {/* Input Area (only for chat tab) */}
+      {/* Input Area */}
       {activeTab === 'chat' && (
         <div className="flex-shrink-0 px-3 pb-3">
           <div className="relative">

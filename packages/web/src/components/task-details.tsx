@@ -101,6 +101,7 @@ interface TaskDetailsProps {
   maxSandboxDuration?: number
   onStreamComplete?: () => void
   initialPrompt?: string
+  onInitialPromptConsumed?: () => void
 }
 
 interface DiffData {
@@ -177,7 +178,13 @@ const DEFAULT_MODELS = {
   opencode: 'gpt-5',
 } as const
 
-export function TaskDetails({ task, maxSandboxDuration = 300, onStreamComplete, initialPrompt }: TaskDetailsProps) {
+export function TaskDetails({
+  task,
+  maxSandboxDuration = 300,
+  onStreamComplete,
+  initialPrompt,
+  onInitialPromptConsumed,
+}: TaskDetailsProps) {
   const [optimisticStatus, setOptimisticStatus] = useState<Task['status'] | null>(null)
   const [mcpServers, setMcpServers] = useState<Connector[]>([])
   const [loadingMcpServers, setLoadingMcpServers] = useState(false)
@@ -2132,10 +2139,12 @@ export function TaskDetails({ task, maxSandboxDuration = 300, onStreamComplete, 
             {showChatPane && (
               <div className="h-auto min-h-0 flex-shrink-0" style={{ width: `${chatPaneWidth}px` }}>
                 <TaskChat
+                  key={task.id}
                   taskId={task.id}
                   task={task}
                   onStreamComplete={onStreamComplete}
                   initialPrompt={initialPrompt}
+                  onInitialPromptConsumed={onInitialPromptConsumed}
                 />
               </div>
             )}
@@ -2191,10 +2200,12 @@ export function TaskDetails({ task, maxSandboxDuration = 300, onStreamComplete, 
               {/* Chat Tab */}
               <div className={cn('h-full', activeTab !== 'chat' && 'hidden')}>
                 <TaskChat
+                  key={task.id}
                   taskId={task.id}
                   task={task}
                   onStreamComplete={onStreamComplete}
                   initialPrompt={initialPrompt}
+                  onInitialPromptConsumed={onInitialPromptConsumed}
                 />
               </div>
 
@@ -2518,7 +2529,14 @@ export function TaskDetails({ task, maxSandboxDuration = 300, onStreamComplete, 
         /* No branch yet - show chat panel only */
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex-1 min-h-0 min-w-0">
-            <TaskChat taskId={task.id} task={task} onStreamComplete={onStreamComplete} initialPrompt={initialPrompt} />
+            <TaskChat
+              key={task.id}
+              taskId={task.id}
+              task={task}
+              onStreamComplete={onStreamComplete}
+              initialPrompt={initialPrompt}
+              onInitialPromptConsumed={onInitialPromptConsumed}
+            />
           </div>
         </div>
       )}

@@ -1,8 +1,6 @@
 import { Hono } from 'hono'
 import { Octokit } from '@octokit/rest'
 import { getDb } from '../db/index.js'
-import { tasks } from '../db/schema'
-import { eq, and, isNull } from 'drizzle-orm'
 import { decrypt } from '../lib/crypto'
 import { requireAuth, type AppEnv } from '../middleware/auth'
 
@@ -136,18 +134,7 @@ app.get('/:owner/:repo/pull-requests/:pr_number/check-task', async (c) => {
     const repoUrl = `https://github.com/${owner}/${repo}`
 
     // This compound query (userId + prNumber + repoUrl + isNull(deletedAt)) doesn't map to a repository method
-    const existingTasks = await db
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.userId, userId),
-          eq(tasks.prNumber, prNumber),
-          eq(tasks.repoUrl, repoUrl),
-          isNull(tasks.deletedAt),
-        ),
-      )
-      .limit(1)
+    const existingTasks = await getDb().tasks.findByRepoAndPr(userId, prNumber, repoUrl)
 
     return c.json({
       hasTask: existingTasks.length > 0,

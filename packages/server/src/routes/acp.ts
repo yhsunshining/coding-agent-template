@@ -198,7 +198,6 @@ acp.post('/chat', async (c) => {
 
   // 创建或使用现有会话
   const actualConversationId = conversationId || uuidv4()
-  const cwd = `/tmp/workspace/${actualConversationId}`
 
   return streamSSE(c, async (stream) => {
     // 发送会话信息
@@ -269,7 +268,6 @@ acp.post('/chat', async (c) => {
         envId,
         userId,
         userCredentials,
-        cwd,
         model,
       })
     } catch (error) {
@@ -430,11 +428,14 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
     .map((b) => b.text)
     .join('')
 
-  if (!prompt.trim()) {
+  const hasResumePayload =
+    (params?.askAnswers && Object.keys(params.askAnswers).length > 0) || !!params?.toolConfirmation
+
+  if (!prompt.trim() && !hasResumePayload) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, 'prompt must contain at least one text block'))
   }
 
-  const cwd = `/tmp/workspace/${sessionId}`
+  const effectivePrompt = prompt.trim() ? prompt : hasResumePayload ? 'continue' : prompt
 
   // 读取 task 的 selectedModel
   let selectedModel: string | undefined
@@ -494,6 +495,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
             kind: 'function',
             status: 'in_progress',
             input: msg.input,
+            assistantMessageId: msg.assistantMessageId,
           },
         })
       } else if (msg.type === 'tool_result') {
@@ -620,13 +622,14 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
     }
 
     try {
-      await cloudbaseAgentService.chatStream(prompt, callback, {
+      await cloudbaseAgentService.chatStream(effectivePrompt, callback, {
         conversationId: sessionId,
         envId,
         userId,
         userCredentials,
-        cwd,
         model: selectedModel,
+        askAnswers: params.askAnswers,
+        toolConfirmation: params.toolConfirmation,
       })
     } catch (error) {
       stopReason = 'error'

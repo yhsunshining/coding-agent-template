@@ -1,7 +1,5 @@
 import { Hono } from 'hono'
 import { getDb } from '../db/index.js'
-import { tasks, deployments } from '../db/schema'
-import { eq, desc, and, isNull } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { requireAuth, requireUserEnv, type AppEnv } from '../middleware/auth'
 import { createTaskLogger } from '../lib/task-logger'
@@ -9,6 +7,7 @@ import { decrypt } from '../lib/crypto'
 import { Octokit } from '@octokit/rest'
 import { Sandbox } from '@vercel/sandbox'
 import { persistenceService } from '../agent/persistence.service'
+import { deleteArchiveDirectory, deleteConversationViaSandbox, scfSandboxManager } from '../sandbox/index.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -386,15 +385,28 @@ tasksRouter.patch('/:taskId', async (c) => {
   return c.json({ error: 'Invalid action' }, 400)
 })
 
-// Delete task (soft delete)
-tasksRouter.delete('/:taskId', async (c) => {
-  const authErr = requireAuth(c)
-  if (authErr) return authErr
+// Delete task (soft delete + git archive cleanup)
+tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
   const session = c.get('session')!
+  const { envId } = c.get('userEnv')!
   const { taskId } = c.req.param()
   const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id)
   if (!existing || existing.deletedAt) return c.json({ error: 'Task not found' }, 404)
   await getDb().tasks.softDelete(taskId)
+
+  // conversationId === taskId (ACP convention)
+  // Try to clean up via sandbox (rm -rf workspace dir + git archive sync); fall back to direct API delete
+  ;(async () => {
+    try {
+      const sandbox = await scfSandboxManager.getExisting(taskId, envId).catch(() => null)
+      if (sandbox) {
+        await deleteConversationViaSandbox(sandbox, envId, taskId)
+      }
+    } catch (e) {
+      console.log('clean conversation workspace error')
+    }
+  })()
+
   return c.json({ message: 'Task deleted' })
 })
 
@@ -418,6 +430,7 @@ tasksRouter.get('/:taskId/messages', requireUserEnv, async (c) => {
             toolCallId: p.toolCallId || p.partId,
             toolName: (p.metadata?.toolCallName as string) || (p.metadata?.toolName as string) || 'tool',
             input: p.content || p.metadata?.input,
+            status: (p.metadata?.status as string) || undefined,
           }
         else if (p.contentType === 'tool_result')
           return {
@@ -426,6 +439,7 @@ tasksRouter.get('/:taskId/messages', requireUserEnv, async (c) => {
             toolName: (p.metadata?.toolName as string) || undefined,
             content: p.content || '',
             isError: p.metadata?.isError as boolean | undefined,
+            status: (p.metadata?.status as string) || undefined,
           }
         return { type: 'text' as const, text: p.content || '' }
       })
@@ -439,6 +453,7 @@ tasksRouter.get('/:taskId/messages', requireUserEnv, async (c) => {
         role: record.role === 'user' ? 'user' : 'agent',
         content: textContent,
         parts,
+        status: record.status,
         createdAt: record.createTime || Date.now(),
       }
     })
@@ -2094,21 +2109,9 @@ tasksRouter.delete('/:taskId/deployments/:deploymentId', async (c) => {
     if (authErr) return authErr
     const session = c.get('session')!
     const { taskId, deploymentId } = c.req.param()
-    // Complex join query: verify deployment belongs to user's task - keep direct db access
-    const result = await db
-      .select()
-      .from(deployments)
-      .innerJoin(tasks, eq(deployments.taskId, tasks.id))
-      .where(
-        and(
-          eq(deployments.id, deploymentId),
-          eq(deployments.taskId, taskId),
-          eq(tasks.userId, session.user.id),
-          isNull(deployments.deletedAt),
-        ),
-      )
-      .limit(1)
-    if (!result.length) return c.json({ error: 'Deployment not found' }, 404)
+    // Complex join query: verify deployment belongs to user's task
+    const deployment = await getDb().deployments.findByTaskIdAndUserId(taskId, session.user.id)
+    if (!deployment || deployment.id !== deploymentId) return c.json({ error: 'Deployment not found' }, 404)
     await getDb().deployments.softDelete(deploymentId)
     return c.json({ success: true })
   } catch (error) {

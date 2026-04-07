@@ -1,13 +1,542 @@
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
+var __copyProps = (to, from, except, desc2) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc2 = __getOwnPropDesc(from, key)) || desc2.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/db/schema.ts
+var schema_exports = {};
+__export(schema_exports, {
+  accounts: () => accounts,
+  connectors: () => connectors,
+  deployments: () => deployments,
+  keys: () => keys,
+  localCredentials: () => localCredentials,
+  settings: () => settings,
+  tasks: () => tasks,
+  userResources: () => userResources,
+  users: () => users
+});
+import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+var now2, users, localCredentials, tasks, connectors, accounts, keys, userResources, settings, deployments;
+var init_schema = __esm({
+  "src/db/schema.ts"() {
+    "use strict";
+    now2 = () => Date.now();
+    users = sqliteTable(
+      "users",
+      {
+        id: text("id").primaryKey(),
+        provider: text("provider").notNull(),
+        // 'github' | 'local'
+        externalId: text("external_id").notNull(),
+        accessToken: text("access_token").notNull().default(""),
+        refreshToken: text("refresh_token"),
+        scope: text("scope"),
+        username: text("username").notNull(),
+        email: text("email"),
+        name: text("name"),
+        avatarUrl: text("avatar_url"),
+        createdAt: integer("created_at").notNull().$defaultFn(now2),
+        updatedAt: integer("updated_at").notNull().$defaultFn(now2),
+        lastLoginAt: integer("last_login_at").notNull().$defaultFn(now2)
+      },
+      (table) => ({
+        providerExternalIdUnique: uniqueIndex("users_provider_external_id_idx").on(table.provider, table.externalId)
+      })
+    );
+    localCredentials = sqliteTable("local_credentials", {
+      userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+      passwordHash: text("password_hash").notNull(),
+      createdAt: integer("created_at").notNull().$defaultFn(now2),
+      updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+    });
+    tasks = sqliteTable("tasks", {
+      id: text("id").primaryKey(),
+      userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+      prompt: text("prompt").notNull(),
+      title: text("title"),
+      repoUrl: text("repo_url"),
+      selectedAgent: text("selected_agent").default("claude"),
+      selectedModel: text("selected_model"),
+      installDependencies: integer("install_dependencies", { mode: "boolean" }).default(false),
+      maxDuration: integer("max_duration").default(parseInt(process.env.MAX_SANDBOX_DURATION || "300", 10)),
+      keepAlive: integer("keep_alive", { mode: "boolean" }).default(false),
+      enableBrowser: integer("enable_browser", { mode: "boolean" }).default(false),
+      status: text("status").notNull().default("pending"),
+      progress: integer("progress").default(0),
+      logs: text("logs"),
+      // JSON string of LogEntry[]
+      error: text("error"),
+      branchName: text("branch_name"),
+      sandboxId: text("sandbox_id"),
+      agentSessionId: text("agent_session_id"),
+      sandboxUrl: text("sandbox_url"),
+      previewUrl: text("preview_url"),
+      prUrl: text("pr_url"),
+      prNumber: integer("pr_number"),
+      prStatus: text("pr_status"),
+      prMergeCommitSha: text("pr_merge_commit_sha"),
+      mcpServerIds: text("mcp_server_ids"),
+      // JSON string of string[]
+      createdAt: integer("created_at").notNull().$defaultFn(now2),
+      updatedAt: integer("updated_at").notNull().$defaultFn(now2),
+      completedAt: integer("completed_at"),
+      deletedAt: integer("deleted_at")
+    });
+    connectors = sqliteTable("connectors", {
+      id: text("id").primaryKey(),
+      userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+      name: text("name").notNull(),
+      description: text("description"),
+      type: text("type").notNull().default("remote"),
+      // 'local' | 'remote'
+      baseUrl: text("base_url"),
+      oauthClientId: text("oauth_client_id"),
+      oauthClientSecret: text("oauth_client_secret"),
+      command: text("command"),
+      env: text("env"),
+      status: text("status").notNull().default("disconnected"),
+      // 'connected' | 'disconnected'
+      createdAt: integer("created_at").notNull().$defaultFn(now2),
+      updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+    });
+    accounts = sqliteTable(
+      "accounts",
+      {
+        id: text("id").primaryKey(),
+        userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+        provider: text("provider").notNull().default("github"),
+        // 'github'
+        externalUserId: text("external_user_id").notNull(),
+        accessToken: text("access_token").notNull(),
+        refreshToken: text("refresh_token"),
+        expiresAt: integer("expires_at"),
+        scope: text("scope"),
+        username: text("username").notNull(),
+        createdAt: integer("created_at").notNull().$defaultFn(now2),
+        updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+      },
+      (table) => ({
+        userIdProviderUnique: uniqueIndex("accounts_user_id_provider_idx").on(table.userId, table.provider)
+      })
+    );
+    keys = sqliteTable(
+      "keys",
+      {
+        id: text("id").primaryKey(),
+        userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+        provider: text("provider").notNull(),
+        // 'anthropic' | 'openai' | 'cursor' | 'gemini' | 'aigateway'
+        value: text("value").notNull(),
+        createdAt: integer("created_at").notNull().$defaultFn(now2),
+        updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+      },
+      (table) => ({
+        userIdProviderUnique: uniqueIndex("keys_user_id_provider_idx").on(table.userId, table.provider)
+      })
+    );
+    userResources = sqliteTable("user_resources", {
+      id: text("id").primaryKey(),
+      userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+      status: text("status").notNull().default("pending"),
+      envId: text("env_id"),
+      camUsername: text("cam_username"),
+      camSecretId: text("cam_secret_id"),
+      camSecretKey: text("cam_secret_key"),
+      policyId: integer("policy_id"),
+      failStep: text("fail_step"),
+      failReason: text("fail_reason"),
+      createdAt: integer("created_at").notNull().$defaultFn(now2),
+      updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+    });
+    settings = sqliteTable(
+      "settings",
+      {
+        id: text("id").primaryKey(),
+        userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+        key: text("key").notNull(),
+        value: text("value").notNull(),
+        createdAt: integer("created_at").notNull().$defaultFn(now2),
+        updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+      },
+      (table) => ({
+        userIdKeyUnique: uniqueIndex("settings_user_id_key_idx").on(table.userId, table.key)
+      })
+    );
+    deployments = sqliteTable(
+      "deployments",
+      {
+        id: text("id").primaryKey(),
+        taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+        type: text("type").notNull(),
+        // 'web' | 'miniprogram'
+        // For web deployments
+        url: text("url"),
+        path: text("path"),
+        // Extracted URL path for deduplication
+        // For miniprogram deployments
+        qrCodeUrl: text("qr_code_url"),
+        pagePath: text("page_path"),
+        appId: text("app_id"),
+        // Metadata
+        label: text("label"),
+        // Optional display name
+        metadata: text("metadata"),
+        // JSON string for additional fields
+        createdAt: integer("created_at").notNull().$defaultFn(now2),
+        updatedAt: integer("updated_at").notNull().$defaultFn(now2),
+        deletedAt: integer("deleted_at")
+      },
+      (table) => ({
+        // Indexes for faster queries (deduplication handled in application logic)
+        taskIdIdx: index("deployments_task_id_idx").on(table.taskId),
+        taskTypePathIdx: index("deployments_task_type_path_idx").on(table.taskId, table.type, table.path)
+      })
+    );
+  }
+});
+
+// src/db/drizzle/client.ts
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
+import path from "path";
+import { mkdirSync } from "fs";
+var DB_PATH, sqlite, drizzleDb;
+var init_client = __esm({
+  "src/db/drizzle/client.ts"() {
+    "use strict";
+    init_schema();
+    DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "app.db");
+    mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    sqlite = new Database(DB_PATH);
+    sqlite.pragma("journal_mode = WAL");
+    sqlite.pragma("foreign_keys = ON");
+    drizzleDb = drizzle(sqlite, { schema: schema_exports });
+  }
+});
+
+// src/db/drizzle/repositories.ts
+var repositories_exports = {};
+__export(repositories_exports, {
+  createDrizzleProvider: () => createDrizzleProvider
+});
+import { eq, and, isNull, desc } from "drizzle-orm";
+import { nanoid as nanoid2 } from "nanoid";
+function createDrizzleProvider() {
+  return {
+    users: new DrizzleUserRepository(),
+    localCredentials: new DrizzleLocalCredentialRepository(),
+    tasks: new DrizzleTaskRepository(),
+    connectors: new DrizzleConnectorRepository(),
+    accounts: new DrizzleAccountRepository(),
+    keys: new DrizzleKeyRepository(),
+    userResources: new DrizzleUserResourceRepository(),
+    settings: new DrizzleSettingRepository(),
+    deployments: new DrizzleDeploymentRepository()
+  };
+}
+var now3, DrizzleUserRepository, DrizzleLocalCredentialRepository, DrizzleTaskRepository, DrizzleConnectorRepository, DrizzleAccountRepository, DrizzleKeyRepository, DrizzleUserResourceRepository, DrizzleSettingRepository, DrizzleDeploymentRepository;
+var init_repositories = __esm({
+  "src/db/drizzle/repositories.ts"() {
+    "use strict";
+    init_client();
+    init_schema();
+    now3 = () => Date.now();
+    DrizzleUserRepository = class {
+      async findById(id) {
+        const [row] = await drizzleDb.select().from(users).where(eq(users.id, id)).limit(1);
+        return row ?? null;
+      }
+      async findByProviderAndExternalId(provider, externalId) {
+        const [row] = await drizzleDb.select().from(users).where(and(eq(users.provider, provider), eq(users.externalId, externalId))).limit(1);
+        return row ?? null;
+      }
+      async create(user) {
+        const ts = now3();
+        const values = {
+          ...user,
+          createdAt: user.createdAt ?? ts,
+          updatedAt: user.updatedAt ?? ts,
+          lastLoginAt: user.lastLoginAt ?? ts
+        };
+        await drizzleDb.insert(users).values(values);
+        return values;
+      }
+      async update(id, data) {
+        await drizzleDb.update(users).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(users.id, id));
+        return this.findById(id);
+      }
+      async deleteById(id) {
+        await drizzleDb.delete(users).where(eq(users.id, id));
+      }
+    };
+    DrizzleLocalCredentialRepository = class {
+      async findByUserId(userId) {
+        const [row] = await drizzleDb.select().from(localCredentials).where(eq(localCredentials.userId, userId)).limit(1);
+        return row ?? null;
+      }
+      async create(credential) {
+        const ts = now3();
+        const values = {
+          ...credential,
+          createdAt: credential.createdAt ?? ts,
+          updatedAt: credential.updatedAt ?? ts
+        };
+        await drizzleDb.insert(localCredentials).values(values);
+        return values;
+      }
+    };
+    DrizzleTaskRepository = class {
+      async findById(id) {
+        const [row] = await drizzleDb.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+        return row ?? null;
+      }
+      async findByIdAndUserId(id, userId) {
+        const [row] = await drizzleDb.select().from(tasks).where(and(eq(tasks.id, id), eq(tasks.userId, userId), isNull(tasks.deletedAt))).limit(1);
+        return row ?? null;
+      }
+      async findByUserId(userId) {
+        const rows = await drizzleDb.select().from(tasks).where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt))).orderBy(desc(tasks.createdAt));
+        return rows;
+      }
+      async findByRepoAndPr(userId, prNumber, repoUrl) {
+        const rows = await drizzleDb.select().from(tasks).where(
+          and(
+            eq(tasks.userId, userId),
+            eq(tasks.prNumber, prNumber),
+            eq(tasks.repoUrl, repoUrl),
+            isNull(tasks.deletedAt)
+          )
+        ).limit(1);
+        return rows;
+      }
+      async create(task) {
+        const ts = now3();
+        const values = {
+          ...task,
+          createdAt: task.createdAt ?? ts,
+          updatedAt: task.updatedAt ?? ts
+        };
+        await drizzleDb.insert(tasks).values(values);
+        const [row] = await drizzleDb.select().from(tasks).where(eq(tasks.id, task.id)).limit(1);
+        return row;
+      }
+      async update(id, data) {
+        await drizzleDb.update(tasks).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(tasks.id, id));
+        return this.findById(id);
+      }
+      async updateUserId(fromUserId, toUserId) {
+        await drizzleDb.update(tasks).set({ userId: toUserId }).where(eq(tasks.userId, fromUserId));
+      }
+      async softDelete(id) {
+        await drizzleDb.update(tasks).set({ deletedAt: now3() }).where(eq(tasks.id, id));
+      }
+    };
+    DrizzleConnectorRepository = class {
+      async findByUserId(userId) {
+        const rows = await drizzleDb.select().from(connectors).where(eq(connectors.userId, userId));
+        return rows;
+      }
+      async findByIdAndUserId(id, userId) {
+        const [row] = await drizzleDb.select().from(connectors).where(and(eq(connectors.id, id), eq(connectors.userId, userId))).limit(1);
+        return row ?? null;
+      }
+      async create(connector) {
+        const ts = now3();
+        const values = {
+          ...connector,
+          createdAt: connector.createdAt ?? ts,
+          updatedAt: connector.updatedAt ?? ts
+        };
+        await drizzleDb.insert(connectors).values(values);
+        return values;
+      }
+      async update(id, userId, data) {
+        await drizzleDb.update(connectors).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(and(eq(connectors.id, id), eq(connectors.userId, userId)));
+        return this.findByIdAndUserId(id, userId);
+      }
+      async updateUserId(fromUserId, toUserId) {
+        await drizzleDb.update(connectors).set({ userId: toUserId }).where(eq(connectors.userId, fromUserId));
+      }
+      async delete(id, userId) {
+        await drizzleDb.delete(connectors).where(and(eq(connectors.id, id), eq(connectors.userId, userId)));
+      }
+    };
+    DrizzleAccountRepository = class {
+      async findByUserIdAndProvider(userId, provider) {
+        const [row] = await drizzleDb.select().from(accounts).where(and(eq(accounts.userId, userId), eq(accounts.provider, provider))).limit(1);
+        return row ?? null;
+      }
+      async findByProviderAndExternalUserId(provider, externalUserId) {
+        const [row] = await drizzleDb.select().from(accounts).where(and(eq(accounts.provider, provider), eq(accounts.externalUserId, externalUserId))).limit(1);
+        return row ?? null;
+      }
+      async create(account) {
+        const ts = now3();
+        const values = {
+          ...account,
+          createdAt: account.createdAt ?? ts,
+          updatedAt: account.updatedAt ?? ts
+        };
+        await drizzleDb.insert(accounts).values(values);
+        return values;
+      }
+      async update(id, data) {
+        await drizzleDb.update(accounts).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(accounts.id, id));
+        const [row] = await drizzleDb.select().from(accounts).where(eq(accounts.id, id)).limit(1);
+        return row ?? null;
+      }
+      async updateUserId(fromUserId, toUserId) {
+        await drizzleDb.update(accounts).set({ userId: toUserId }).where(eq(accounts.userId, fromUserId));
+      }
+      async delete(userId, provider) {
+        await drizzleDb.delete(accounts).where(and(eq(accounts.userId, userId), eq(accounts.provider, provider)));
+      }
+    };
+    DrizzleKeyRepository = class {
+      async findByUserId(userId) {
+        const rows = await drizzleDb.select().from(keys).where(eq(keys.userId, userId));
+        return rows;
+      }
+      async findByUserIdAndProvider(userId, provider) {
+        const [row] = await drizzleDb.select().from(keys).where(and(eq(keys.userId, userId), eq(keys.provider, provider))).limit(1);
+        return row ?? null;
+      }
+      async upsert(key) {
+        const ts = now3();
+        const existing = await this.findByUserIdAndProvider(key.userId, key.provider);
+        if (existing) {
+          await drizzleDb.update(keys).set({ value: key.value, updatedAt: ts }).where(and(eq(keys.userId, key.userId), eq(keys.provider, key.provider)));
+          return { ...existing, value: key.value, updatedAt: ts };
+        }
+        const values = {
+          ...key,
+          id: key.id || nanoid2(),
+          createdAt: key.createdAt ?? ts,
+          updatedAt: key.updatedAt ?? ts
+        };
+        await drizzleDb.insert(keys).values(values);
+        return values;
+      }
+      async updateUserId(fromUserId, toUserId) {
+        await drizzleDb.update(keys).set({ userId: toUserId }).where(eq(keys.userId, fromUserId));
+      }
+      async delete(userId, provider) {
+        await drizzleDb.delete(keys).where(and(eq(keys.userId, userId), eq(keys.provider, provider)));
+      }
+    };
+    DrizzleUserResourceRepository = class {
+      async findByUserId(userId) {
+        const [row] = await drizzleDb.select().from(userResources).where(eq(userResources.userId, userId)).limit(1);
+        return row ?? null;
+      }
+      async create(resource) {
+        const ts = now3();
+        const values = {
+          ...resource,
+          createdAt: resource.createdAt ?? ts,
+          updatedAt: resource.updatedAt ?? ts
+        };
+        await drizzleDb.insert(userResources).values(values);
+        return values;
+      }
+      async update(id, data) {
+        await drizzleDb.update(userResources).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(userResources.id, id));
+        const [row] = await drizzleDb.select().from(userResources).where(eq(userResources.id, id)).limit(1);
+        return row ?? null;
+      }
+    };
+    DrizzleSettingRepository = class {
+      async findByUserIdAndKey(userId, key) {
+        const [row] = await drizzleDb.select().from(settings).where(and(eq(settings.userId, userId), eq(settings.key, key))).limit(1);
+        return row ?? null;
+      }
+      async findByUserId(userId) {
+        const rows = await drizzleDb.select().from(settings).where(eq(settings.userId, userId));
+        return rows;
+      }
+      async upsert(setting) {
+        const ts = now3();
+        const existing = await this.findByUserIdAndKey(setting.userId, setting.key);
+        if (existing) {
+          await drizzleDb.update(settings).set({ value: setting.value, updatedAt: ts }).where(and(eq(settings.userId, setting.userId), eq(settings.key, setting.key)));
+          return { ...existing, value: setting.value, updatedAt: ts };
+        }
+        const values = {
+          ...setting,
+          id: setting.id || nanoid2(),
+          createdAt: setting.createdAt ?? ts,
+          updatedAt: setting.updatedAt ?? ts
+        };
+        await drizzleDb.insert(settings).values(values);
+        return values;
+      }
+    };
+    DrizzleDeploymentRepository = class {
+      async findByTaskId(taskId) {
+        const rows = await drizzleDb.select().from(deployments).where(and(eq(deployments.taskId, taskId), isNull(deployments.deletedAt)));
+        return rows;
+      }
+      async findByTaskIdAndTypePath(taskId, type, path5) {
+        const conditions = [eq(deployments.taskId, taskId), eq(deployments.type, type), isNull(deployments.deletedAt)];
+        if (path5 !== null) {
+          conditions.push(eq(deployments.path, path5));
+        } else {
+          conditions.push(isNull(deployments.path));
+        }
+        const [row] = await drizzleDb.select().from(deployments).where(and(...conditions)).limit(1);
+        return row ?? null;
+      }
+      async findByTaskIdAndUserId(taskId, userId) {
+        const [row] = await drizzleDb.select().from(deployments).innerJoin(tasks, eq(deployments.taskId, tasks.id)).where(and(eq(deployments.taskId, taskId), eq(tasks.userId, userId), isNull(deployments.deletedAt))).limit(1);
+        return row ? row.deployments : null;
+      }
+      async create(deployment) {
+        const ts = now3();
+        const values = {
+          ...deployment,
+          createdAt: deployment.createdAt ?? ts,
+          updatedAt: deployment.updatedAt ?? ts
+        };
+        await drizzleDb.insert(deployments).values(values);
+        return values;
+      }
+      async update(id, data) {
+        await drizzleDb.update(deployments).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(deployments.id, id));
+        const [row] = await drizzleDb.select().from(deployments).where(eq(deployments.id, id)).limit(1);
+        return row ?? null;
+      }
+      async softDelete(id) {
+        await drizzleDb.update(deployments).set({ deletedAt: now3() }).where(eq(deployments.id, id));
+      }
+    };
+  }
+});
 
 // src/index.ts
 import { serve } from "@hono/node-server";
-import { Hono as Hono10 } from "hono";
+import { Hono as Hono15 } from "hono";
 import { cors } from "hono/cors";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { existsSync as existsSync2 } from "fs";
+import { resolve, dirname as dirname2 } from "path";
+import { fileURLToPath as fileURLToPath2 } from "url";
 
 // src/middleware/auth.ts
 import { getCookie } from "hono/cookie";
@@ -37,223 +566,505 @@ async function decryptJWE(cyphertext, secret = process.env.JWE_SECRET) {
   }
 }
 
-// src/middleware/auth.ts
-var SESSION_COOKIE_NAME = "nex_session";
-async function authMiddleware(c, next) {
-  const sessionCookie = getCookie(c, SESSION_COOKIE_NAME);
-  if (sessionCookie) {
-    try {
-      const session = await decryptJWE(sessionCookie);
-      c.set("session", session);
-    } catch (e) {
-    }
-  }
-  await next();
-}
-function requireAuth(c) {
-  const session = c.get("session");
-  if (!session?.user?.id) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-  return null;
-}
-
-// src/routes/auth.ts
-import { Hono } from "hono";
-import { setCookie, deleteCookie } from "hono/cookie";
-
-// src/db/client.ts
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
-
-// src/db/schema.ts
-var schema_exports = {};
-__export(schema_exports, {
-  accounts: () => accounts,
-  connectors: () => connectors,
-  keys: () => keys,
-  localCredentials: () => localCredentials,
-  settings: () => settings,
-  taskMessages: () => taskMessages,
-  tasks: () => tasks,
-  userResources: () => userResources,
-  users: () => users
-});
-import { sqliteTable, text, integer, uniqueIndex } from "drizzle-orm/sqlite-core";
-var now = () => Date.now();
-var users = sqliteTable(
-  "users",
-  {
-    id: text("id").primaryKey(),
-    provider: text("provider").notNull(),
-    // 'github' | 'local'
-    externalId: text("external_id").notNull(),
-    accessToken: text("access_token").notNull().default(""),
-    refreshToken: text("refresh_token"),
-    scope: text("scope"),
-    username: text("username").notNull(),
-    email: text("email"),
-    name: text("name"),
-    avatarUrl: text("avatar_url"),
-    createdAt: integer("created_at").notNull().$defaultFn(now),
-    updatedAt: integer("updated_at").notNull().$defaultFn(now),
-    lastLoginAt: integer("last_login_at").notNull().$defaultFn(now)
-  },
-  (table) => ({
-    providerExternalIdUnique: uniqueIndex("users_provider_external_id_idx").on(table.provider, table.externalId)
-  })
-);
-var localCredentials = sqliteTable("local_credentials", {
-  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
-  passwordHash: text("password_hash").notNull(),
-  createdAt: integer("created_at").notNull().$defaultFn(now),
-  updatedAt: integer("updated_at").notNull().$defaultFn(now)
-});
-var tasks = sqliteTable("tasks", {
-  id: text("id").primaryKey(),
-  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  prompt: text("prompt").notNull(),
-  title: text("title"),
-  repoUrl: text("repo_url"),
-  selectedAgent: text("selected_agent").default("claude"),
-  selectedModel: text("selected_model"),
-  installDependencies: integer("install_dependencies", { mode: "boolean" }).default(false),
-  maxDuration: integer("max_duration").default(parseInt(process.env.MAX_SANDBOX_DURATION || "300", 10)),
-  keepAlive: integer("keep_alive", { mode: "boolean" }).default(false),
-  enableBrowser: integer("enable_browser", { mode: "boolean" }).default(false),
-  status: text("status").notNull().default("pending"),
-  progress: integer("progress").default(0),
-  logs: text("logs"),
-  // JSON string of LogEntry[]
-  error: text("error"),
-  branchName: text("branch_name"),
-  sandboxId: text("sandbox_id"),
-  agentSessionId: text("agent_session_id"),
-  sandboxUrl: text("sandbox_url"),
-  previewUrl: text("preview_url"),
-  prUrl: text("pr_url"),
-  prNumber: integer("pr_number"),
-  prStatus: text("pr_status"),
-  prMergeCommitSha: text("pr_merge_commit_sha"),
-  mcpServerIds: text("mcp_server_ids"),
-  // JSON string of string[]
-  createdAt: integer("created_at").notNull().$defaultFn(now),
-  updatedAt: integer("updated_at").notNull().$defaultFn(now),
-  completedAt: integer("completed_at"),
-  deletedAt: integer("deleted_at")
-});
-var taskMessages = sqliteTable("task_messages", {
-  id: text("id").primaryKey(),
-  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
-  role: text("role").notNull(),
-  // 'user' | 'agent'
-  content: text("content").notNull(),
-  createdAt: integer("created_at").notNull().$defaultFn(now)
-});
-var connectors = sqliteTable("connectors", {
-  id: text("id").primaryKey(),
-  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  description: text("description"),
-  type: text("type").notNull().default("remote"),
-  // 'local' | 'remote'
-  baseUrl: text("base_url"),
-  oauthClientId: text("oauth_client_id"),
-  oauthClientSecret: text("oauth_client_secret"),
-  command: text("command"),
-  env: text("env"),
-  status: text("status").notNull().default("disconnected"),
-  // 'connected' | 'disconnected'
-  createdAt: integer("created_at").notNull().$defaultFn(now),
-  updatedAt: integer("updated_at").notNull().$defaultFn(now)
-});
-var accounts = sqliteTable(
-  "accounts",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    provider: text("provider").notNull().default("github"),
-    // 'github'
-    externalUserId: text("external_user_id").notNull(),
-    accessToken: text("access_token").notNull(),
-    refreshToken: text("refresh_token"),
-    expiresAt: integer("expires_at"),
-    scope: text("scope"),
-    username: text("username").notNull(),
-    createdAt: integer("created_at").notNull().$defaultFn(now),
-    updatedAt: integer("updated_at").notNull().$defaultFn(now)
-  },
-  (table) => ({
-    userIdProviderUnique: uniqueIndex("accounts_user_id_provider_idx").on(table.userId, table.provider)
-  })
-);
-var keys = sqliteTable(
-  "keys",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    provider: text("provider").notNull(),
-    // 'anthropic' | 'openai' | 'cursor' | 'gemini' | 'aigateway'
-    value: text("value").notNull(),
-    createdAt: integer("created_at").notNull().$defaultFn(now),
-    updatedAt: integer("updated_at").notNull().$defaultFn(now)
-  },
-  (table) => ({
-    userIdProviderUnique: uniqueIndex("keys_user_id_provider_idx").on(table.userId, table.provider)
-  })
-);
-var userResources = sqliteTable("user_resources", {
-  id: text("id").primaryKey(),
-  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  status: text("status").notNull().default("pending"),
-  envId: text("env_id"),
-  camUsername: text("cam_username"),
-  camSecretId: text("cam_secret_id"),
-  camSecretKey: text("cam_secret_key"),
-  policyId: integer("policy_id"),
-  failStep: text("fail_step"),
-  failReason: text("fail_reason"),
-  createdAt: integer("created_at").notNull().$defaultFn(now),
-  updatedAt: integer("updated_at").notNull().$defaultFn(now)
-});
-var settings = sqliteTable(
-  "settings",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    key: text("key").notNull(),
-    value: text("value").notNull(),
-    createdAt: integer("created_at").notNull().$defaultFn(now),
-    updatedAt: integer("updated_at").notNull().$defaultFn(now)
-  },
-  (table) => ({
-    userIdKeyUnique: uniqueIndex("settings_user_id_key_idx").on(table.userId, table.key)
-  })
-);
-
-// src/db/client.ts
-import path from "path";
-import { mkdirSync } from "fs";
-var DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "app.db");
-mkdirSync(path.dirname(DB_PATH), { recursive: true });
-var sqlite = new Database(DB_PATH);
-sqlite.pragma("journal_mode = WAL");
-sqlite.pragma("foreign_keys = ON");
-var db = drizzle(sqlite, { schema: schema_exports });
-
-// src/routes/auth.ts
-import { eq, and } from "drizzle-orm";
-import bcrypt from "bcryptjs";
+// src/db/cloudbase/repositories.ts
 import { nanoid } from "nanoid";
+
+// src/db/cloudbase/client.ts
+import CloudBase from "@cloudbase/node-sdk";
+var COLLECTION_PREFIX = process.env.DB_COLLECTION_PREFIX || "vibe_agent_";
+var app = null;
+function getApp() {
+  if (app) return app;
+  const envId = process.env.TCB_ENV_ID;
+  const region = process.env.TCB_REGION || "ap-shanghai";
+  const secretId = process.env.TCB_SECRET_ID;
+  const secretKey = process.env.TCB_SECRET_KEY;
+  const token = process.env.TCB_TOKEN || void 0;
+  if (!envId || !secretId || !secretKey) {
+    throw new Error("CloudBase credentials not configured: TCB_ENV_ID, TCB_SECRET_ID, TCB_SECRET_KEY are required");
+  }
+  app = CloudBase.init({
+    env: envId,
+    region,
+    secretId,
+    secretKey,
+    ...token ? { sessionToken: token } : {}
+  });
+  return app;
+}
+function getDatabase() {
+  return getApp().database();
+}
+function getCommand() {
+  return getApp().database().command;
+}
+var ensuredCollections = /* @__PURE__ */ new Set();
+function getCollectionName(name) {
+  return `${COLLECTION_PREFIX}${name}`;
+}
+async function getCollection(name) {
+  const db = getDatabase();
+  const fullName = getCollectionName(name);
+  if (!ensuredCollections.has(fullName)) {
+    try {
+      await db.createCollection(fullName);
+    } catch {
+    }
+    ensuredCollections.add(fullName);
+  }
+  return db.collection(fullName);
+}
+
+// src/db/cloudbase/repositories.ts
+var now = () => Date.now();
+function stripCloudBaseId(doc) {
+  const { _id, ...rest } = doc;
+  return rest;
+}
+var CloudBaseUserRepository = class {
+  async findById(id) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    const { data } = await collection.where({ id: _.eq(id) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByProviderAndExternalId(provider, externalId) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    const { data } = await collection.where({ provider: _.eq(provider), externalId: _.eq(externalId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(user) {
+    const collection = await getCollection("users");
+    const ts = now();
+    const doc = {
+      ...user,
+      createdAt: user.createdAt ?? ts,
+      updatedAt: user.updatedAt ?? ts,
+      lastLoginAt: user.lastLoginAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, data) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    await collection.where({ id: _.eq(id) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    return this.findById(id);
+  }
+  async deleteById(id) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    await collection.where({ id: _.eq(id) }).remove();
+  }
+};
+var CloudBaseLocalCredentialRepository = class {
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("local_credentials");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(credential) {
+    const collection = await getCollection("local_credentials");
+    const ts = now();
+    const doc = {
+      ...credential,
+      createdAt: credential.createdAt ?? ts,
+      updatedAt: credential.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+};
+var CloudBaseTaskRepository = class {
+  async findById(id) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const { data } = await collection.where({ id: _.eq(id) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByIdAndUserId(id, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const { data } = await collection.where({ id: _.eq(id), userId: _.eq(userId), deletedAt: _.eq(null) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const { data } = await collection.where({ userId: _.eq(userId), deletedAt: _.eq(null) }).orderBy("createdAt", "desc").limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByRepoAndPr(userId, prNumber, repoUrl) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const { data } = await collection.where({ userId: _.eq(userId), prNumber: _.eq(prNumber), repoUrl: _.eq(repoUrl), deletedAt: _.eq(null) }).limit(1).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async create(task) {
+    const collection = await getCollection("tasks");
+    const ts = now();
+    const doc = {
+      ...task,
+      createdAt: task.createdAt ?? ts,
+      updatedAt: task.updatedAt ?? ts,
+      completedAt: task.completedAt ?? null,
+      deletedAt: task.deletedAt ?? null
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, data) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    await collection.where({ id: _.eq(id) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    return this.findById(id);
+  }
+  async updateUserId(fromUserId, toUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    await collection.where({ userId: _.eq(fromUserId) }).update({ userId: toUserId });
+  }
+  async softDelete(id) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    await collection.where({ id: _.eq(id) }).update({ deletedAt: now() });
+  }
+};
+var CloudBaseConnectorRepository = class {
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("connectors");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByIdAndUserId(id, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("connectors");
+    const { data } = await collection.where({ id: _.eq(id), userId: _.eq(userId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(connector) {
+    const collection = await getCollection("connectors");
+    const ts = now();
+    const doc = {
+      ...connector,
+      createdAt: connector.createdAt ?? ts,
+      updatedAt: connector.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, userId, data) {
+    const _ = getCommand();
+    const collection = await getCollection("connectors");
+    await collection.where({ id: _.eq(id), userId: _.eq(userId) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    return this.findByIdAndUserId(id, userId);
+  }
+  async updateUserId(fromUserId, toUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("connectors");
+    await collection.where({ userId: _.eq(fromUserId) }).update({ userId: toUserId });
+  }
+  async delete(id, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("connectors");
+    await collection.where({ id: _.eq(id), userId: _.eq(userId) }).remove();
+  }
+};
+var CloudBaseAccountRepository = class {
+  async findByUserIdAndProvider(userId, provider) {
+    const _ = getCommand();
+    const collection = await getCollection("accounts");
+    const { data } = await collection.where({ userId: _.eq(userId), provider: _.eq(provider) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByProviderAndExternalUserId(provider, externalUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("accounts");
+    const { data } = await collection.where({ provider: _.eq(provider), externalUserId: _.eq(externalUserId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(account) {
+    const collection = await getCollection("accounts");
+    const ts = now();
+    const doc = {
+      ...account,
+      createdAt: account.createdAt ?? ts,
+      updatedAt: account.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, data) {
+    const _ = getCommand();
+    const collection = await getCollection("accounts");
+    await collection.where({ id: _.eq(id) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    const { data: rows } = await collection.where({ id: _.eq(id) }).limit(1).get();
+    if (!rows || rows.length === 0) return null;
+    return stripCloudBaseId(rows[0]);
+  }
+  async updateUserId(fromUserId, toUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("accounts");
+    await collection.where({ userId: _.eq(fromUserId) }).update({ userId: toUserId });
+  }
+  async delete(userId, provider) {
+    const _ = getCommand();
+    const collection = await getCollection("accounts");
+    await collection.where({ userId: _.eq(userId), provider: _.eq(provider) }).remove();
+  }
+};
+var CloudBaseKeyRepository = class {
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("keys");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByUserIdAndProvider(userId, provider) {
+    const _ = getCommand();
+    const collection = await getCollection("keys");
+    const { data } = await collection.where({ userId: _.eq(userId), provider: _.eq(provider) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async upsert(key) {
+    const ts = now();
+    const existing = await this.findByUserIdAndProvider(key.userId, key.provider);
+    if (existing) {
+      const _ = getCommand();
+      const collection2 = await getCollection("keys");
+      await collection2.where({ userId: _.eq(key.userId), provider: _.eq(key.provider) }).update({ value: key.value, updatedAt: ts });
+      return { ...existing, value: key.value, updatedAt: ts };
+    }
+    const collection = await getCollection("keys");
+    const doc = {
+      ...key,
+      id: key.id || nanoid(),
+      createdAt: key.createdAt ?? ts,
+      updatedAt: key.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async updateUserId(fromUserId, toUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("keys");
+    await collection.where({ userId: _.eq(fromUserId) }).update({ userId: toUserId });
+  }
+  async delete(userId, provider) {
+    const _ = getCommand();
+    const collection = await getCollection("keys");
+    await collection.where({ userId: _.eq(userId), provider: _.eq(provider) }).remove();
+  }
+};
+var CloudBaseUserResourceRepository = class {
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("user_resources");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(resource) {
+    const collection = await getCollection("user_resources");
+    const ts = now();
+    const doc = {
+      ...resource,
+      createdAt: resource.createdAt ?? ts,
+      updatedAt: resource.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, data) {
+    const _ = getCommand();
+    const collection = await getCollection("user_resources");
+    await collection.where({ id: _.eq(id) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    const { data: rows } = await collection.where({ id: _.eq(id) }).limit(1).get();
+    if (!rows || rows.length === 0) return null;
+    return stripCloudBaseId(rows[0]);
+  }
+};
+var CloudBaseSettingRepository = class {
+  async findByUserIdAndKey(userId, key) {
+    const _ = getCommand();
+    const collection = await getCollection("settings");
+    const { data } = await collection.where({ userId: _.eq(userId), key: _.eq(key) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("settings");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async upsert(setting) {
+    const ts = now();
+    const existing = await this.findByUserIdAndKey(setting.userId, setting.key);
+    if (existing) {
+      const _ = getCommand();
+      const collection2 = await getCollection("settings");
+      await collection2.where({ userId: _.eq(setting.userId), key: _.eq(setting.key) }).update({ value: setting.value, updatedAt: ts });
+      return { ...existing, value: setting.value, updatedAt: ts };
+    }
+    const collection = await getCollection("settings");
+    const doc = {
+      ...setting,
+      id: setting.id || nanoid(),
+      createdAt: setting.createdAt ?? ts,
+      updatedAt: setting.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+};
+var CloudBaseDeploymentRepository = class {
+  async findByTaskId(taskId) {
+    const _ = getCommand();
+    const collection = await getCollection("deployments");
+    const { data } = await collection.where({ taskId: _.eq(taskId), deletedAt: _.eq(null) }).limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByTaskIdAndTypePath(taskId, type, path5) {
+    const _ = getCommand();
+    const collection = await getCollection("deployments");
+    const where = {
+      taskId: _.eq(taskId),
+      type: _.eq(type),
+      deletedAt: _.eq(null)
+    };
+    if (path5 !== null) {
+      where.path = _.eq(path5);
+    } else {
+      where.path = _.eq(null);
+    }
+    const { data } = await collection.where(where).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByTaskIdAndUserId(taskId, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("deployments");
+    const { data } = await collection.where({ taskId: _.eq(taskId), deletedAt: _.eq(null) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(deployment) {
+    const collection = await getCollection("deployments");
+    const ts = now();
+    const doc = {
+      ...deployment,
+      createdAt: deployment.createdAt ?? ts,
+      updatedAt: deployment.updatedAt ?? ts,
+      deletedAt: deployment.deletedAt ?? null
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, data) {
+    const _ = getCommand();
+    const collection = await getCollection("deployments");
+    await collection.where({ id: _.eq(id) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    const { data: rows } = await collection.where({ id: _.eq(id) }).limit(1).get();
+    if (!rows || rows.length === 0) return null;
+    return stripCloudBaseId(rows[0]);
+  }
+  async softDelete(id) {
+    const _ = getCommand();
+    const collection = await getCollection("deployments");
+    await collection.where({ id: _.eq(id) }).update({ deletedAt: now() });
+  }
+};
+function createCloudBaseProvider() {
+  return {
+    users: new CloudBaseUserRepository(),
+    localCredentials: new CloudBaseLocalCredentialRepository(),
+    tasks: new CloudBaseTaskRepository(),
+    connectors: new CloudBaseConnectorRepository(),
+    accounts: new CloudBaseAccountRepository(),
+    keys: new CloudBaseKeyRepository(),
+    userResources: new CloudBaseUserResourceRepository(),
+    settings: new CloudBaseSettingRepository(),
+    deployments: new CloudBaseDeploymentRepository()
+  };
+}
+
+// src/db/index.ts
+var _provider = null;
+function getDb() {
+  if (_provider) return _provider;
+  const backend = process.env.DB_PROVIDER || "cloudbase";
+  if (backend === "drizzle") {
+    const { createDrizzleProvider: createDrizzleProvider2 } = (init_repositories(), __toCommonJS(repositories_exports));
+    _provider = createDrizzleProvider2();
+  } else {
+    _provider = createCloudBaseProvider();
+  }
+  return _provider;
+}
+
+// src/middleware/auth.ts
+import CloudBaseManager from "@cloudbase/manager-node";
 
 // src/cloudbase/provision.ts
 import tencentcloud from "tencentcloud-sdk-nodejs";
 var CamClient = tencentcloud.cam.v20190116.Client;
 var TcbClient = tencentcloud.tcb.v20180608.Client;
+function buildUserEnvPolicyStatements(envId) {
+  return [
+    {
+      action: [
+        "tcb:DescribeEnvs",
+        "tcb:DescribePackages",
+        "tcb:CheckTcbService",
+        "tcb:DescribeBillingInfo",
+        "tcb:DescribeEnvLimit",
+        "tcb:GetUserKeyList",
+        "tcb:DescribeMonitorMetric",
+        "tcb:ListTables"
+      ],
+      effect: "allow",
+      resource: ["*"]
+    },
+    {
+      action: ["tcb:*"],
+      effect: "allow",
+      resource: [`qcs::tcb:::env/${envId}`]
+    },
+    {
+      action: ["cos:*"],
+      effect: "allow",
+      resource: ["*"]
+    },
+    {
+      action: ["scf:*"],
+      effect: "allow",
+      resource: ["*"]
+    },
+    {
+      action: ["sts:GetFederationToken"],
+      effect: "allow",
+      resource: ["*"]
+    }
+  ];
+}
 function getClients() {
   const credential = {
     secretId: process.env.TCB_SECRET_ID || process.env.TENCENT_SECRET_ID || "",
-    secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENT_SECRET_KEY || ""
+    secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENT_SECRET_KEY || "",
+    token: process.env.TCB_TOKEN || process.env.TENCENTCLOUD_SESSIONTOKEN || ""
   };
   const camClient = new CamClient({
     credential,
@@ -358,42 +1169,7 @@ async function provisionUserResources(userId, username) {
   if (!policyId) {
     const policyDocument = JSON.stringify({
       version: "2.0",
-      statement: [
-        {
-          action: [
-            "tcb:DescribeEnvs",
-            "tcb:DescribePackages",
-            "tcb:CheckTcbService",
-            "tcb:DescribeBillingInfo",
-            "tcb:DescribeEnvLimit",
-            "tcb:GetUserKeyList",
-            "tcb:DescribeMonitorMetric",
-            "tcb:ListTables"
-          ],
-          effect: "allow",
-          resource: ["*"]
-        },
-        {
-          action: ["tcb:*"],
-          effect: "allow",
-          resource: [`qcs::tcb:::env/${envId}`]
-        },
-        {
-          action: ["cos:*"],
-          effect: "allow",
-          resource: ["*"]
-        },
-        {
-          action: ["scf:*"],
-          effect: "allow",
-          resource: ["*"]
-        },
-        {
-          action: ["sts:GetFederationToken"],
-          effect: "allow",
-          resource: ["*"]
-        }
-      ]
+      statement: buildUserEnvPolicyStatements(envId)
     });
     const createPolicyResp = await camClient.CreatePolicy({
       PolicyName: policyName,
@@ -415,7 +1191,95 @@ async function provisionUserResources(userId, username) {
   };
 }
 
+// src/middleware/auth.ts
+var SESSION_COOKIE_NAME = "nex_session";
+async function authMiddleware(c, next) {
+  const sessionCookie = getCookie(c, SESSION_COOKIE_NAME);
+  if (sessionCookie) {
+    try {
+      const session = await decryptJWE(sessionCookie);
+      c.set("session", session);
+    } catch (e) {
+    }
+  }
+  await next();
+}
+function requireAuth(c) {
+  const session = c.get("session");
+  if (!session?.user?.id) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  return null;
+}
+var tempCredentialCache = /* @__PURE__ */ new Map();
+async function issueTempCredentials(envId, userId) {
+  const cached = tempCredentialCache.get(userId);
+  if (cached && cached.expireTime > Date.now() / 1e3 + 300) {
+    return cached.credentials;
+  }
+  const systemSecretId = process.env.TCB_SECRET_ID;
+  const systemSecretKey = process.env.TCB_SECRET_KEY;
+  const systemEnvId = process.env.TCB_ENV_ID;
+  if (!systemSecretId || !systemSecretKey || !systemEnvId) return void 0;
+  try {
+    const app7 = new CloudBaseManager({ secretId: systemSecretId, secretKey: systemSecretKey, envId: systemEnvId });
+    const result = await app7.commonService("sts").call({
+      Action: "GetFederationToken",
+      Param: {
+        Name: `vibe-user-${userId.slice(0, 8)}`,
+        DurationSeconds: 7200,
+        Policy: JSON.stringify({
+          version: "2.0",
+          statement: buildUserEnvPolicyStatements(envId)
+        })
+      }
+    });
+    const creds = result?.Credentials;
+    if (creds?.TmpSecretId && creds?.TmpSecretKey && creds?.Token) {
+      const credentials = {
+        secretId: creds.TmpSecretId,
+        secretKey: creds.TmpSecretKey,
+        sessionToken: creds.Token
+      };
+      tempCredentialCache.set(userId, {
+        credentials,
+        expireTime: result?.ExpiredTime || Date.now() / 1e3 + 7200
+      });
+      return credentials;
+    }
+  } catch (err) {
+    console.error("[Auth] issueTempCredentials failed:", err.message);
+  }
+  return void 0;
+}
+async function requireUserEnv(c, next) {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const resource = await getDb().userResources.findByUserId(userId);
+  if (!resource?.envId) {
+    return c.json({ error: "User environment not ready" }, 400);
+  }
+  const envId = resource.envId;
+  let credentials;
+  if (resource.camSecretId && resource.camSecretKey) {
+    credentials = { secretId: resource.camSecretId, secretKey: resource.camSecretKey };
+  } else {
+    credentials = await issueTempCredentials(envId, userId);
+  }
+  if (!credentials) {
+    return c.json({ error: "Failed to obtain user credentials" }, 500);
+  }
+  c.set("userEnv", { envId, userId, credentials });
+  await next();
+}
+
 // src/routes/auth.ts
+import { Hono } from "hono";
+import { setCookie, deleteCookie } from "hono/cookie";
+import bcrypt from "bcryptjs";
+import { nanoid as nanoid3 } from "nanoid";
 var SESSION_COOKIE_NAME2 = "nex_session";
 var COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 var auth = new Hono();
@@ -433,31 +1297,36 @@ auth.post("/register", async (c) => {
     if (password.length < 6) {
       return c.json({ error: "Password must be at least 6 characters" }, 400);
     }
-    const existing = await db.select({ id: users.id }).from(users).where(and(eq(users.provider, "local"), eq(users.externalId, trimmedUsername))).limit(1);
-    if (existing.length > 0) {
+    const existing = await getDb().users.findByProviderAndExternalId("local", trimmedUsername);
+    if (existing) {
       return c.json({ error: "Username already taken" }, 409);
     }
-    const userId = nanoid();
-    const now2 = Date.now();
+    const userId = nanoid3();
+    const now4 = Date.now();
     const passwordHash = await bcrypt.hash(password, 12);
-    await db.insert(users).values({
+    await getDb().users.create({
       id: userId,
       provider: "local",
       externalId: trimmedUsername,
       accessToken: "",
+      refreshToken: null,
+      scope: null,
       username: trimmedUsername,
-      createdAt: now2,
-      updatedAt: now2,
-      lastLoginAt: now2
+      email: null,
+      name: null,
+      avatarUrl: null,
+      createdAt: now4,
+      updatedAt: now4,
+      lastLoginAt: now4
     });
-    await db.insert(localCredentials).values({
+    await getDb().localCredentials.create({
       userId,
       passwordHash,
-      createdAt: now2,
-      updatedAt: now2
+      createdAt: now4,
+      updatedAt: now4
     });
     const session = {
-      created: now2,
+      created: now4,
       authProvider: "github",
       user: {
         id: userId,
@@ -470,17 +1339,24 @@ auth.post("/register", async (c) => {
     const sessionValue = await encryptJWE(session, "1y");
     const provisionMode = process.env.TCB_PROVISION_MODE || "shared";
     if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
-      const resourceId = nanoid();
+      const resourceId = nanoid3();
       if (provisionMode === "isolated") {
-        await db.insert(userResources).values({
+        await getDb().userResources.create({
           id: resourceId,
           userId,
           status: "processing",
-          createdAt: now2,
-          updatedAt: now2
+          envId: null,
+          camUsername: null,
+          camSecretId: null,
+          camSecretKey: null,
+          policyId: null,
+          failStep: null,
+          failReason: null,
+          createdAt: now4,
+          updatedAt: now4
         });
         provisionUserResources(userId, trimmedUsername).then(async (result) => {
-          await db.update(userResources).set({
+          await getDb().userResources.update(resourceId, {
             status: "success",
             envId: result.envId,
             camUsername: result.camUsername,
@@ -488,22 +1364,30 @@ auth.post("/register", async (c) => {
             camSecretKey: result.camSecretKey || null,
             policyId: result.policyId,
             updatedAt: Date.now()
-          }).where(eq(userResources.id, resourceId));
+          });
           console.log(`[provision] User ${trimmedUsername} env ready: ${result.envId}`);
         }).catch(async (err) => {
-          await db.update(userResources).set({ status: "failed", failReason: err.message, updatedAt: Date.now() }).where(eq(userResources.id, resourceId));
+          await getDb().userResources.update(resourceId, {
+            status: "failed",
+            failReason: err.message,
+            updatedAt: Date.now()
+          });
           console.error(`[provision] User ${trimmedUsername} failed:`, err.message);
         });
       } else {
-        await db.insert(userResources).values({
+        await getDb().userResources.create({
           id: resourceId,
           userId,
           status: "success",
           envId: process.env.TCB_ENV_ID || null,
+          camUsername: null,
           camSecretId: process.env.TCB_SECRET_ID || null,
           camSecretKey: process.env.TCB_SECRET_KEY || null,
-          createdAt: now2,
-          updatedAt: now2
+          policyId: null,
+          failStep: null,
+          failReason: null,
+          createdAt: now4,
+          updatedAt: now4
         });
         console.log(`[provision] User ${trimmedUsername} shared env: ${process.env.TCB_ENV_ID}`);
       }
@@ -528,11 +1412,11 @@ auth.post("/login", async (c) => {
       return c.json({ error: "Username and password are required" }, 400);
     }
     const trimmedUsername = username.trim().toLowerCase();
-    const [user] = await db.select().from(users).where(and(eq(users.provider, "local"), eq(users.externalId, trimmedUsername))).limit(1);
+    const user = await getDb().users.findByProviderAndExternalId("local", trimmedUsername);
     if (!user) {
       return c.json({ error: "Invalid username or password" }, 401);
     }
-    const [cred] = await db.select().from(localCredentials).where(eq(localCredentials.userId, user.id)).limit(1);
+    const cred = await getDb().localCredentials.findByUserId(user.id);
     if (!cred) {
       return c.json({ error: "Invalid username or password" }, 401);
     }
@@ -540,7 +1424,7 @@ auth.post("/login", async (c) => {
     if (!valid) {
       return c.json({ error: "Invalid username or password" }, 401);
     }
-    await db.update(users).set({ lastLoginAt: Date.now(), updatedAt: Date.now() }).where(eq(users.id, user.id));
+    await getDb().users.update(user.id, { lastLoginAt: Date.now(), updatedAt: Date.now() });
     const session = {
       created: Date.now(),
       authProvider: "github",
@@ -574,12 +1458,18 @@ auth.get("/me", async (c) => {
   if (!session) {
     return c.json({ user: void 0 });
   }
-  return c.json({ user: session.user, authProvider: session.authProvider });
+  let envId;
+  try {
+    const resource = await getDb().userResources.findByUserId(session.user.id);
+    envId = resource?.envId || void 0;
+  } catch {
+  }
+  return c.json({ user: session.user, authProvider: session.authProvider, envId });
 });
 auth.get("/provision-status", async (c) => {
   const session = c.get("session");
   if (!session?.user?.id) return c.json({ error: "Unauthorized" }, 401);
-  const [resource] = await db.select().from(userResources).where(eq(userResources.userId, session.user.id)).limit(1);
+  const resource = await getDb().userResources.findByUserId(session.user.id);
   if (!resource) return c.json({ status: "not_started" });
   return c.json({
     status: resource.status,
@@ -604,8 +1494,819 @@ auth.get("/rate-limit", async (c) => {
 });
 var auth_default = auth;
 
-// src/routes/acp.ts
+// src/routes/github-auth.ts
 import { Hono as Hono2 } from "hono";
+import { getCookie as getCookie2, setCookie as setCookie2, deleteCookie as deleteCookie2 } from "hono/cookie";
+import { nanoid as nanoid4 } from "nanoid";
+
+// src/lib/crypto.ts
+import crypto from "crypto";
+var ALGORITHM = "aes-256-cbc";
+var IV_LENGTH = 16;
+var getEncryptionKey = () => {
+  const key = process.env.ENCRYPTION_KEY;
+  if (!key) {
+    return null;
+  }
+  const keyBuffer = Buffer.from(key, "hex");
+  if (keyBuffer.length !== 32) {
+    throw new Error(
+      "ENCRYPTION_KEY must be a 32-byte hex string (64 characters). Generate one with: openssl rand -hex 32"
+    );
+  }
+  return keyBuffer;
+};
+var encrypt = (text2) => {
+  if (!text2) return text2;
+  const ENCRYPTION_KEY = getEncryptionKey();
+  if (!ENCRYPTION_KEY) {
+    throw new Error(
+      "ENCRYPTION_KEY environment variable is required for MCP encryption. Generate one with: openssl rand -hex 32"
+    );
+  }
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(text2, "utf8"), cipher.final()]);
+  return `${iv.toString("hex")}:${encrypted.toString("hex")}`;
+};
+var decrypt = (encryptedText) => {
+  if (!encryptedText) return encryptedText;
+  const ENCRYPTION_KEY = getEncryptionKey();
+  if (!ENCRYPTION_KEY) {
+    throw new Error(
+      "ENCRYPTION_KEY environment variable is required for MCP decryption. Generate one with: openssl rand -hex 32"
+    );
+  }
+  if (!encryptedText.includes(":")) {
+    throw new Error("Invalid encrypted text format");
+  }
+  try {
+    const [ivHex, encryptedHex] = encryptedText.split(":");
+    const iv = Buffer.from(ivHex, "hex");
+    const encrypted = Buffer.from(encryptedHex, "hex");
+    const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return decrypted.toString("utf8");
+  } catch (error) {
+    throw new Error("Failed to decrypt: " + (error instanceof Error ? error.message : "unknown error"));
+  }
+};
+
+// src/routes/github-auth.ts
+var SESSION_COOKIE_NAME3 = "nex_session";
+var COOKIE_MAX_AGE2 = 60 * 60 * 24 * 365;
+function generateState() {
+  return nanoid4(32);
+}
+var githubAuth = new Hono2();
+githubAuth.get("/signin", async (c) => {
+  const session = c.get("session");
+  if (!session?.user) {
+    return c.redirect("/");
+  }
+  const clientId = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
+  const origin = new URL(c.req.url).origin;
+  const redirectUri = `${origin}/api/auth/github/callback`;
+  if (!clientId) {
+    return c.redirect("/?error=github_not_configured");
+  }
+  const state = generateState();
+  const next = c.req.query("next") ?? "/";
+  const redirectTo = next.startsWith("/") ? next : "/";
+  setCookie2(c, "github_oauth_redirect_to", redirectTo, {
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 60 * 10,
+    sameSite: "Lax"
+  });
+  setCookie2(c, "github_oauth_state", state, {
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 60 * 10,
+    sameSite: "Lax"
+  });
+  setCookie2(c, "github_oauth_user_id", session.user.id, {
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 60 * 10,
+    sameSite: "Lax"
+  });
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope: "repo,read:user,user:email",
+    state
+  });
+  return c.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+});
+githubAuth.get("/callback", async (c) => {
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const authMode = getCookie2(c, "github_auth_mode") ?? null;
+  const isSignInFlow = authMode === "signin";
+  const storedState = getCookie2(c, authMode ? "github_auth_state" : "github_oauth_state") ?? null;
+  const storedRedirectTo = getCookie2(c, authMode ? "github_auth_redirect_to" : "github_oauth_redirect_to") ?? null;
+  const storedUserId = getCookie2(c, "github_oauth_user_id") ?? null;
+  if (isSignInFlow) {
+    if (!code || !state || storedState !== state || !storedRedirectTo) {
+      return c.text("Invalid OAuth state", 400);
+    }
+  } else {
+    if (!code || !state || storedState !== state || !storedRedirectTo || !storedUserId) {
+      return c.text("Invalid OAuth state", 400);
+    }
+  }
+  const clientId = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return c.text("GitHub OAuth not configured", 500);
+  }
+  try {
+    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code
+      })
+    });
+    if (!tokenResponse.ok) {
+      console.error("[GitHub Callback] Token exchange failed");
+      return c.text("Failed to exchange code for token", 400);
+    }
+    const tokenData = await tokenResponse.json();
+    if (!tokenData.access_token) {
+      console.error("[GitHub Callback] Failed to get GitHub access token");
+      return c.text(
+        `Failed to authenticate with GitHub: ${tokenData.error_description || tokenData.error || "Unknown error"}`,
+        400
+      );
+    }
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    const githubUser = await userResponse.json();
+    if (isSignInFlow) {
+      let email = githubUser.email;
+      if (!email) {
+        try {
+          const emailsResponse = await fetch("https://api.github.com/user/emails", {
+            headers: {
+              Authorization: `Bearer ${tokenData.access_token}`,
+              Accept: "application/vnd.github.v3+json"
+            }
+          });
+          if (emailsResponse.ok) {
+            const emails = await emailsResponse.json();
+            const primaryEmail = emails.find((e) => e.primary && e.verified);
+            email = primaryEmail?.email || emails[0]?.email || null;
+          }
+        } catch {
+        }
+      }
+      const now4 = Date.now();
+      const externalId = `${githubUser.id}`;
+      const encryptedToken = encrypt(tokenData.access_token);
+      const existing = await getDb().users.findByProviderAndExternalId("github", externalId);
+      let userId;
+      if (existing) {
+        userId = existing.id;
+        await getDb().users.update(userId, {
+          accessToken: encryptedToken,
+          scope: tokenData.scope,
+          username: githubUser.login,
+          email: email || null,
+          name: githubUser.name || githubUser.login,
+          avatarUrl: githubUser.avatar_url,
+          updatedAt: now4,
+          lastLoginAt: now4
+        });
+      } else {
+        userId = nanoid4();
+        await getDb().users.create({
+          id: userId,
+          provider: "github",
+          externalId,
+          accessToken: encryptedToken,
+          refreshToken: null,
+          scope: tokenData.scope,
+          username: githubUser.login,
+          email: email || null,
+          name: githubUser.name || githubUser.login,
+          avatarUrl: githubUser.avatar_url,
+          createdAt: now4,
+          updatedAt: now4,
+          lastLoginAt: now4
+        });
+      }
+      const session = {
+        created: now4,
+        authProvider: "github",
+        user: {
+          id: userId,
+          username: githubUser.login,
+          email: email || void 0,
+          name: githubUser.name || githubUser.login,
+          avatar: githubUser.avatar_url
+        }
+      };
+      const sessionValue = await encryptJWE(session, "1y");
+      deleteCookie2(c, "github_auth_state", { path: "/" });
+      deleteCookie2(c, "github_auth_redirect_to", { path: "/" });
+      deleteCookie2(c, "github_auth_mode", { path: "/" });
+      setCookie2(c, SESSION_COOKIE_NAME3, sessionValue, {
+        path: "/",
+        maxAge: COOKIE_MAX_AGE2,
+        httpOnly: true,
+        sameSite: "Lax",
+        secure: process.env.NODE_ENV === "production"
+      });
+      return c.redirect(storedRedirectTo);
+    } else {
+      const encryptedToken = encrypt(tokenData.access_token);
+      const existingAccount = await getDb().accounts.findByUserIdAndProvider(storedUserId, "github");
+      const accountByExternal = await getDb().accounts.findByProviderAndExternalUserId("github", `${githubUser.id}`);
+      if (accountByExternal) {
+        const connectedUserId = accountByExternal.userId;
+        if (connectedUserId !== storedUserId) {
+          await getDb().tasks.updateUserId(connectedUserId, storedUserId);
+          await getDb().connectors.updateUserId(connectedUserId, storedUserId);
+          await getDb().accounts.updateUserId(connectedUserId, storedUserId);
+          await getDb().keys.updateUserId(connectedUserId, storedUserId);
+          await getDb().users.deleteById(connectedUserId);
+          await getDb().accounts.update(accountByExternal.id, {
+            userId: storedUserId,
+            accessToken: encryptedToken,
+            scope: tokenData.scope,
+            username: githubUser.login,
+            updatedAt: Date.now()
+          });
+        } else {
+          await getDb().accounts.update(accountByExternal.id, {
+            accessToken: encryptedToken,
+            scope: tokenData.scope,
+            username: githubUser.login,
+            updatedAt: Date.now()
+          });
+        }
+      } else {
+        await getDb().accounts.create({
+          id: nanoid4(),
+          userId: storedUserId,
+          provider: "github",
+          externalUserId: `${githubUser.id}`,
+          accessToken: encryptedToken,
+          refreshToken: null,
+          expiresAt: null,
+          scope: tokenData.scope,
+          username: githubUser.login
+        });
+      }
+      if (authMode) {
+        deleteCookie2(c, "github_auth_state", { path: "/" });
+        deleteCookie2(c, "github_auth_redirect_to", { path: "/" });
+        deleteCookie2(c, "github_auth_mode", { path: "/" });
+      } else {
+        deleteCookie2(c, "github_oauth_state", { path: "/" });
+        deleteCookie2(c, "github_oauth_redirect_to", { path: "/" });
+      }
+      deleteCookie2(c, "github_oauth_user_id", { path: "/" });
+      return c.redirect(storedRedirectTo);
+    }
+  } catch (error) {
+    console.error("[GitHub Callback] OAuth callback error:", error);
+    return c.text("Failed to complete GitHub authentication", 500);
+  }
+});
+githubAuth.get("/status", async (c) => {
+  const session = c.get("session");
+  if (!session?.user) {
+    return c.json({ connected: false });
+  }
+  if (!session.user.id) {
+    console.error("GitHub status check: session.user.id is undefined");
+    return c.json({ connected: false });
+  }
+  try {
+    const account = await getDb().accounts.findByUserIdAndProvider(session.user.id, "github");
+    if (account) {
+      return c.json({
+        connected: true,
+        username: account.username,
+        connectedAt: account.createdAt
+      });
+    }
+    const user = await getDb().users.findById(session.user.id);
+    if (user && user.provider === "github") {
+      return c.json({
+        connected: true,
+        username: user.username,
+        connectedAt: user.createdAt
+      });
+    }
+    return c.json({ connected: false });
+  } catch (error) {
+    console.error("Error checking GitHub connection status:", error);
+    return c.json({ connected: false, error: "Failed to check status" }, 500);
+  }
+});
+githubAuth.post("/disconnect", async (c) => {
+  const session = c.get("session");
+  if (!session?.user) {
+    return c.json({ error: "Not authenticated" }, 401);
+  }
+  if (!session.user.id) {
+    console.error("Session user.id is undefined");
+    return c.json({ error: "Invalid session - user ID missing" }, 400);
+  }
+  if (session.authProvider === "github") {
+    return c.json({ error: "Cannot disconnect primary authentication method" }, 400);
+  }
+  try {
+    await getDb().accounts.delete(session.user.id, "github");
+    return c.json({ success: true });
+  } catch (error) {
+    console.error("Error disconnecting GitHub:", error);
+    return c.json({ error: "Failed to disconnect" }, 500);
+  }
+});
+var github_auth_default = githubAuth;
+
+// src/routes/github.ts
+import { Hono as Hono3 } from "hono";
+import { Octokit } from "@octokit/rest";
+var github = new Hono3();
+async function getGitHubToken(userId) {
+  try {
+    const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
+    if (account?.accessToken) {
+      return decrypt(account.accessToken);
+    }
+    const user = await getDb().users.findById(userId);
+    if (user?.provider === "github" && user.accessToken) {
+      return decrypt(user.accessToken);
+    }
+    return null;
+  } catch (error) {
+    console.error("Error fetching user GitHub token:", error);
+    return null;
+  }
+}
+github.get("/user", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const response = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!response.ok) {
+      throw new Error("GitHub API error");
+    }
+    const user = await response.json();
+    return c.json({
+      login: user.login,
+      name: user.name,
+      avatar_url: user.avatar_url
+    });
+  } catch (error) {
+    console.error("Error fetching GitHub user:", error);
+    return c.json({ error: "Failed to fetch user data" }, 500);
+  }
+});
+github.get("/repos", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const owner = c.req.query("owner");
+    if (!owner) {
+      return c.json({ error: "Owner parameter is required" }, 400);
+    }
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    let isAuthenticatedUser = false;
+    if (userResponse.ok) {
+      const user = await userResponse.json();
+      isAuthenticatedUser = user.login === owner;
+    }
+    const allRepos = [];
+    let page = 1;
+    const perPage = 100;
+    while (true) {
+      let apiUrl;
+      if (isAuthenticatedUser) {
+        apiUrl = `https://api.github.com/user/repos?sort=name&direction=asc&per_page=${perPage}&page=${page}&visibility=all&affiliation=owner`;
+      } else {
+        const orgResponse = await fetch(`https://api.github.com/orgs/${owner}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github.v3+json"
+          }
+        });
+        if (orgResponse.ok) {
+          apiUrl = `https://api.github.com/orgs/${owner}/repos?sort=name&direction=asc&per_page=${perPage}&page=${page}`;
+        } else {
+          apiUrl = `https://api.github.com/users/${owner}/repos?sort=name&direction=asc&per_page=${perPage}&page=${page}`;
+        }
+      }
+      const response = await fetch(apiUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json"
+        }
+      });
+      if (!response.ok) {
+        throw new Error("GitHub API error");
+      }
+      const repos = await response.json();
+      if (repos.length === 0) {
+        break;
+      }
+      allRepos.push(...repos);
+      if (repos.length < perPage) {
+        break;
+      }
+      page++;
+    }
+    const uniqueRepos = allRepos.filter(
+      (repo, index2, self) => index2 === self.findIndex((r) => r.full_name === repo.full_name)
+    );
+    uniqueRepos.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    return c.json(
+      uniqueRepos.map((repo) => ({
+        name: repo.name,
+        full_name: repo.full_name,
+        description: repo.description,
+        private: repo.private,
+        clone_url: repo.clone_url,
+        updated_at: repo.updated_at,
+        language: repo.language
+      }))
+    );
+  } catch (error) {
+    console.error("Error fetching GitHub repositories:", error);
+    return c.json({ error: "Failed to fetch repositories" }, 500);
+  }
+});
+github.get("/user-repos", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const page = parseInt(c.req.query("page") || "1", 10);
+    const perPage = parseInt(c.req.query("per_page") || "25", 10);
+    const search = c.req.query("search") || "";
+    const userResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!userResponse.ok) {
+      return c.json({ error: "Failed to fetch user" }, 401);
+    }
+    const user = await userResponse.json();
+    const username = user.login;
+    if (search.trim()) {
+      const searchQuery = encodeURIComponent(`${search} in:name user:${username} fork:true`);
+      const searchUrl = `https://api.github.com/search/repositories?q=${searchQuery}&sort=updated&order=desc&per_page=${perPage}&page=${page}`;
+      const searchResponse = await fetch(searchUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json"
+        }
+      });
+      if (!searchResponse.ok) {
+        throw new Error("Failed to search repositories");
+      }
+      const searchResult = await searchResponse.json();
+      return c.json({
+        repos: searchResult.items.map((repo) => ({
+          name: repo.name,
+          full_name: repo.full_name,
+          owner: repo.owner.login,
+          description: repo.description,
+          private: repo.private,
+          clone_url: repo.clone_url,
+          updated_at: repo.updated_at,
+          language: repo.language
+        })),
+        page,
+        per_page: perPage,
+        has_more: searchResult.total_count > page * perPage,
+        total_count: searchResult.total_count,
+        username
+      });
+    }
+    const githubPerPage = 100;
+    const githubPage = Math.ceil(page * perPage / githubPerPage);
+    const apiUrl = `https://api.github.com/user/repos?sort=updated&direction=desc&per_page=${githubPerPage}&page=${githubPage}&visibility=all&affiliation=owner,organization_member`;
+    const response = await fetch(apiUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!response.ok) {
+      throw new Error("Failed to fetch repositories");
+    }
+    const repos = await response.json();
+    const offsetInGithubPage = (page - 1) * perPage % githubPerPage;
+    const slicedRepos = repos.slice(offsetInGithubPage, offsetInGithubPage + perPage);
+    const hasMore = repos.length === githubPerPage || slicedRepos.length === perPage;
+    return c.json({
+      repos: slicedRepos.map((repo) => ({
+        name: repo.name,
+        full_name: repo.full_name,
+        owner: repo.owner.login,
+        description: repo.description,
+        private: repo.private,
+        clone_url: repo.clone_url,
+        updated_at: repo.updated_at,
+        language: repo.language
+      })),
+      page,
+      per_page: perPage,
+      has_more: hasMore,
+      username
+    });
+  } catch (error) {
+    console.error("Error fetching user repositories:", error);
+    return c.json({ error: "Failed to fetch repositories" }, 500);
+  }
+});
+github.get("/orgs", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const response = await fetch("https://api.github.com/user/orgs", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!response.ok) {
+      throw new Error("GitHub API error");
+    }
+    const orgs = await response.json();
+    return c.json(
+      orgs.map((org) => ({
+        login: org.login,
+        name: org.name || org.login,
+        avatar_url: org.avatar_url
+      }))
+    );
+  } catch (error) {
+    console.error("Error fetching GitHub organizations:", error);
+    return c.json({ error: "Failed to fetch organizations" }, 500);
+  }
+});
+github.post("/repos/create", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub token not found. Please reconnect your GitHub account." }, 401);
+    }
+    const body = await c.req.json();
+    const { name, description, private: isPrivate, owner, template } = body;
+    if (!name || typeof name !== "string") {
+      return c.json({ error: "Repository name is required" }, 400);
+    }
+    const repoNamePattern = /^[a-zA-Z0-9._-]+$/;
+    if (!repoNamePattern.test(name)) {
+      return c.json(
+        { error: "Repository name can only contain alphanumeric characters, periods, hyphens, and underscores" },
+        400
+      );
+    }
+    const octokit = new Octokit({ auth: token });
+    try {
+      let repo;
+      if (owner) {
+        const { data: user } = await octokit.users.getAuthenticated();
+        if (user.login === owner) {
+          repo = await octokit.repos.createForAuthenticatedUser({
+            name,
+            description: description || void 0,
+            private: isPrivate || false,
+            auto_init: true
+          });
+        } else {
+          try {
+            repo = await octokit.repos.createInOrg({
+              org: owner,
+              name,
+              description: description || void 0,
+              private: isPrivate || false,
+              auto_init: true
+            });
+          } catch (error) {
+            if (error && typeof error === "object" && "status" in error && error.status === 404) {
+              return c.json(
+                { error: "Organization not found or you do not have permission to create repositories" },
+                403
+              );
+            }
+            throw error;
+          }
+        }
+      } else {
+        repo = await octokit.repos.createForAuthenticatedUser({
+          name,
+          description: description || void 0,
+          private: isPrivate || false,
+          auto_init: true
+        });
+      }
+      if (template) {
+        try {
+          await populateRepoFromTemplate(octokit, repo.data.owner.login, repo.data.name, template);
+        } catch (error) {
+          console.error("Error populating repository from template:", error);
+        }
+      }
+      return c.json({
+        success: true,
+        name: repo.data.name,
+        full_name: repo.data.full_name,
+        clone_url: repo.data.clone_url,
+        html_url: repo.data.html_url,
+        private: repo.data.private
+      });
+    } catch (error) {
+      console.error("GitHub API error:", error);
+      if (error && typeof error === "object" && "status" in error) {
+        if (error.status === 422) {
+          return c.json({ error: "Repository already exists or name is invalid" }, 422);
+        }
+        if (error.status === 403) {
+          return c.json({ error: "You do not have permission to create repositories in this organization" }, 403);
+        }
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error("Error creating repository:", error);
+    return c.json({ error: "Failed to create repository" }, 500);
+  }
+});
+github.post("/verify-repo", async (c) => {
+  try {
+    const session = c.get("session");
+    if (!session?.user?.id) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    const token = await getGitHubToken(session.user.id);
+    if (!token) {
+      return c.json({ error: "GitHub not connected" }, 401);
+    }
+    let owner = c.req.query("owner");
+    let repo = c.req.query("repo");
+    if (!owner || !repo) {
+      try {
+        const body = await c.req.json();
+        owner = owner || body.owner;
+        repo = repo || body.repo;
+      } catch {
+      }
+    }
+    if (!owner || !repo) {
+      return c.json({ error: "Owner and repo parameters are required" }, 400);
+    }
+    const response = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.v3+json"
+      }
+    });
+    if (!response.ok) {
+      if (response.status === 404) {
+        return c.json({ accessible: false, error: "Repository not found" });
+      }
+      return c.json({ accessible: false, error: "Failed to verify repository" });
+    }
+    const repoData = await response.json();
+    return c.json({
+      accessible: true,
+      owner: {
+        login: repoData.owner.login,
+        name: repoData.owner.login,
+        avatar_url: repoData.owner.avatar_url
+      },
+      repo: {
+        name: repoData.name,
+        full_name: repoData.full_name,
+        description: repoData.description,
+        private: repoData.private,
+        clone_url: repoData.clone_url,
+        language: repoData.language
+      }
+    });
+  } catch (error) {
+    console.error("Error verifying GitHub repository:", error);
+    return c.json({ accessible: false, error: "Failed to verify repository" }, 500);
+  }
+});
+async function copyFilesRecursively(octokit, sourceOwner, sourceRepoName, sourcePath, repoOwner, repoName, basePath) {
+  try {
+    const { data: contents } = await octokit.repos.getContent({
+      owner: sourceOwner,
+      repo: sourceRepoName,
+      path: sourcePath
+    });
+    if (!Array.isArray(contents)) {
+      return;
+    }
+    for (const item of contents) {
+      if (item.type === "file" && item.download_url) {
+        try {
+          const response = await fetch(item.download_url);
+          if (!response.ok) {
+            throw new Error("Failed to fetch file");
+          }
+          const content = await response.text();
+          const relativePath = basePath ? item.path.startsWith(basePath + "/") ? item.path.substring(basePath.length + 1) : item.name : item.path;
+          await octokit.repos.createOrUpdateFileContents({
+            owner: repoOwner,
+            repo: repoName,
+            path: relativePath,
+            message: `Add ${relativePath} from template`,
+            content: Buffer.from(content).toString("base64")
+          });
+        } catch (error) {
+          console.error("Error copying file:", error);
+        }
+      } else if (item.type === "dir") {
+        await copyFilesRecursively(octokit, sourceOwner, sourceRepoName, item.path, repoOwner, repoName, basePath);
+      }
+    }
+  } catch (error) {
+    console.error("Error processing directory:", error);
+  }
+}
+async function populateRepoFromTemplate(octokit, repoOwner, repoName, template) {
+  if (!template.cloneUrl) {
+    return;
+  }
+  const cloneMatch = template.cloneUrl.match(/github\.com\/([\w-]+)\/([\w-]+?)(?:\.git)?$/);
+  if (!cloneMatch) {
+    throw new Error("Invalid clone URL");
+  }
+  const [, sourceOwner, sourceRepoName] = cloneMatch;
+  try {
+    await copyFilesRecursively(octokit, sourceOwner, sourceRepoName, "", repoOwner, repoName, "");
+  } catch (error) {
+    console.error("Error populating repository from template:", error);
+    throw error;
+  }
+}
+var github_default = github;
+
+// src/routes/acp.ts
+import { Hono as Hono4 } from "hono";
 import { streamSSE } from "hono/streaming";
 import { v4 as uuidv43 } from "uuid";
 import {
@@ -619,9 +2320,14 @@ import { mkdirSync as mkdirSync2 } from "fs";
 import path4 from "path";
 import { fileURLToPath } from "url";
 import { query, ExecutionError } from "@tencent-ai/agent-sdk";
-import { z as z2 } from "zod";
-import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { v4 as uuidv42 } from "uuid";
+
+// src/agent/persistence.service.ts
+import * as fs2 from "fs/promises";
+import { realpathSync } from "fs";
+import * as path3 from "path";
+import { v4 as uuidv4 } from "uuid";
+import CloudBase2 from "@cloudbase/node-sdk";
 
 // src/config/store.ts
 import fs from "fs";
@@ -648,13 +2354,8 @@ function loadConfig() {
 }
 
 // src/agent/persistence.service.ts
-import * as fs2 from "fs/promises";
-import * as path3 from "path";
-import { v4 as uuidv4 } from "uuid";
-import CloudBase from "@cloudbase/node-sdk";
-import { AuthSupervisor } from "@cloudbase/toolbox";
 import { AGENT_ID } from "@coder/shared";
-var COLLECTION_NAME = "coder_agent_messages";
+var COLLECTION_NAME = "vibe_agent_messages";
 function getHomeDir() {
   return process.env.HOME || process.env.USERPROFILE || "";
 }
@@ -662,43 +2363,55 @@ function getProjectHash(cwd) {
   return cwd.replace(/[/\\:]/g, "-").replace(/^-+/, "").replace(/-+$/, "").replace(/-+/g, "-");
 }
 function getLocalMessageFilePath(sessionId, cwd) {
-  const projectDirName = getProjectHash(cwd);
-  const coderProjectsDir = path3.join(getHomeDir(), ".coder", "projects");
+  let resolvedCwd = cwd;
+  try {
+    resolvedCwd = realpathSync(cwd);
+  } catch {
+  }
+  const projectDirName = getProjectHash(resolvedCwd);
+  const homeDir = getHomeDir();
+  const coderProjectsDir = path3.join(homeDir, ".codebuddy", "projects");
   return path3.join(coderProjectsDir, projectDirName, `${sessionId}.jsonl`);
 }
 var PersistenceService = class {
+  /**
+   * 使用【支撑身份】初始化 CloudBase SDK
+   * 凭证来源：系统环境变量（永久密钥），用于操作支撑环境的数据库
+   * 注意：DB 记录中的 envId 字段是【用户环境 ID】，由 caller 传入，用于数据隔离
+   */
   async getCloudBaseApp() {
     const config = loadConfig();
     const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId;
+    const region = process.env.TCB_REGION || config.cloudbase?.region || "ap-shanghai";
     if (!envId) {
-      throw new Error("\u672A\u7ED1\u5B9A CloudBase \u73AF\u5883\uFF0C\u8BF7\u8BBE\u7F6E TCB_ENV_ID \u73AF\u5883\u53D8\u91CF");
+      throw new Error("\u7F3A\u5C11\u652F\u6491\u73AF\u5883\u914D\u7F6E\uFF0C\u8BF7\u8BBE\u7F6E TCB_ENV_ID \u73AF\u5883\u53D8\u91CF");
     }
     const secretId = process.env.TCB_SECRET_ID;
     const secretKey = process.env.TCB_SECRET_KEY;
     const token = process.env.TCB_TOKEN || void 0;
-    if (secretId && secretKey) {
-      return CloudBase.init({
-        envId,
-        secretId,
-        secretKey,
-        ...token ? { token } : {}
-      });
+    if (!secretId || !secretKey) {
+      throw new Error("\u7F3A\u5C11\u652F\u6491\u8EAB\u4EFD\u5BC6\u94A5\uFF0C\u8BF7\u8BBE\u7F6E TCB_SECRET_ID \u548C TCB_SECRET_KEY \u73AF\u5883\u53D8\u91CF");
     }
-    const auth3 = AuthSupervisor.getInstance({});
-    const loginState = await auth3.getLoginState();
-    if (!loginState) {
-      throw new Error("\u672A\u767B\u5F55 CloudBase\uFF0C\u8BF7\u8BBE\u7F6E TCB_SECRET_ID \u548C TCB_SECRET_KEY \u73AF\u5883\u53D8\u91CF");
-    }
-    return CloudBase.init({
-      envId,
-      secretId: loginState.secretId,
-      secretKey: loginState.secretKey,
-      token: loginState.token
+    return CloudBase2.init({
+      env: envId,
+      region,
+      secretId,
+      secretKey,
+      ...token ? { sessionToken: token } : {}
     });
   }
+  collectionEnsured = false;
   async getCollection() {
-    const app3 = await this.getCloudBaseApp();
-    return app3.database().collection(COLLECTION_NAME);
+    const app7 = await this.getCloudBaseApp();
+    const db = app7.database();
+    if (!this.collectionEnsured) {
+      try {
+        await db.createCollection(COLLECTION_NAME);
+      } catch {
+      }
+      this.collectionEnsured = true;
+    }
+    return db.collection(COLLECTION_NAME);
   }
   // ========== Message Conversion ==========
   transformDBMessagesToCodeBuddyMessages(records, sessionId) {
@@ -837,28 +2550,27 @@ var PersistenceService = class {
     }
   }
   // ========== Database Operations ==========
-  async loadDBMessages(conversationId, ownerUin, envId, userId, limit = 20) {
+  async loadDBMessages(conversationId, envId, userId, limit = 20) {
     try {
       const collection = await this.getCollection();
-      const app3 = await this.getCloudBaseApp();
-      const _ = app3.database().command;
+      const app7 = await this.getCloudBaseApp();
+      const _ = app7.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
-        ownerUin: _.eq(ownerUin),
         userId: _.eq(userId),
-        agentId: _.eq(AGENT_ID),
-        status: _.eq("done")
+        agentId: _.eq(AGENT_ID)
       }).orderBy("createTime", "desc").limit(limit).get();
-      const records = data.reverse();
-      return records.map((r) => ({
+      const sorted = data.reverse();
+      const firstUserIdx = sorted.findIndex((r) => r.role === "user");
+      const valid = firstUserIdx >= 0 ? sorted.slice(firstUserIdx) : sorted;
+      return valid.map((r) => ({
         recordId: r.recordId,
         conversationId: r.conversationId,
         replyTo: r.replyTo,
         role: r.role,
         status: r.status,
         envId: r.envId,
-        ownerUin: r.ownerUin,
         userId: r.userId,
         agentId: r.agentId,
         content: r.content,
@@ -871,11 +2583,11 @@ var PersistenceService = class {
   }
   async saveRecordToDB(record) {
     const collection = await this.getCollection();
-    const now2 = Date.now();
+    const now4 = Date.now();
     const doc = {
       ...record,
-      createTime: record.createTime || now2,
-      updateTime: now2
+      createTime: record.createTime || now4,
+      updateTime: now4
     };
     await collection.add(doc);
     return {
@@ -885,15 +2597,15 @@ var PersistenceService = class {
   }
   async updateRecordStatus(recordId, status) {
     const collection = await this.getCollection();
-    const app3 = await this.getCloudBaseApp();
-    const _ = app3.database().command;
+    const app7 = await this.getCloudBaseApp();
+    const _ = app7.database().command;
     await collection.where({ recordId: _.eq(recordId) }).update({ status, updateTime: Date.now() });
   }
   async appendPartsToRecord(recordId, parts) {
     if (parts.length === 0) return;
     const collection = await this.getCollection();
-    const app3 = await this.getCloudBaseApp();
-    const _ = app3.database().command;
+    const app7 = await this.getCloudBaseApp();
+    const _ = app7.database().command;
     const { data } = await collection.where({ recordId: _.eq(recordId) }).get();
     if (!data || data.length === 0) return;
     const existingRecord = data[0];
@@ -903,8 +2615,8 @@ var PersistenceService = class {
   }
   async replacePartsInRecord(recordId, parts) {
     const collection = await this.getCollection();
-    const app3 = await this.getCloudBaseApp();
-    const _ = app3.database().command;
+    const app7 = await this.getCloudBaseApp();
+    const _ = app7.database().command;
     await collection.where({ recordId: _.eq(recordId) }).update({ parts, updateTime: Date.now() });
   }
   // ========== Message Grouping ==========
@@ -1008,9 +2720,9 @@ var PersistenceService = class {
     ];
   }
   // ========== Public API ==========
-  async restoreMessages(conversationId, ownerUin, envId, userId, cwd) {
+  async restoreMessages(conversationId, envId, userId, cwd) {
     try {
-      const dbRecords = await this.loadDBMessages(conversationId, ownerUin, envId, userId);
+      const dbRecords = await this.loadDBMessages(conversationId, envId, userId);
       const lastRecordId = dbRecords.length > 0 ? dbRecords[dbRecords.length - 1].recordId : null;
       const lastAssistantRecord = [...dbRecords].reverse().find((r) => r.role === "assistant");
       const lastAssistantRecordId = lastAssistantRecord?.recordId ?? null;
@@ -1025,7 +2737,7 @@ var PersistenceService = class {
       return { messages: [], lastRecordId: null, lastAssistantRecordId: null };
     }
   }
-  async syncMessages(conversationId, ownerUin, envId, userId, historicalMessages, lastRecordId, cwd, assistantRecordId, isResumeFromInterrupt, preSavedUserRecordId) {
+  async syncMessages(conversationId, envId, userId, historicalMessages, lastRecordId, cwd, assistantRecordId, isResumeFromInterrupt, preSavedUserRecordId) {
     const localFilePath = getLocalMessageFilePath(conversationId, cwd);
     try {
       const allMessages = await this.readLocalMessageFile(localFilePath);
@@ -1060,7 +2772,6 @@ var PersistenceService = class {
       if (newMessages.length === 0) return;
       await this.appendMessagesToDB(
         conversationId,
-        ownerUin,
         envId,
         userId,
         newMessages,
@@ -1073,7 +2784,7 @@ var PersistenceService = class {
       await this.cleanupLocalFile(localFilePath);
     }
   }
-  async appendMessagesToDB(conversationId, ownerUin, envId, userId, newMessages, lastRecordId, assistantRecordId, isResumeFromInterrupt, preSavedUserRecordId) {
+  async appendMessagesToDB(conversationId, envId, userId, newMessages, lastRecordId, assistantRecordId, isResumeFromInterrupt, preSavedUserRecordId) {
     const groups = this.groupMessages(newMessages);
     let prevRecordId = lastRecordId;
     let firstAssistantGroupHandled = false;
@@ -1106,7 +2817,6 @@ var PersistenceService = class {
         recordId,
         conversationId,
         envId,
-        ownerUin,
         userId,
         agentId: AGENT_ID,
         role,
@@ -1120,7 +2830,7 @@ var PersistenceService = class {
     }
   }
   async preSavePendingRecords(params) {
-    const { conversationId, ownerUin, envId, userId, prompt, prevRecordId } = params;
+    const { conversationId, envId, userId, prompt, prevRecordId } = params;
     const assistantRecordId = params.assistantRecordId || uuidv4();
     const userRecordId = uuidv4();
     const userParts = [
@@ -1141,7 +2851,6 @@ var PersistenceService = class {
       recordId: userRecordId,
       conversationId,
       envId,
-      ownerUin,
       userId,
       agentId: AGENT_ID,
       role: "user",
@@ -1153,7 +2862,6 @@ var PersistenceService = class {
       recordId: assistantRecordId,
       conversationId,
       envId,
-      ownerUin,
       userId,
       agentId: AGENT_ID,
       role: "assistant",
@@ -1163,15 +2871,15 @@ var PersistenceService = class {
     });
     return { userRecordId, assistantRecordId };
   }
-  async getLatestRecordStatus(conversationId, ownerUin, envId) {
+  async getLatestRecordStatus(conversationId, userId, envId) {
     try {
       const collection = await this.getCollection();
-      const app3 = await this.getCloudBaseApp();
-      const _ = app3.database().command;
+      const app7 = await this.getCloudBaseApp();
+      const _ = app7.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
-        ownerUin: _.eq(ownerUin),
+        userId: _.eq(userId),
         role: _.eq("assistant")
       }).orderBy("createTime", "desc").limit(1).get();
       if (!data || data.length === 0) return null;
@@ -1183,15 +2891,15 @@ var PersistenceService = class {
       return null;
     }
   }
-  async conversationExists(conversationId, ownerUin, envId) {
+  async conversationExists(conversationId, userId, envId) {
     try {
       const collection = await this.getCollection();
-      const app3 = await this.getCloudBaseApp();
-      const _ = app3.database().command;
+      const app7 = await this.getCloudBaseApp();
+      const _ = app7.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
-        ownerUin: _.eq(ownerUin)
+        userId: _.eq(userId)
       }).limit(1).get();
       return data.length > 0;
     } catch {
@@ -1201,11 +2909,162 @@ var PersistenceService = class {
   async finalizePendingRecords(assistantRecordId, status) {
     await this.updateRecordStatus(assistantRecordId, status);
   }
+  /**
+   * 更新已存在的 tool_result 记录（DB only）
+   *
+   * interrupt=true 时 CLI 已写入 status=incomplete 的 tool_result，
+   * resume 时需要将其更新为用户实际回答的内容（而非追加新记录）
+   *
+   * @param conversationId 会话 ID（用于越权防护）
+   * @param recordId 消息记录 ID
+   * @param callId function_call 的 toolCallId
+   * @param output 用户回答的内容
+   * @param status 更新后的状态，默认 'completed'
+   */
+  async updateToolResult(conversationId, recordId, callId, output, status = "completed") {
+    const outputStr = typeof output === "string" ? output : JSON.stringify(output);
+    try {
+      const collection = await this.getCollection();
+      const app7 = await this.getCloudBaseApp();
+      const _ = app7.database().command;
+      const { data } = await collection.where({
+        conversationId: _.eq(conversationId),
+        recordId: _.eq(recordId)
+      }).limit(1).get();
+      if (!data || data.length === 0) return;
+      const record = data[0];
+      const parts = [...record.parts || []];
+      const toolResultIndex = parts.findIndex((p) => p.contentType === "tool_result" && p.toolCallId === callId);
+      if (toolResultIndex >= 0) {
+        parts[toolResultIndex] = {
+          ...parts[toolResultIndex],
+          content: outputStr,
+          metadata: {
+            ...parts[toolResultIndex].metadata || {},
+            status
+          }
+        };
+      } else {
+        const toolCallIndex = parts.findIndex((p) => p.contentType === "tool_call" && p.toolCallId === callId);
+        if (toolCallIndex >= 0) {
+          parts.push({
+            partId: uuidv4(),
+            contentType: "tool_result",
+            toolCallId: callId,
+            content: outputStr,
+            metadata: { status }
+          });
+        }
+      }
+      await collection.where({
+        conversationId: _.eq(conversationId),
+        recordId: _.eq(recordId)
+      }).update({
+        parts,
+        updateTime: Date.now()
+      });
+    } catch (error) {
+      console.error("Failed to update tool result:", error);
+    }
+  }
+  /**
+   * 获取对话历史，返回消息列表和工具调用列表
+   */
+  async getChatHistory(conversationId, envId, userId) {
+    const records = await this.loadDBMessages(conversationId, envId, userId);
+    const messages = [];
+    const toolCallMap = /* @__PURE__ */ new Map();
+    for (const record of records) {
+      const role = record.role;
+      const timestamp = record.createTime || Date.now();
+      for (const part of record.parts || []) {
+        if (part.contentType === "text") {
+          const content = part.content || "";
+          if (content) {
+            messages.push({ id: record.recordId, role, content, timestamp });
+          }
+        } else if (part.contentType === "tool_call" && part.toolCallId) {
+          const metadata = part.metadata;
+          const toolName = metadata?.toolCallName || "";
+          let input = {};
+          if (part.content) {
+            try {
+              input = JSON.parse(part.content);
+            } catch {
+            }
+          }
+          toolCallMap.set(part.toolCallId, {
+            id: part.toolCallId,
+            name: toolName,
+            input,
+            status: "completed"
+          });
+        } else if (part.contentType === "tool_result" && part.toolCallId) {
+          const existing = toolCallMap.get(part.toolCallId);
+          const metadata = part.metadata;
+          const isError = metadata?.status === "error";
+          if (existing) {
+            existing.output = part.content || "";
+            existing.status = isError ? "error" : "completed";
+          } else {
+            toolCallMap.set(part.toolCallId, {
+              id: part.toolCallId,
+              name: "",
+              input: {},
+              output: part.content || "",
+              status: isError ? "error" : "completed"
+            });
+          }
+        }
+      }
+    }
+    return {
+      messages,
+      toolCalls: Array.from(toolCallMap.values())
+    };
+  }
+  /**
+   * 获取工具调用信息（用于 resume 时手动执行工具）
+   *
+   * @param conversationId 会话 ID
+   * @param recordId 消息记录 ID
+   * @param callId function_call 的 toolCallId
+   * @returns 工具名称和参数，或 null
+   */
+  async getToolCallInfo(conversationId, recordId, callId) {
+    try {
+      const collection = await this.getCollection();
+      const app7 = await this.getCloudBaseApp();
+      const _ = app7.database().command;
+      const { data } = await collection.where({
+        conversationId: _.eq(conversationId),
+        recordId: _.eq(recordId)
+      }).limit(1).get();
+      if (!data || data.length === 0) return null;
+      const record = data[0];
+      const parts = record.parts || [];
+      const toolCallPart = parts.find((p) => p.contentType === "tool_call" && p.toolCallId === callId);
+      if (!toolCallPart) return null;
+      const metadata = toolCallPart.metadata;
+      const toolName = metadata?.toolCallName;
+      const inputStr = toolCallPart.content;
+      let input = {};
+      if (inputStr) {
+        try {
+          input = JSON.parse(inputStr);
+        } catch {
+        }
+      }
+      return toolName ? { toolName, input } : null;
+    } catch {
+      return null;
+    }
+  }
 };
 var persistenceService = new PersistenceService();
 
 // src/sandbox/scf-sandbox-manager.ts
-import CloudBase2 from "@cloudbase/manager-node";
+import CloudBase3 from "@cloudbase/manager-node";
 import { sign } from "@cloudbase/signature-nodejs";
 var SandboxInstance = class _SandboxInstance {
   constructor(deps, ctx) {
@@ -1240,7 +3099,10 @@ var SandboxInstance = class _SandboxInstance {
   }
   async getAuthHeaders() {
     const accessToken = await this.getAccessToken();
-    return _SandboxInstance.buildAuthHeaders(accessToken, this.conversationId);
+    return {
+      ..._SandboxInstance.buildAuthHeaders(accessToken, this.envId),
+      "X-Conversation-Id": this.conversationId
+    };
   }
   async getToolOverrideConfig() {
     return {
@@ -1264,17 +3126,17 @@ var ScfSandboxManager = class {
     maxCacheSize: 50,
     functionPrefix: "sandbox",
     runtime: "Nodejs16.13",
-    memory: 3072,
+    memory: 2048,
     timeout: 900
   };
   cachedAccessToken = null;
   getEnvConfig() {
     return {
-      envId: process.env.SCF_SANDBOX_ENV_ID || process.env.TCB_ENV_ID || "",
+      envId: process.env.TCB_ENV_ID || "",
       secretId: process.env.TCB_SECRET_ID || "",
       secretKey: process.env.TCB_SECRET_KEY || "",
       token: process.env.TCB_TOKEN || "",
-      functionPrefix: process.env.SCF_SANDBOX_FUNCTION_PREFIX || "sandbox",
+      functionPrefix: process.env.SCF_SANDBOX_FUNCTION_PREFIX || "sandbox-test",
       imageConfig: {
         ImageType: process.env.SCF_SANDBOX_IMAGE_TYPE || "personal",
         ImageUri: process.env.SCF_SANDBOX_IMAGE_URI || "",
@@ -1351,19 +3213,22 @@ var ScfSandboxManager = class {
       getAccessToken: () => this.getAdminAccessToken()
     };
   }
-  async buildSandboxMcpConfig(functionName, conversationId, sandboxEnvId) {
+  async buildSandboxMcpConfig(functionName, scfSessionId, conversationId, sandboxEnvId) {
     const accessToken = await this.getAdminAccessToken();
     const url = `https://${sandboxEnvId}.api.tcloudbasegateway.com/v1/functions/${functionName}/mcp`;
     return {
       type: "http",
       url,
-      headers: SandboxInstance.buildAuthHeaders(accessToken, conversationId)
+      headers: {
+        ...SandboxInstance.buildAuthHeaders(accessToken, scfSessionId),
+        "X-Conversation-Id": conversationId
+      }
     };
   }
   async getOrCreate(conversationId, envId, options, onProgress) {
     const progress = onProgress || (() => {
     });
-    const mode = options?.mode || "per-conversation";
+    const mode = options?.mode || "shared";
     const envConfig = this.getEnvConfig();
     const functionPrefix = envConfig.functionPrefix || this.config.functionPrefix;
     const functionKey = mode === "shared" ? "shared" : conversationId;
@@ -1372,7 +3237,7 @@ var ScfSandboxManager = class {
     if (functionExists) {
       await this.waitForFunctionReady(functionName);
       const instanceDeps = await this.buildInstanceDeps();
-      const mcpConfig = await this.buildSandboxMcpConfig(functionName, conversationId, instanceDeps.sandboxEnvId);
+      const mcpConfig = await this.buildSandboxMcpConfig(functionName, envId, conversationId, instanceDeps.sandboxEnvId);
       return new SandboxInstance(instanceDeps, {
         functionName,
         conversationId,
@@ -1400,7 +3265,7 @@ var ScfSandboxManager = class {
         throw new Error(`\u7F51\u7EDC\u914D\u7F6E\u5931\u8D25: ${networkError.message}`);
       }
       const instanceDeps = await this.buildInstanceDeps();
-      const mcpConfig = await this.buildSandboxMcpConfig(functionName, conversationId, instanceDeps.sandboxEnvId);
+      const mcpConfig = await this.buildSandboxMcpConfig(functionName, envId, conversationId, instanceDeps.sandboxEnvId);
       return new SandboxInstance(instanceDeps, {
         functionName,
         conversationId,
@@ -1422,9 +3287,8 @@ var ScfSandboxManager = class {
   }
   async createFunction(functionName) {
     const envConfig = this.getEnvConfig();
-    console.log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>envConfig", envConfig);
     try {
-      const app3 = new CloudBase2({
+      const app7 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
@@ -1458,8 +3322,8 @@ var ScfSandboxManager = class {
             SessionSource: "HEADER",
             SessionName: "X-Cloudbase-Session-Id",
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 21600,
-            MaximumIdleTimeInSeconds: 1800,
+            MaximumTTLInSeconds: 1200,
+            MaximumIdleTimeInSeconds: 300,
             IdleTimeoutStrategy: "PAUSE"
           }
         },
@@ -1468,7 +3332,7 @@ var ScfSandboxManager = class {
         },
         Description: "SCF Sandbox for conversation (Image-based)"
       };
-      await app3.commonService("scf").call({
+      await app7.commonService("scf").call({
         Action: "CreateFunction",
         Param: createParams
       });
@@ -1483,14 +3347,14 @@ var ScfSandboxManager = class {
   async createGatewayApi(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app3 = new CloudBase2({
+      const app7 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
       const domain = `${envConfig.envId}.ap-shanghai.app.tcloudbase.com`;
-      await app3.commonService().call({
+      await app7.commonService().call({
         Action: "CreateCloudBaseGWAPI",
         Param: {
           ServiceId: envConfig.envId,
@@ -1515,13 +3379,13 @@ var ScfSandboxManager = class {
   async checkFunctionExists(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app3 = new CloudBase2({
+      const app7 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
-      const result = await app3.commonService().call({
+      const result = await app7.commonService().call({
         Action: "GetFunction",
         Param: {
           FunctionName: functionName,
@@ -1541,7 +3405,7 @@ var ScfSandboxManager = class {
   }
   async waitForFunctionReady(functionName, maxRetries = 120, retryInterval = 3e3) {
     const envConfig = this.getEnvConfig();
-    const app3 = new CloudBase2({
+    const app7 = new CloudBase3({
       secretId: envConfig.secretId,
       secretKey: envConfig.secretKey,
       token: envConfig.token,
@@ -1549,7 +3413,7 @@ var ScfSandboxManager = class {
     });
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const result = await app3.commonService().call({
+        const result = await app7.commonService().call({
           Action: "GetFunction",
           Param: {
             FunctionName: functionName,
@@ -1570,7 +3434,7 @@ var ScfSandboxManager = class {
           console.warn(`[ScfSandbox] Check function status error: ${error.message}`);
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, retryInterval));
+      await new Promise((resolve2) => setTimeout(resolve2, retryInterval));
     }
     throw new Error(
       `Function ${functionName} not ready after ${maxRetries} retries (${maxRetries * retryInterval / 1e3}s)`
@@ -1590,13 +3454,13 @@ var ScfSandboxManager = class {
   async deleteFunction(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app3 = new CloudBase2({
+      const app7 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
-      await app3.commonService().call({
+      await app7.commonService().call({
         Action: "DeleteFunction",
         Param: {
           FunctionName: functionName,
@@ -1614,6 +3478,7 @@ var scfSandboxManager = new ScfSandboxManager();
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { tool as sdkTool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 var AuthRequiredError = class extends Error {
   constructor(status) {
@@ -1675,23 +3540,26 @@ function jsonSchemaPropertyToZod(propSchema) {
 async function createSandboxMcpClient(deps) {
   const {
     baseUrl,
-    sessionId,
+    scfSessionId,
+    conversationId,
     getAccessToken,
     getCredentials,
     bashTimeoutMs = 3e4,
     workspaceFolderPaths = "",
-    log = (msg) => console.log(msg)
+    log = (msg) => console.log(msg),
+    onDeployUrl
   } = deps;
   async function buildHeaders() {
     const token = await getAccessToken();
     return {
       "Content-Type": "application/json",
-      ...SandboxInstance.buildAuthHeaders(token, sessionId)
+      ...SandboxInstance.buildAuthHeaders(token, scfSessionId),
+      "X-Conversation-Id": conversationId
     };
   }
-  async function apiCall(tool2, body, timeoutMs = bashTimeoutMs) {
+  async function apiCall(tool, body, timeoutMs = bashTimeoutMs) {
     const headers = await buildHeaders();
-    const res = await fetch(`${baseUrl}/api/tools/${tool2}`, {
+    const res = await fetch(`${baseUrl}/api/tools/${tool}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -1701,7 +3569,7 @@ async function createSandboxMcpClient(deps) {
       throw new AuthRequiredError(res.status);
     }
     const data = await res.json();
-    if (!data.success) throw new Error(data.error ?? `${tool2} call failed`);
+    if (!data.success) throw new Error(data.error ?? `${tool} call failed`);
     return data.result;
   }
   async function bashCall(command, timeoutMs = bashTimeoutMs) {
@@ -1714,6 +3582,7 @@ async function createSandboxMcpClient(deps) {
       method: "PUT",
       headers,
       body: JSON.stringify({
+        conversationId,
         CLOUDBASE_ENV_ID: creds.cloudbaseEnvId,
         TENCENTCLOUD_SECRETID: creds.secretId,
         TENCENTCLOUD_SECRETKEY: creds.secretKey,
@@ -1756,8 +3625,43 @@ async function createSandboxMcpClient(deps) {
 `);
     return bashCall(cmd, 6e4);
   }
+  function isFilePath(localPath) {
+    const basename = localPath.replace(/\/+$/, "").split("/").pop() || "";
+    return /\.[a-zA-Z0-9]+$/.test(basename);
+  }
+  function extractDeployUrl(rawText, isFile = false, depth = 0) {
+    if (depth > 5) return null;
+    try {
+      const parsed = JSON.parse(rawText);
+      if (Array.isArray(parsed)) {
+        const firstText = parsed[0]?.text;
+        if (typeof firstText === "string") return extractDeployUrl(firstText, isFile, depth + 1);
+        return null;
+      }
+      if (typeof parsed !== "object" || parsed === null) return null;
+      if (parsed.accessUrl) {
+        const url = new URL(parsed.accessUrl);
+        if (!isFile && url.pathname !== "/" && !url.pathname.endsWith("/")) url.pathname += "/";
+        if (!url.searchParams.get("t")) url.searchParams.set("t", String(Date.now()));
+        return url.toString();
+      }
+      if (parsed.staticDomain) return `https://${parsed.staticDomain}/?t=${Date.now()}`;
+      const innerText = parsed?.res?.content?.[0]?.text || parsed?.content?.[0]?.text;
+      if (typeof innerText === "string") return extractDeployUrl(innerText, isFile, depth + 1);
+    } catch {
+    }
+    return null;
+  }
   function isCredentialError(output) {
     return output.includes("AUTH_REQUIRED") || output.includes("The SecretId is not found") || output.includes("SecretId is not found") || output.includes("InvalidParameter.SecretIdNotFound") || output.includes("AuthFailure");
+  }
+  try {
+    await injectCredentials();
+    log(`[sandbox-mcp] Credentials injected successfully
+`);
+  } catch (e) {
+    log(`[sandbox-mcp] Failed to inject credentials: ${e.message}
+`);
   }
   let cloudbaseTools = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1776,9 +3680,9 @@ async function createSandboxMcpClient(deps) {
   }
   const server = new McpServer({ name: "cloudbase-sandbox-proxy", version: "2.0.0" });
   const SKIP = /* @__PURE__ */ new Set(["logout"]);
-  for (const tool2 of cloudbaseTools) {
-    if (SKIP.has(tool2.name)) continue;
-    if (tool2.name === "login") {
+  for (const tool of cloudbaseTools) {
+    if (SKIP.has(tool.name)) continue;
+    if (tool.name === "login") {
       server.tool(
         "login",
         "Re-authenticate CloudBase credentials for this workspace session. No parameters needed.",
@@ -1797,21 +3701,21 @@ async function createSandboxMcpClient(deps) {
       );
       continue;
     }
-    const zodShape = jsonSchemaToZodRawShape(tool2.inputSchema);
+    const zodShape = jsonSchemaToZodRawShape(tool.inputSchema);
     server.tool(
-      tool2.name,
-      (tool2.description ?? `CloudBase tool: ${tool2.name}`) + "\n\nNOTE: localPath refers to paths inside the container workspace.",
+      tool.name,
+      (tool.description ?? `CloudBase tool: ${tool.name}`) + "\n\nNOTE: localPath refers to paths inside the container workspace.",
       zodShape,
       async (args) => {
-        if (tool2.name === "downloadTemplate") args = { ...args, ide: "codebuddy" };
+        if (tool.name === "downloadTemplate") args = { ...args, ide: "codebuddy" };
         const attemptCall = async () => {
-          const result = await mcporterCall(tool2.name, args);
+          const result = await mcporterCall(tool.name, args);
           return result.output ?? "";
         };
         try {
           let output = await attemptCall();
           if (isCredentialError(output)) {
-            log(`[sandbox-mcp] Credential error for ${tool2.name}, re-injecting...
+            log(`[sandbox-mcp] Credential error for ${tool.name}, re-injecting...
 `);
             await injectCredentials();
             output = await attemptCall();
@@ -1847,10 +3751,47 @@ async function createSandboxMcpClient(deps) {
   await server.connect(serverTransport);
   const client = new Client({ name: "cloudbase-agent", version: "1.0.0" });
   await client.connect(clientTransport);
-  log(`[sandbox-mcp] Ready. baseUrl=${baseUrl} session=${sessionId} tools=${cloudbaseTools.length}
+  const sdkTools = cloudbaseTools.filter((t) => t.name !== "logout").map((t) => {
+    const zodShape = jsonSchemaToZodRawShape(t.inputSchema);
+    return sdkTool(
+      t.name,
+      (t.description ?? `CloudBase tool: ${t.name}`) + "\n\nNOTE: localPath refers to paths inside the container workspace.",
+      zodShape,
+      async (args) => {
+        try {
+          const result = await mcporterCall(t.name, args);
+          const output = result.output ?? "";
+          if (t.name === "uploadFiles" && onDeployUrl && output) {
+            try {
+              const deployUrl = extractDeployUrl(output, isFilePath(String(args.localPath || "")));
+              if (deployUrl) {
+                log(`[sandbox-mcp] deploy_url detected: ${deployUrl}
 `);
+                onDeployUrl(deployUrl);
+              }
+            } catch {
+            }
+          }
+          return { content: [{ type: "text", text: output }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+        }
+      }
+    );
+  });
+  const sdkServer = createSdkMcpServer({
+    name: "cloudbase",
+    version: "1.0.0",
+    tools: sdkTools
+  });
+  log(
+    `[sandbox-mcp] Ready. baseUrl=${baseUrl} session=${scfSessionId} conversation=${conversationId} tools=${cloudbaseTools.length}
+`
+  );
   return {
     client,
+    server,
+    sdkServer,
     close: async () => {
       try {
         await client.close();
@@ -1907,10 +3848,127 @@ async function archiveToGit(sandbox, conversationId, prompt) {
 }
 
 // src/agent/cloudbase-agent.service.ts
-var MODEL = "kimi-k2.5";
+var DEFAULT_MODEL = "glm-5.0";
 var OAUTH_TOKEN_ENDPOINT = "https://copilot.tencent.com/oauth2/token";
 var CONNECT_TIMEOUT_MS = 6e4;
 var ITERATION_TIMEOUT_MS = 30 * 1e3;
+var HEALTH_MAX_RETRIES = 20;
+var HEALTH_INTERVAL_MS = 2e3;
+var cachedModels = null;
+var STATIC_MODELS = [
+  { id: "minimax-m2.5", name: "MiniMax-M2.5" },
+  { id: "kimi-k2.5", name: "Kimi-K2.5" },
+  { id: "kimi-k2-thinking", name: "Kimi-K2-Thinking" },
+  { id: "glm-5.0", name: "GLM-5.0" },
+  { id: "glm-4.7", name: "GLM-4.7" },
+  { id: "deepseek-v3-2-volc", name: "DeepSeek-V3.2" }
+];
+async function getSupportedModels() {
+  if (cachedModels) return cachedModels;
+  cachedModels = STATIC_MODELS;
+  return cachedModels;
+}
+async function waitForSandboxHealth(sandbox, callback) {
+  for (let i = 0; i < HEALTH_MAX_RETRIES; i++) {
+    try {
+      const res = await sandbox.request("/health", {
+        signal: AbortSignal.timeout(4e3)
+      });
+      if (res.ok) {
+        console.log("[Agent] Sandbox health check passed");
+        return true;
+      }
+    } catch {
+    }
+    if (i === 0) {
+      callback({ type: "text", content: "\u6B63\u5728\u7B49\u5F85\u5DE5\u4F5C\u7A7A\u95F4\u5C31\u7EEA...\n" });
+    }
+    await new Promise((r) => setTimeout(r, HEALTH_INTERVAL_MS));
+  }
+  return false;
+}
+async function initSandboxWorkspace(sandbox, secret, conversationId) {
+  try {
+    const res = await sandbox.request("/api/session/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        env: {
+          CLOUDBASE_ENV_ID: secret.envId,
+          TENCENTCLOUD_SECRETID: secret.secretId,
+          TENCENTCLOUD_SECRETKEY: secret.secretKey,
+          ...secret.token ? { TENCENTCLOUD_SESSIONTOKEN: secret.token } : {}
+        }
+      }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (res.ok) {
+      const workspace = `/tmp/workspace/${secret.envId}/${conversationId}`;
+      console.log("[Agent] initSandboxWorkspace success, workspace:", workspace);
+      const mkdirRes = await sandbox.request("/api/tools/bash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command: `mkdir -p "${workspace}"`,
+          timeout: 5e3
+        }),
+        signal: AbortSignal.timeout(1e4)
+      });
+      if (mkdirRes.ok) {
+        console.log("[Agent] Workspace directory created:", workspace);
+      }
+      return workspace;
+    }
+    console.error("[Agent] initSandboxWorkspace failed, status:", res.status);
+  } catch (e) {
+    console.error("[Agent] initSandboxWorkspace error:", e.message);
+  }
+  return void 0;
+}
+var WRITE_TOOLS = true ? /* @__PURE__ */ new Set([]) : /* @__PURE__ */ new Set([
+  // 数据库相关 (4个)
+  "writeNoSqlDatabaseStructure",
+  // 修改 NoSQL 数据库结构
+  "writeNoSqlDatabaseContent",
+  // 修改 NoSQL 数据库内容
+  "executeWriteSQL",
+  // 执行写入 SQL
+  "modifyDataModel",
+  // 修改数据模型
+  // 云函数相关 (7个)
+  "createFunction",
+  // 创建云函数
+  "updateFunctionCode",
+  // 更新云函数代码
+  "updateFunctionConfig",
+  // 更新云函数配置
+  "invokeFunction",
+  // 调用云函数
+  "manageFunctionTriggers",
+  // 管理云函数触发器
+  "writeFunctionLayers",
+  // 管理云函数层
+  "createFunctionHTTPAccess",
+  // 创建云函数 HTTP 访问
+  // 存储相关 (2个) - uploadFiles 不拦截（静态托管部署需要）
+  "deleteFiles",
+  // 删除文件
+  "manageStorage",
+  // 管理云存储
+  // 其他 (5个)
+  "domainManagement",
+  // 域名管理
+  "interactiveDialog",
+  // 交互式对话
+  "manageCloudRun",
+  // 管理云托管
+  "writeSecurityRule",
+  // 写入安全规则
+  "activateInviteCode",
+  // 激活邀请码
+  "callCloudApi"
+  // 调用云 API
+]);
 var cachedToken = null;
 async function getOAuthToken() {
   if (cachedToken && Date.now() < cachedToken.expiry) {
@@ -1944,20 +4002,16 @@ async function getOAuthToken() {
   cachedToken = { token, expiry };
   return token;
 }
-function getUserContext() {
-  const config = loadConfig();
-  return {
-    envId: config.cloudbase?.envId || process.env.TCB_ENV_ID || "",
-    ownerUin: "coder-user",
-    userId: "coder-user"
-  };
-}
 function createToolCallTracker() {
   return {
     pendingToolCalls: /* @__PURE__ */ new Map(),
     blockIndexToToolId: /* @__PURE__ */ new Map(),
     toolInputJsonBuffers: /* @__PURE__ */ new Map()
   };
+}
+function getToolOverridePath() {
+  const __dirname2 = path4.dirname(fileURLToPath(import.meta.url));
+  return path4.resolve(__dirname2, "../../dist/sandbox/tool-override.cjs");
 }
 function buildAppendPrompt(sandboxCwd, conversationId, envId) {
   const base = `\u4F60\u662F\u4E00\u4E2A\u901A\u7528 AI \u7F16\u7A0B\u52A9\u624B\uFF0C\u540C\u65F6\u5177\u5907\u817E\u8BAF\u4E91\u5F00\u53D1\uFF08CloudBase\uFF09\u80FD\u529B\uFF0C\u53EF\u901A\u8FC7\u5DE5\u5177\u64CD\u4F5C\u4E91\u51FD\u6570\u3001\u6570\u636E\u5E93\u3001\u5B58\u50A8\u3001\u4E91\u6258\u7BA1\u7B49\u8D44\u6E90\u3002
@@ -1970,43 +4024,148 @@ Bash \u8D85\u65F6\u5904\u7406\u7B56\u7565\uFF1A\u5BF9\u4E8E\u8017\u65F6\u8F83\u9
 3. \u901A\u8FC7 BashOutput \u7ED3\u5408 pid \u67E5\u770B\u8F93\u51FA\u7ED3\u679C
 4. \u4E5F\u53EF\u4EE5\u901A\u8FC7 KillShell \u5173\u95ED\u540E\u53F0\u6267\u884C\u7684\u4EFB\u52A1
 
-\u5C0F\u7A0B\u5E8F\u5F00\u53D1\u89C4\u5219\uFF1A
+${false ? `\u5C0F\u7A0B\u5E8F\u5F00\u53D1\u89C4\u5219\uFF1A
 \u5F53\u7528\u6237\u7684\u9700\u6C42\u6D89\u53CA\u5FAE\u4FE1\u5C0F\u7A0B\u5E8F\u5F00\u53D1\uFF08\u521B\u5EFA\u3001\u4FEE\u6539\u3001\u90E8\u7F72\u5C0F\u7A0B\u5E8F\u9879\u76EE\uFF09\u65F6\uFF1A
 1. \u5FC5\u987B\u5148\u4F7F\u7528 AskUserQuestion \u5DE5\u5177\u83B7\u53D6\u7528\u6237\u7684\u5FAE\u4FE1\u5C0F\u7A0B\u5E8F appId
    - options \u7684\u7B2C\u4E00\u4E2A\u9009\u9879\u7684 label \u5FC5\u987B\u56FA\u5B9A\u4E3A "ask:miniprogram_appid"\uFF08\u7CFB\u7EDF\u636E\u6B64\u8BC6\u522B\u95EE\u9898\u7C7B\u522B\u5E76\u66FF\u6362\u4E3A\u9884\u7F6E\u5185\u5BB9\uFF09
    - \u5176\u4F59\u5B57\u6BB5\u53EF\u4EFB\u610F\u586B\u5199\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u66FF\u6362\u4E3A\u6807\u51C6\u95EE\u9898
    - \u793A\u4F8B: AskUserQuestion({ questions: [{ question: "\u9009\u62E9\u5C0F\u7A0B\u5E8F", header: "AppId", options: [{ label: "ask:miniprogram_appid", description: "\u9009\u62E9\u5C0F\u7A0B\u5E8F" }, { label: "\u8DF3\u8FC7", description: "\u8DF3\u8FC7" }], multiSelect: false }] })
 2. \u83B7\u53D6\u5230 appId \u540E\uFF0C\u5728\u751F\u6210 project.config.json \u65F6\u4F7F\u7528\u8BE5 appId
-3. \u5728\u8C03\u7528 publishMiniprogram \u90E8\u7F72\u524D\uFF0C\u786E\u4FDD\u5DF2\u83B7\u53D6\u5230\u6709\u6548\u7684 appId`;
+3. \u5728\u8C03\u7528 publishMiniprogram \u90E8\u7F72\u524D\uFF0C\u786E\u4FDD\u5DF2\u83B7\u53D6\u5230\u6709\u6548\u7684 appId` : ""}`;
   if (sandboxCwd) {
     return `${base}
-
-\u5F53\u524D\u7528\u6237\u7684\u9879\u76EE\u5DE5\u4F5C\u76EE\u5F55\u4E3A: ${sandboxCwd}
-\u5F53\u524D\u4F7F\u7528\u7684\u4E91\u5F00\u53D1\u73AF\u5883\u4E3A: ${envId}
+\u5DE5\u5177\u9ED8\u8BA4\u5728 Home: /tmp/workspace/${envId} \u4E0B\u6267\u884C
+\u4E3A\u9879\u76EE\u5F00\u8F9F\u5DE5\u4F5C\u76EE\u5F55\u4E3A: ${sandboxCwd}
+\u4F7F\u7528\u7684\u4E91\u5F00\u53D1\u73AF\u5883\u4E3A: ${envId}
 \u8BF7\u6CE8\u610F\uFF1A
-- \u6240\u6709\u6587\u4EF6\u8BFB\u5199\u3001\u7EC8\u7AEF\u547D\u4EE4\u90FD\u5E94\u5728\u6B64\u76EE\u5F55\u4E0B\u6267\u884C
+- \u6240\u6709\u6587\u4EF6\u8BFB\u5199\u3001\u7EC8\u7AEF\u547D\u4EE4\u90FD\u5E94\u5728\u5DE5\u4F5C\u76EE\u5F55\u4E2D\u6267\u884C\uFF0C\u6CE8\u610F cd \u5230\u5DE5\u4F5C\u76EE\u5F55\u64CD\u4F5C\u3002
 - \u4F7F\u7528 cloudbase_uploadFiles \u90E8\u7F72\u6587\u4EF6\u65F6\uFF0ClocalPath \u5FC5\u987B\u662F\u5BB9\u5668\u5185\u7684**\u7EDD\u5BF9\u8DEF\u5F84**\uFF08\u5373\u5F53\u524D\u5DE5\u4F5C\u76EE\u5F55 ${sandboxCwd} \u4E0B\u7684\u8DEF\u5F84\uFF09\uFF0C\u4F8B\u5982 ${sandboxCwd}/index.html
 - \u5982\u7528\u6237\u6CA1\u6709\u7279\u522B\u8981\u6C42\uFF0CcloudPath \u9700\u8981\u4E3A ${conversationId}\uFF0C\u5373\u5728\u5F53\u524D\u4F1A\u8BDD\u8DEF\u5F84\u4E0B
 - \u4E0D\u8981\u4F7F\u7528\u76F8\u5BF9\u8DEF\u5F84\u7ED9 cloudbase_uploadFiles`;
   }
   return base;
 }
-var CloudbaseAgentService = class {
+var CloudbaseAgentService = class _CloudbaseAgentService {
   async chatStream(prompt, callback, options = {}) {
-    const { conversationId = uuidv42(), envId, ownerUin, userId, maxTurns = 10, cwd } = options;
-    console.log("[Agent] chatStream start, conversationId:", conversationId, "prompt:", prompt.slice(0, 50));
-    const userContext = envId ? { envId, ownerUin: ownerUin || "coder-user", userId: userId || "coder-user" } : getUserContext();
+    const {
+      conversationId = uuidv42(),
+      envId,
+      userId,
+      userCredentials,
+      maxTurns = 50,
+      cwd,
+      askAnswers,
+      toolConfirmation,
+      model
+    } = options;
+    const modelId = model || DEFAULT_MODEL;
+    console.log(
+      "[Agent] chatStream start, model:",
+      modelId,
+      "conversationId:",
+      conversationId,
+      "prompt:",
+      prompt.slice(0, 50)
+    );
+    const userContext = { envId: envId || "", userId: userId || "anonymous" };
     console.log("[Agent] userContext:", JSON.stringify(userContext));
-    const actualCwd = cwd || `/tmp/workspace/${conversationId}`;
+    const actualCwd = cwd || `/tmp/workspace/${userContext.envId}/${conversationId}`;
     mkdirSync2(actualCwd, { recursive: true });
     console.log("[Agent] cwd:", actualCwd);
     let historicalMessages = [];
     let lastRecordId = null;
     let hasHistory = false;
+    let sandboxMcpClient = null;
+    const isResumeFromInterrupt = askAnswers && Object.keys(askAnswers).length > 0 || !!toolConfirmation;
+    let assistantMessageId = uuidv42();
+    if (isResumeFromInterrupt && conversationId && userContext.envId) {
+      const record = await persistenceService.getLatestRecordStatus(
+        conversationId,
+        userContext.userId,
+        userContext.envId
+      );
+      if (record) {
+        assistantMessageId = record.recordId;
+      }
+    }
     if (conversationId && userContext.envId) {
+      if (askAnswers && Object.keys(askAnswers).length > 0) {
+        for (const [recordId, { toolCallId, answers }] of Object.entries(askAnswers)) {
+          const output = {
+            type: "text",
+            text: Object.entries(answers).map(([key, value]) => ` \xB7 ${key} \u2192 ${value}`).join("\n")
+          };
+          await persistenceService.updateToolResult(conversationId, recordId, toolCallId, output, "completed");
+          if (recordId !== assistantMessageId) {
+            await persistenceService.updateToolResult(
+              conversationId,
+              assistantMessageId,
+              toolCallId,
+              output,
+              "completed"
+            );
+          }
+        }
+      }
+      if (toolConfirmation) {
+        const isAllowed = toolConfirmation.payload.action === "allow";
+        if (isAllowed && sandboxMcpClient) {
+          const mcpClient = sandboxMcpClient.client;
+          const toolCallInfo = await persistenceService.getToolCallInfo(
+            conversationId,
+            assistantMessageId,
+            toolConfirmation.interruptId
+          );
+          if (toolCallInfo) {
+            const normalizedToolName = toolCallInfo.toolName.startsWith("mcp__") ? toolCallInfo.toolName.split("__").slice(2).join("__") || toolCallInfo.toolName : toolCallInfo.toolName;
+            try {
+              const res = await mcpClient.callTool({
+                name: normalizedToolName,
+                arguments: toolCallInfo.input
+              });
+              const toolResult = res.content || { result: res };
+              await persistenceService.updateToolResult(
+                conversationId,
+                assistantMessageId,
+                toolConfirmation.interruptId,
+                {
+                  type: "text",
+                  text: JSON.stringify(toolResult)
+                },
+                "completed"
+              );
+            } catch (err) {
+              const errorResult = {
+                error: true,
+                message: err.message || "\u5DE5\u5177\u6267\u884C\u5931\u8D25"
+              };
+              await persistenceService.updateToolResult(
+                conversationId,
+                assistantMessageId,
+                toolConfirmation.interruptId,
+                {
+                  type: "text",
+                  text: JSON.stringify(errorResult)
+                },
+                "error"
+              );
+            }
+          }
+        } else {
+          await persistenceService.updateToolResult(
+            conversationId,
+            assistantMessageId,
+            toolConfirmation.interruptId,
+            {
+              type: "text",
+              text: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C"
+            },
+            "completed"
+          );
+        }
+      }
       const restored = await persistenceService.restoreMessages(
         conversationId,
-        userContext.ownerUin,
         userContext.envId,
         userContext.userId,
         actualCwd
@@ -2014,13 +4173,14 @@ var CloudbaseAgentService = class {
       historicalMessages = restored.messages;
       lastRecordId = restored.lastRecordId;
       hasHistory = historicalMessages.length > 0;
+      if (!hasHistory && isResumeFromInterrupt) {
+        hasHistory = true;
+      }
     }
     let preSavedUserRecordId = null;
-    const assistantMessageId = uuidv42();
-    if (conversationId && userContext.envId) {
+    if (conversationId && userContext.envId && !isResumeFromInterrupt) {
       const preSaved = await persistenceService.preSavePendingRecords({
         conversationId,
-        ownerUin: userContext.ownerUin,
         envId: userContext.envId,
         userId: userContext.userId,
         prompt,
@@ -2029,53 +4189,98 @@ var CloudbaseAgentService = class {
       });
       preSavedUserRecordId = preSaved.userRecordId;
     }
-    const wrappedCallback = (msg) => callback({ ...msg, id: assistantMessageId });
+    const wrappedCallback = (msg) => {
+      if (msg.type === "ask_user" || msg.type === "tool_confirm") {
+        callback({ ...msg, assistantMessageId });
+      } else {
+        callback({ ...msg, id: msg.id || assistantMessageId, assistantMessageId });
+      }
+    };
     let sandboxInstance = null;
-    let sandboxMcpClient = null;
     let toolOverrideConfig = null;
-    const sandboxEnabled = process.env.SCF_SANDBOX_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI;
+    const sandboxEnabled = process.env.TCB_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI;
     if (sandboxEnabled) {
       try {
         sandboxInstance = await scfSandboxManager.getOrCreate(conversationId, userContext.envId, {
-          ownerUin: userContext.ownerUin,
-          mode: "per-conversation"
+          mode: "shared"
         });
         toolOverrideConfig = await sandboxInstance.getToolOverrideConfig();
-        sandboxMcpClient = await createSandboxMcpClient({
-          baseUrl: sandboxInstance.baseUrl,
-          sessionId: conversationId,
-          getAccessToken: () => sandboxInstance.getAccessToken(),
-          getCredentials: async () => ({
-            cloudbaseEnvId: userContext.envId,
-            secretId: process.env.TCB_SECRET_ID || "",
-            secretKey: process.env.TCB_SECRET_KEY || "",
-            sessionToken: process.env.TCB_TOKEN
-          }),
-          workspaceFolderPaths: actualCwd,
-          log: (msg) => console.log(msg)
-        });
-        console.log(`[Agent] Sandbox ready: ${sandboxInstance.functionName}`);
+        const sandboxReady = await waitForSandboxHealth(sandboxInstance, wrappedCallback);
+        if (!sandboxReady) {
+          wrappedCallback({ type: "text", content: "\u6C99\u7BB1\u542F\u52A8\u8D85\u65F6\uFF0C\u5C06\u4F7F\u7528\u53D7\u9650\u6A21\u5F0F\u7EE7\u7EED\u5BF9\u8BDD\u3002\n\n" });
+          sandboxInstance = null;
+        } else {
+          const sandboxCwd = await initSandboxWorkspace(
+            sandboxInstance,
+            {
+              envId: userContext.envId,
+              secretId: userCredentials?.secretId || "",
+              secretKey: userCredentials?.secretKey || "",
+              token: userCredentials?.sessionToken
+            },
+            conversationId
+          );
+          if (sandboxCwd) {
+            wrappedCallback({ type: "session", sandboxCwd });
+            console.log(`[Agent] Sandbox workspace initialized, cwd: ${sandboxCwd}`);
+          }
+          sandboxMcpClient = await createSandboxMcpClient({
+            baseUrl: sandboxInstance.baseUrl,
+            scfSessionId: userContext.envId,
+            conversationId,
+            getAccessToken: () => sandboxInstance.getAccessToken(),
+            getCredentials: async () => ({
+              cloudbaseEnvId: userContext.envId,
+              secretId: userCredentials?.secretId || "",
+              secretKey: userCredentials?.secretKey || "",
+              sessionToken: userCredentials?.sessionToken
+            }),
+            workspaceFolderPaths: actualCwd,
+            log: (msg) => console.log(msg),
+            onDeployUrl: (url) => {
+              wrappedCallback({ type: "deploy_url", url });
+            }
+          });
+          console.log(`[Agent] Sandbox ready: ${sandboxInstance.functionName}`);
+        }
       } catch (err) {
         console.error("[Agent] Sandbox creation failed:", err.message);
+        wrappedCallback({
+          type: "text",
+          content: `\u3010\u6C99\u7BB1\u73AF\u5883\u521B\u5EFA\u5931\u8D25\u3011${err.message}\u3002\u5C06\u4F7F\u7528\u53D7\u9650\u6A21\u5F0F\u7EE7\u7EED\u5BF9\u8BDD\u3002
+
+`
+        });
       }
     }
-    const authToken = await getOAuthToken();
-    const abortController = new AbortController();
+    const envVars = {};
+    if (process.env.CODEBUDDY_API_KEY) {
+      envVars.CODEBUDDY_API_KEY = process.env.CODEBUDDY_API_KEY;
+      if (process.env.CODEBUDDY_INTERNET_ENVIRONMENT) {
+        envVars.CODEBUDDY_INTERNET_ENVIRONMENT = process.env.CODEBUDDY_INTERNET_ENVIRONMENT;
+      }
+    } else {
+      const authToken = await getOAuthToken();
+      envVars.CODEBUDDY_AUTH_TOKEN = authToken;
+    }
     let connectTimer;
     let iterationTimeoutTimer;
     try {
       const sessionOpts = hasHistory ? { resume: conversationId, sessionId: conversationId } : { persistSession: true, sessionId: conversationId };
-      const envVars = {
-        CODEBUDDY_AUTH_TOKEN: authToken
-      };
+      if (toolOverrideConfig) {
+        envVars.CODEBUDDY_TOOL_OVERRIDE = getToolOverridePath();
+        envVars.CODEBUDDY_TOOL_OVERRIDE_CONFIG = JSON.stringify(toolOverrideConfig);
+      }
       const mcpServers = {};
       if (sandboxMcpClient) {
-        mcpServers.cloudbase = sandboxMcpClient.client;
+        mcpServers.cloudbase = sandboxMcpClient.sdkServer;
       }
+      const abortController = new AbortController();
+      const pendingToolInterrupt = { value: null };
       const queryArgs = {
         prompt,
         options: {
-          model: MODEL,
+          model: modelId,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
           maxTurns,
@@ -2085,25 +4290,119 @@ var CloudbaseAgentService = class {
           systemPrompt: {
             append: buildAppendPrompt(actualCwd, conversationId, userContext.envId)
           },
-          // mcpServers,
+          mcpServers,
           abortController,
           canUseTool: async (toolName, input, _options) => {
+            const toolUseId = _options?.toolUseID;
             if (toolName === "AskUserQuestion") {
+              wrappedCallback({
+                type: "ask_user",
+                id: toolUseId,
+                input
+              });
               return {
                 behavior: "deny",
-                message: "Waiting for user response",
+                message: "\u7B49\u5F85\u7528\u6237\u56DE\u7B54\u95EE\u9898",
+                interrupt: true
+              };
+            }
+            const normalizedToolName = toolName.startsWith("mcp__") ? toolName.split("__").slice(2).join("__") || toolName : toolName;
+            if (WRITE_TOOLS.has(normalizedToolName)) {
+              if (toolConfirmation && toolConfirmation.interruptId === toolUseId) {
+                if (toolConfirmation.payload.action === "allow") {
+                  return {
+                    behavior: "allow",
+                    updatedInput: input
+                  };
+                }
+                return { behavior: "deny", message: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C" };
+              }
+              if (toolUseId && pendingToolInterrupt) {
+                pendingToolInterrupt.value = {
+                  callId: toolUseId,
+                  toolName,
+                  input
+                };
+              }
+              wrappedCallback({
+                type: "tool_confirm",
+                id: toolUseId,
+                name: toolName,
+                input
+              });
+              return {
+                behavior: "deny",
+                message: "\u7B49\u5F85\u7528\u6237\u786E\u8BA4\u5199\u64CD\u4F5C",
                 interrupt: true
               };
             }
             return { behavior: "allow", updatedInput: input };
           },
+          hooks: {
+            PreToolUse: [
+              {
+                // 匹配所有 MCP 工具（mcp__ 开头）
+                matcher: "^mcp__",
+                hooks: [
+                  async (hookInput, toolUseId, { signal }) => {
+                    const toolName = hookInput.tool_name;
+                    const toolInput = hookInput.tool_input;
+                    const actualToolUseId = toolUseId || hookInput.tool_use_id;
+                    const normalizedToolName = toolName.startsWith("mcp__") ? toolName.split("__").slice(2).join("__") || toolName : toolName;
+                    if (WRITE_TOOLS.has(normalizedToolName)) {
+                      if (toolConfirmation && toolConfirmation.interruptId === actualToolUseId) {
+                        if (toolConfirmation.payload.action === "allow") {
+                          return {
+                            continue: true,
+                            hookSpecificOutput: {
+                              hookEventName: "PreToolUse",
+                              permissionDecision: "allow"
+                            }
+                          };
+                        }
+                        return {
+                          continue: false,
+                          decision: "block",
+                          reason: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C",
+                          hookSpecificOutput: {
+                            hookEventName: "PreToolUse",
+                            permissionDecision: "deny",
+                            permissionDecisionReason: "\u7528\u6237\u62D2\u7EDD\u4E86\u6B64\u64CD\u4F5C"
+                          }
+                        };
+                      }
+                      if (actualToolUseId && pendingToolInterrupt) {
+                        pendingToolInterrupt.value = {
+                          callId: actualToolUseId,
+                          toolName,
+                          input: toolInput
+                        };
+                      }
+                      return {
+                        continue: false,
+                        decision: "block",
+                        reason: "\u7B49\u5F85\u7528\u6237\u786E\u8BA4\u5199\u64CD\u4F5C",
+                        hookSpecificOutput: {
+                          hookEventName: "PreToolUse",
+                          permissionDecision: "ask",
+                          permissionDecisionReason: "\u7B49\u5F85\u7528\u6237\u786E\u8BA4\u5199\u64CD\u4F5C"
+                        }
+                      };
+                    }
+                    return { continue: true };
+                  }
+                ]
+              }
+            ]
+          },
           env: envVars,
           stderr: (data) => {
             console.error("[Agent CLI stderr]", data.trim());
           }
+          // disallowedTools: ['AskUserQuestion'],
         }
       };
-      console.log("[Agent] calling query(), model:", MODEL, "sessionOpts:", JSON.stringify(sessionOpts));
+      console.log("[Agent] calling query(), model:", modelId, "sessionOpts:", JSON.stringify(sessionOpts));
       const q = query(queryArgs);
       console.log("[Agent] query() returned, entering message loop...");
       connectTimer = setTimeout(() => {
@@ -2193,26 +4492,32 @@ var CloudbaseAgentService = class {
         } catch {
         }
       }
+      let syncError;
       try {
         await persistenceService.syncMessages(
           conversationId,
-          userContext.ownerUin,
           userContext.envId,
           userContext.userId,
           historicalMessages,
           lastRecordId,
           actualCwd,
           assistantMessageId,
-          false,
+          isResumeFromInterrupt,
           preSavedUserRecordId
         );
-      } catch {
+        await persistenceService.finalizePendingRecords(assistantMessageId, "done");
+      } catch (err) {
+        syncError = err instanceof Error ? err : new Error(String(err));
+        console.error("[Agent] syncAndCleanup failed:", syncError.message);
         if (preSavedUserRecordId && conversationId) {
           try {
             await persistenceService.finalizePendingRecords(assistantMessageId, "error");
           } catch {
           }
         }
+      }
+      if (syncError) {
+        throw syncError;
       }
     }
   }
@@ -2291,6 +4596,9 @@ var CloudbaseAgentService = class {
       if (block.type !== "tool_result") continue;
       const toolUseId = block.tool_use_id;
       if (!toolUseId) continue;
+      const rawText = Array.isArray(block.content) && block.content[0]?.text ? block.content[0].text : typeof block.content === "string" ? block.content : null;
+      this.tryExtractDeployUrl(block.tool_use_id, rawText, tracker, callback);
+      this.tryExtractQrcode(block.tool_use_id, rawText, tracker, callback);
       let processedContent = block.content;
       if (Array.isArray(block.content) && block.content.length > 0) {
         const firstBlock = block.content[0];
@@ -2310,6 +4618,113 @@ var CloudbaseAgentService = class {
         content: typeof processedContent === "string" ? processedContent : JSON.stringify(processedContent),
         is_error: block.is_error
       });
+    }
+  }
+  /**
+   * 尝试从 uploadFiles 工具结果中提取 CloudBase 静态托管部署 URL
+   * 结果包含 accessUrl 或 staticDomain 则触发 deploy_url callback
+   */
+  tryExtractDeployUrl(toolUseId, rawText, tracker, callback) {
+    const toolInfo = tracker.pendingToolCalls.get(toolUseId);
+    const toolName = toolInfo?.name || "";
+    if (!toolName.includes("uploadFiles") && !toolName.includes("cloudbase_uploadFiles")) return;
+    if (!rawText) return;
+    try {
+      let localPath;
+      const inputJson = tracker.toolInputJsonBuffers.get(toolUseId);
+      if (inputJson) {
+        try {
+          localPath = JSON.parse(inputJson)?.localPath;
+        } catch {
+        }
+      }
+      if (!localPath) localPath = toolInfo?.input?.localPath;
+      const isFile = localPath ? /\.[a-zA-Z0-9]+$/.test(localPath.replace(/\/+$/, "").split("/").pop() || "") : false;
+      const deployUrl = _CloudbaseAgentService.extractDeployUrl(rawText, isFile);
+      if (deployUrl) {
+        callback({ type: "deploy_url", url: deployUrl });
+      }
+    } catch {
+    }
+  }
+  /**
+   * 从 uploadFiles 工具结果 JSON 中递归提取 CloudBase 部署 URL
+   * 支持 accessUrl / staticDomain 字段，最多递归 5 层
+   */
+  static extractDeployUrl(rawText, isFile = false, depth = 0) {
+    if (depth > 5) return null;
+    try {
+      const parsed = JSON.parse(rawText);
+      if (Array.isArray(parsed)) {
+        const firstText = parsed[0]?.text;
+        if (typeof firstText === "string") {
+          return _CloudbaseAgentService.extractDeployUrl(firstText, isFile, depth + 1);
+        }
+        return null;
+      }
+      if (typeof parsed !== "object" || parsed === null) return null;
+      if (parsed.accessUrl) {
+        const url = new URL(parsed.accessUrl);
+        if (!isFile && url.pathname !== "/" && !url.pathname.endsWith("/")) {
+          url.pathname += "/";
+        }
+        if (!url.searchParams.get("t")) {
+          url.searchParams.set("t", String(Date.now()));
+        }
+        return url.toString();
+      }
+      if (parsed.staticDomain) return `https://${parsed.staticDomain}/?t=${Date.now()}`;
+      const innerText = parsed?.res?.content?.[0]?.text || parsed?.content?.[0]?.text;
+      if (typeof innerText === "string") {
+        return _CloudbaseAgentService.extractDeployUrl(innerText, isFile, depth + 1);
+      }
+    } catch {
+    }
+    return null;
+  }
+  /**
+   * 尝试从 publishMiniprogram 工具结果中提取小程序预览二维码
+   * 成功则触发 artifact callback
+   */
+  tryExtractQrcode(toolUseId, rawText, tracker, callback) {
+    const toolInfo = tracker.pendingToolCalls.get(toolUseId);
+    const toolName = toolInfo?.name || "";
+    if (!toolName.includes("publishMiniprogram") && !toolName.includes("Miniprogram")) return;
+    if (!rawText) return;
+    try {
+      let parsedResult = null;
+      try {
+        parsedResult = JSON.parse(rawText);
+      } catch {
+        return;
+      }
+      const action = parsedResult?.action || toolInfo?.input?.action;
+      if (parsedResult?.result?.qrcode) {
+        const qrcode = `data:${parsedResult?.result?.qrcode?.mimeType || "image/png"};base64,${parsedResult?.result?.qrcode?.base64}`;
+        callback({
+          type: "artifact",
+          artifact: {
+            title: "\u5C0F\u7A0B\u5E8F\u9884\u89C8\u4E8C\u7EF4\u7801",
+            description: "\u4F7F\u7528\u5FAE\u4FE1\u626B\u7801\u9884\u89C8\u5C0F\u7A0B\u5E8F",
+            contentType: "image",
+            data: qrcode,
+            metadata: parsedResult
+          }
+        });
+        return;
+      }
+      if (parsedResult?.success && action === "upload") {
+        callback({
+          type: "artifact",
+          artifact: {
+            title: "\u5C0F\u7A0B\u5E8F\u4E0A\u4F20\u6210\u529F",
+            description: "\u4EE3\u7801\u5DF2\u4E0A\u4F20\u5230\u5FAE\u4FE1\u540E\u53F0\uFF0C\u53EF\u524D\u5F80\u5FAE\u4FE1\u516C\u4F17\u5E73\u53F0\u63D0\u4EA4\u5BA1\u6838",
+            contentType: "json",
+            data: JSON.stringify(parsedResult)
+          }
+        });
+      }
+    } catch {
     }
   }
   handleToolNotFoundErrors(msg, tracker, callback) {
@@ -2337,8 +4752,14 @@ var CloudbaseAgentService = class {
 var cloudbaseAgentService = new CloudbaseAgentService();
 
 // src/routes/acp.ts
-import { AuthSupervisor as AuthSupervisor2 } from "@cloudbase/toolbox";
-var acp = new Hono2();
+import { nanoid as nanoid5 } from "nanoid";
+var acp = new Hono4();
+acp.use("/*", async (c, next) => {
+  if (c.req.path.endsWith("/health") || c.req.path.endsWith("/config")) {
+    return next();
+  }
+  return requireUserEnv(c, next);
+});
 function rpcOk(id, result) {
   return { jsonrpc: "2.0", id, result };
 }
@@ -2349,29 +4770,17 @@ function rpcErr(id, code, message) {
     error: { code, message }
   };
 }
-async function getUserContext2() {
-  const config = loadConfig();
-  const envId = process.env.TCB_ENV_ID || config.cloudbase?.envId || "";
-  try {
-    const auth3 = AuthSupervisor2.getInstance({});
-    const loginState = await auth3.getLoginState();
-    const uin = loginState?.uin || "coder-user";
-    return { envId, ownerUin: uin, userId: uin };
-  } catch {
-    return { envId, ownerUin: "coder-user", userId: "coder-user" };
-  }
-}
 acp.get("/health", (c) => {
   return c.json({ status: "ok", service: "acp" });
 });
 acp.post("/conversation", async (c) => {
   const body = await c.req.json();
   const conversationId = body?.conversationId || uuidv43();
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json({ error: "CloudBase environment not bound" }, 400);
   }
-  const exists = await persistenceService.conversationExists(conversationId, ownerUin, envId);
+  const exists = await persistenceService.conversationExists(conversationId, userId, envId);
   if (exists) {
     return c.json({ conversationId, exists: true });
   }
@@ -2388,11 +4797,11 @@ acp.get("/conversation/records", async (c) => {
   if (!conversationId) {
     return c.json({ error: "conversationId is required" }, 400);
   }
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json({ error: "CloudBase environment not bound" }, 400);
   }
-  const records = await persistenceService.loadDBMessages(conversationId, ownerUin, envId, ownerUin, limit);
+  const records = await persistenceService.loadDBMessages(conversationId, envId, userId, limit);
   const ALLOWED_CONTENT_TYPES = /* @__PURE__ */ new Set(["text", "tool_use", "tool_result", "reasoning"]);
   const filteredRecords = records.map((record) => ({
     ...record,
@@ -2424,11 +4833,11 @@ acp.get("/conversation/:conversationId/messages", async (c) => {
   const conversationId = c.req.param("conversationId");
   const limit = parseInt(c.req.query("limit") || "50");
   const sort = c.req.query("sort") || "DESC";
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json({ error: "CloudBase environment not bound" }, 400);
   }
-  const records = await persistenceService.loadDBMessages(conversationId, ownerUin, envId, ownerUin, limit);
+  const records = await persistenceService.loadDBMessages(conversationId, envId, userId, limit);
   const data = records.map((r) => ({
     recordId: r.recordId,
     conversationId: r.conversationId,
@@ -2446,13 +4855,12 @@ acp.delete("/conversation/:conversationId", async (c) => {
 });
 acp.post("/chat", async (c) => {
   const body = await c.req.json();
-  const { prompt, conversationId } = body;
-  const { envId, ownerUin } = await getUserContext2();
+  const { prompt, conversationId, model } = body;
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json({ error: "CloudBase environment not bound" }, 400);
   }
   const actualConversationId = conversationId || uuidv43();
-  const cwd = `/tmp/workspace/${actualConversationId}`;
   return streamSSE(c, async (stream) => {
     await stream.writeSSE({
       data: JSON.stringify({
@@ -2516,9 +4924,9 @@ acp.post("/chat", async (c) => {
       await cloudbaseAgentService.chatStream(prompt, callback, {
         conversationId: actualConversationId,
         envId,
-        ownerUin,
-        userId: ownerUin,
-        cwd
+        userId,
+        userCredentials,
+        model
       });
     } catch (error) {
       stopReason = "error";
@@ -2558,6 +4966,9 @@ acp.post("/acp", async (c) => {
   }
 });
 async function handleInitialize(c, id) {
+  getSupportedModels().catch(() => {
+  });
+  const models = await getSupportedModels();
   const result = {
     protocolVersion: ACP_PROTOCOL_VERSION,
     agentCapabilities: {
@@ -2569,22 +4980,23 @@ async function handleInitialize(c, id) {
       }
     },
     agentInfo: NEX_AGENT_INFO,
-    authMethods: []
+    authMethods: [],
+    supportedModels: models
   };
   return c.json(rpcOk(id, result));
 }
 async function handleSessionNew(c, id, params) {
   const conversationId = params?.conversationId || uuidv43();
   const sessionId = conversationId;
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, "CloudBase environment not bound"));
   }
   try {
-    const exists = await persistenceService.conversationExists(conversationId, ownerUin, envId);
+    const exists = await persistenceService.conversationExists(conversationId, userId, envId);
     let hasHistory = false;
     if (exists) {
-      const messages = await persistenceService.loadDBMessages(conversationId, ownerUin, envId, ownerUin, 1);
+      const messages = await persistenceService.loadDBMessages(conversationId, envId, userId, 1);
       hasHistory = messages.length > 0;
     }
     const result = { sessionId, hasHistory };
@@ -2598,11 +5010,11 @@ async function handleSessionLoad(c, id, params) {
   if (!sessionId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, "sessionId is required"));
   }
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, "CloudBase environment not bound"));
   }
-  const exists = await persistenceService.conversationExists(sessionId, ownerUin, envId);
+  const exists = await persistenceService.conversationExists(sessionId, userId, envId);
   if (!exists) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, `Session '${sessionId}' not found`));
   }
@@ -2610,20 +5022,31 @@ async function handleSessionLoad(c, id, params) {
 }
 async function handleSessionPrompt(c, id, params) {
   const sessionId = params?.sessionId;
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, "CloudBase environment not bound"));
   }
-  const exists = await persistenceService.conversationExists(sessionId, ownerUin, envId);
-  const latestStatus = await persistenceService.getLatestRecordStatus(sessionId, ownerUin, envId);
+  const exists = await persistenceService.conversationExists(sessionId, userId, envId);
+  const latestStatus = await persistenceService.getLatestRecordStatus(sessionId, userId, envId);
   if (latestStatus && (latestStatus.status === "pending" || latestStatus.status === "streaming")) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_REQUEST, "A prompt turn is already in progress"));
   }
   const prompt = (params?.prompt ?? []).filter((b) => b.type === "text").map((b) => b.text).join("");
-  if (!prompt.trim()) {
+  const hasResumePayload = params?.askAnswers && Object.keys(params.askAnswers).length > 0 || !!params?.toolConfirmation;
+  if (!prompt.trim() && !hasResumePayload) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, "prompt must contain at least one text block"));
   }
-  const cwd = `/tmp/workspace/${sessionId}`;
+  const effectivePrompt = prompt.trim() ? prompt : hasResumePayload ? "continue" : prompt;
+  let selectedModel;
+  try {
+    const task = await getDb().tasks.findById(sessionId);
+    selectedModel = task?.selectedModel || void 0;
+  } catch {
+  }
+  try {
+    await getDb().tasks.update(sessionId, { status: "pending", updatedAt: Date.now() });
+  } catch {
+  }
   return streamSSE(c, async (stream) => {
     let fullContent = "";
     let stopReason = "end_turn";
@@ -2649,21 +5072,20 @@ async function handleSessionPrompt(c, id, params) {
       } else if (msg.type === "thinking" && msg.content) {
         await notify("session/update", {
           sessionId,
-          update: {
-            sessionUpdate: "thinking",
-            content: msg.content
-          }
+          update: { sessionUpdate: "agent_thought_chunk", content: msg.content }
         });
       } else if (msg.type === "tool_use") {
+        const toolCallId = msg.id || uuidv43();
         await notify("session/update", {
           sessionId,
           update: {
             sessionUpdate: "tool_call",
-            toolCallId: msg.id || uuidv43(),
+            toolCallId,
             title: msg.name || "tool",
             kind: "function",
             status: "in_progress",
-            input: msg.input
+            input: msg.input,
+            assistantMessageId: msg.assistantMessageId
           }
         });
       } else if (msg.type === "tool_result") {
@@ -2687,15 +5109,105 @@ async function handleSessionPrompt(c, id, params) {
             timestamp: Date.now()
           }
         });
+      } else if (msg.type === "deploy_url") {
+        const deploymentType = msg.deploymentType || "web";
+        const now4 = Date.now();
+        try {
+          if (deploymentType === "miniprogram") {
+            const existing = await getDb().deployments.findByTaskIdAndTypePath(sessionId, "miniprogram", null);
+            if (existing) {
+              await getDb().deployments.update(existing.id, {
+                qrCodeUrl: msg.qrCodeUrl || existing.qrCodeUrl,
+                pagePath: msg.pagePath || existing.pagePath,
+                appId: msg.appId || existing.appId,
+                label: msg.label || existing.label,
+                metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+                updatedAt: now4
+              });
+            } else {
+              await getDb().deployments.create({
+                id: nanoid5(12),
+                taskId: sessionId,
+                type: "miniprogram",
+                url: null,
+                path: null,
+                qrCodeUrl: msg.qrCodeUrl || null,
+                pagePath: msg.pagePath || null,
+                appId: msg.appId || null,
+                label: msg.label || null,
+                metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+                createdAt: now4,
+                updatedAt: now4
+              });
+            }
+          } else if (msg.url) {
+            let path5 = null;
+            try {
+              const urlObj = new URL(msg.url);
+              path5 = urlObj.pathname;
+            } catch {
+            }
+            if (path5) {
+              const existing = await getDb().deployments.findByTaskIdAndTypePath(sessionId, "web", path5);
+              if (existing) {
+                await getDb().deployments.update(existing.id, {
+                  url: msg.url,
+                  label: msg.label || existing.label,
+                  metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+                  updatedAt: now4
+                });
+              } else {
+                await getDb().deployments.create({
+                  id: nanoid5(12),
+                  taskId: sessionId,
+                  type: "web",
+                  url: msg.url,
+                  path: path5,
+                  qrCodeUrl: null,
+                  pagePath: null,
+                  appId: null,
+                  label: msg.label || null,
+                  metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+                  createdAt: now4,
+                  updatedAt: now4
+                });
+              }
+            }
+          }
+          if (msg.url) {
+            await getDb().tasks.update(sessionId, { previewUrl: msg.url });
+          }
+        } catch (err) {
+          console.error("Failed to create deployment:", err);
+        }
+        await notify("session/update", {
+          sessionId,
+          update: {
+            sessionUpdate: "deploy_url",
+            url: msg.url,
+            type: deploymentType,
+            qrCodeUrl: msg.qrCodeUrl,
+            pagePath: msg.pagePath,
+            appId: msg.appId,
+            label: msg.label
+          }
+        });
+      } else if (msg.type === "artifact" && msg.artifact) {
+        await notify("session/update", {
+          sessionId,
+          update: { sessionUpdate: "artifact", artifact: msg.artifact }
+        });
       }
     };
     try {
-      await cloudbaseAgentService.chatStream(prompt, callback, {
+      await cloudbaseAgentService.chatStream(effectivePrompt, callback, {
         conversationId: sessionId,
         envId,
-        ownerUin,
-        userId: ownerUin,
-        cwd
+        userId,
+        userCredentials,
+        model: selectedModel,
+        askAnswers: params.askAnswers,
+        toolConfirmation: params.toolConfirmation
       });
     } catch (error) {
       stopReason = "error";
@@ -2711,6 +5223,15 @@ async function handleSessionPrompt(c, id, params) {
         }
       });
     }
+    try {
+      await getDb().tasks.update(sessionId, {
+        status: stopReason === "error" ? "error" : "completed",
+        completedAt: Date.now(),
+        updatedAt: Date.now()
+      });
+    } catch (dbErr) {
+      console.error("[ACP] Failed to update task status:", dbErr);
+    }
     await stream.writeSSE({
       data: JSON.stringify(rpcOk(id, { stopReason }))
     });
@@ -2719,9 +5240,9 @@ async function handleSessionPrompt(c, id, params) {
 }
 async function handleSessionCancel(c, id, params, isNotification) {
   const sessionId = params?.sessionId;
-  const { envId, ownerUin } = await getUserContext2();
+  const { envId, userId, credentials: userCredentials } = c.get("userEnv");
   if (sessionId && envId) {
-    const latestStatus = await persistenceService.getLatestRecordStatus(sessionId, ownerUin, envId);
+    const latestStatus = await persistenceService.getLatestRecordStatus(sessionId, userId, envId);
     if (latestStatus && (latestStatus.status === "pending" || latestStatus.status === "streaming")) {
       await persistenceService.updateRecordStatus(latestStatus.recordId, "cancel");
     }
@@ -2741,12 +5262,10 @@ acp.get("/config", (c) => {
 var acp_default = acp;
 
 // src/routes/tasks.ts
-import { Hono as Hono3 } from "hono";
-import { eq as eq3, desc, and as and2, isNull } from "drizzle-orm";
-import { nanoid as nanoid2 } from "nanoid";
+import { Hono as Hono5 } from "hono";
+import { nanoid as nanoid6 } from "nanoid";
 
 // src/lib/task-logger.ts
-import { eq as eq2 } from "drizzle-orm";
 var TaskLogger = class {
   taskId;
   acpNotify;
@@ -2759,10 +5278,10 @@ var TaskLogger = class {
   async appendLog(level, message) {
     const entry = { type: level, message, timestamp: Date.now() };
     try {
-      const [task] = await db.select({ logs: tasks.logs }).from(tasks).where(eq2(tasks.id, this.taskId)).limit(1);
+      const task = await getDb().tasks.findById(this.taskId);
       const existingLogs = task?.logs ? JSON.parse(task.logs) : [];
       const newLogs = [...existingLogs, entry];
-      await db.update(tasks).set({ logs: JSON.stringify(newLogs), updatedAt: Date.now() }).where(eq2(tasks.id, this.taskId));
+      await getDb().tasks.update(this.taskId, { logs: JSON.stringify(newLogs), updatedAt: Date.now() });
     } catch {
     }
     if (this.acpNotify) {
@@ -2785,17 +5304,17 @@ var TaskLogger = class {
     try {
       if (message) {
         const entry = { type: "info", message, timestamp: Date.now() };
-        const [task] = await db.select({ logs: tasks.logs }).from(tasks).where(eq2(tasks.id, this.taskId)).limit(1);
+        const task = await getDb().tasks.findById(this.taskId);
         const existingLogs = task?.logs ? JSON.parse(task.logs) : [];
         const newLogs = [...existingLogs, entry];
-        await db.update(tasks).set({ progress, logs: JSON.stringify(newLogs), updatedAt: Date.now() }).where(eq2(tasks.id, this.taskId));
+        await getDb().tasks.update(this.taskId, { progress, logs: JSON.stringify(newLogs), updatedAt: Date.now() });
       } else {
-        await db.update(tasks).set({ progress, updatedAt: Date.now() }).where(eq2(tasks.id, this.taskId));
+        await getDb().tasks.update(this.taskId, { progress, updatedAt: Date.now() });
       }
     } catch {
     }
     if (this.acpNotify) {
-      const [task] = await db.select({ status: tasks.status }).from(tasks).where(eq2(tasks.id, this.taskId)).limit(1).catch(() => [void 0]);
+      const task = await getDb().tasks.findById(this.taskId).catch(() => null);
       this.acpNotify({
         sessionUpdate: "task_progress",
         progress,
@@ -2808,7 +5327,7 @@ var TaskLogger = class {
       const updateData = { status, updatedAt: Date.now() };
       if (status === "completed") updateData.completedAt = Date.now();
       if (error) updateData.error = error;
-      await db.update(tasks).set(updateData).where(eq2(tasks.id, this.taskId));
+      await getDb().tasks.update(this.taskId, updateData);
     } catch {
     }
   }
@@ -2818,12 +5337,214 @@ function createTaskLogger(taskId) {
 }
 
 // src/routes/tasks.ts
-var tasksRouter = new Hono3();
+import { Octokit as Octokit2 } from "@octokit/rest";
+import { Sandbox } from "@vercel/sandbox";
+var PROJECT_DIR = "/vercel/sandbox/project";
+var MAX_SANDBOX_DURATION = parseInt(process.env.MAX_SANDBOX_DURATION || "300", 10);
+var activeSandboxes = /* @__PURE__ */ new Map();
+function registerSandbox(taskId, sandbox) {
+  activeSandboxes.set(taskId, sandbox);
+}
+function unregisterSandbox(taskId) {
+  activeSandboxes.delete(taskId);
+}
+function getSandbox(taskId) {
+  return activeSandboxes.get(taskId);
+}
+async function getUserGitHubToken(userId) {
+  try {
+    const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
+    if (account?.accessToken) {
+      return decrypt(account.accessToken);
+    }
+    const user = await getDb().users.findById(userId);
+    if (user?.provider === "github" && user.accessToken) {
+      return decrypt(user.accessToken);
+    }
+    return null;
+  } catch (error) {
+    console.error("Error fetching user GitHub token:", error);
+    return null;
+  }
+}
+async function getOctokit(userId) {
+  const token = await getUserGitHubToken(userId);
+  return new Octokit2({ auth: token || void 0 });
+}
+function parseGitHubUrl(repoUrl) {
+  const match = repoUrl.match(/github\.com[/:]([\w-]+)\/([\w-]+?)(\.git)?$/);
+  if (match) {
+    return { owner: match[1], repo: match[2] };
+  }
+  return null;
+}
+async function runCommandInSandbox(sandbox, command, args = []) {
+  try {
+    const result = await sandbox.runCommand(command, args);
+    let stdout = "";
+    let stderr = "";
+    try {
+      stdout = await result.stdout();
+    } catch {
+    }
+    try {
+      stderr = await result.stderr();
+    } catch {
+    }
+    return { success: result.exitCode === 0, exitCode: result.exitCode, output: stdout, error: stderr };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Command failed" };
+  }
+}
+async function runInProject(sandbox, command, args = []) {
+  const escapeArg = (arg) => `'${arg.replace(/'/g, "'\\''")}'`;
+  const fullCommand = args.length > 0 ? `${command} ${args.map(escapeArg).join(" ")}` : command;
+  return runCommandInSandbox(sandbox, "sh", ["-c", `cd ${PROJECT_DIR} && ${fullCommand}`]);
+}
+async function reconnectSandbox(task) {
+  const sandboxToken = process.env.SANDBOX_VERCEL_TOKEN;
+  const teamId = process.env.SANDBOX_VERCEL_TEAM_ID;
+  const projectId = process.env.SANDBOX_VERCEL_PROJECT_ID;
+  if (!sandboxToken || !teamId || !projectId || !task.sandboxId) return null;
+  try {
+    return await Sandbox.get({ sandboxId: task.sandboxId, teamId, projectId, token: sandboxToken });
+  } catch {
+    return null;
+  }
+}
+async function getOrReconnectSandbox(taskId, task) {
+  let sandbox = getSandbox(taskId);
+  if (!sandbox) {
+    sandbox = await reconnectSandbox(task);
+  }
+  return sandbox || null;
+}
+async function detectPackageManager(sandbox) {
+  const pnpmCheck = await runInProject(sandbox, "test", ["-f", "pnpm-lock.yaml"]);
+  if (pnpmCheck.success) return "pnpm";
+  const yarnCheck = await runInProject(sandbox, "test", ["-f", "yarn.lock"]);
+  if (yarnCheck.success) return "yarn";
+  return "npm";
+}
+function getLanguageFromFilename(filename) {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  const langMap = {
+    js: "javascript",
+    jsx: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    py: "python",
+    java: "java",
+    cpp: "cpp",
+    c: "c",
+    cs: "csharp",
+    php: "php",
+    rb: "ruby",
+    go: "go",
+    rs: "rust",
+    swift: "swift",
+    kt: "kotlin",
+    scala: "scala",
+    sh: "bash",
+    yaml: "yaml",
+    yml: "yaml",
+    json: "json",
+    xml: "xml",
+    html: "html",
+    css: "css",
+    scss: "scss",
+    less: "less",
+    md: "markdown",
+    sql: "sql"
+  };
+  return langMap[ext || ""] || "text";
+}
+function isImageFile(filename) {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  return ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "ico", "tiff", "tif"].includes(ext || "");
+}
+function isBinaryFile(filename) {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  const binaryExtensions = [
+    "zip",
+    "tar",
+    "gz",
+    "rar",
+    "7z",
+    "bz2",
+    "exe",
+    "dll",
+    "so",
+    "dylib",
+    "db",
+    "sqlite",
+    "sqlite3",
+    "mp3",
+    "mp4",
+    "avi",
+    "mov",
+    "wav",
+    "flac",
+    "pdf",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+    "ppt",
+    "pptx",
+    "ttf",
+    "otf",
+    "woff",
+    "woff2",
+    "eot",
+    "bin",
+    "dat",
+    "dmg",
+    "iso",
+    "img"
+  ];
+  return binaryExtensions.includes(ext || "") || isImageFile(filename);
+}
+async function getFileContentFromGitHub(octokit, owner, repo, path5, ref, isImage) {
+  try {
+    const response = await octokit.rest.repos.getContent({ owner, repo, path: path5, ref });
+    if ("content" in response.data && typeof response.data.content === "string") {
+      if (isImage) return { content: response.data.content, isBase64: true };
+      return { content: Buffer.from(response.data.content, "base64").toString("utf-8"), isBase64: false };
+    }
+    return { content: "", isBase64: false };
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 404) {
+      return { content: "", isBase64: false };
+    }
+    throw error;
+  }
+}
+var SANDBOX_VITE_CONFIG = `import { defineConfig, mergeConfig } from 'vite'
+
+let userConfig = {}
+try {
+  const importedConfig = await import('./vite.config.js')
+  userConfig = importedConfig.default || {}
+} catch {
+  // No user config or import failed
+}
+
+export default mergeConfig(userConfig, defineConfig({
+  server: {
+    host: '0.0.0.0',
+    strictPort: false,
+    allowedHosts: undefined,
+  }
+}))`;
+var tasksRouter = new Hono5();
 tasksRouter.get("/", async (c) => {
   const authErr = requireAuth(c);
   if (authErr) return authErr;
   const session = c.get("session");
-  const userTasks = await db.select().from(tasks).where(and2(eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).orderBy(desc(tasks.createdAt));
+  const userTasks = await getDb().tasks.findByUserId(session.user.id);
   const parsedTasks = userTasks.map((t) => ({
     ...t,
     logs: t.logs ? JSON.parse(t.logs) : [],
@@ -2846,15 +5567,14 @@ tasksRouter.post("/", async (c) => {
     keepAlive = false,
     enableBrowser = false
   } = body;
-  if (!prompt || typeof prompt !== "string") {
-    return c.json({ error: "prompt is required" }, 400);
-  }
-  const taskId = body.id || nanoid2(12);
-  const now2 = Date.now();
-  await db.insert(tasks).values({
+  if (!prompt || typeof prompt !== "string") return c.json({ error: "prompt is required" }, 400);
+  const taskId = body.id || nanoid6(12);
+  const now4 = Date.now();
+  await getDb().tasks.create({
     id: taskId,
     userId: session.user.id,
     prompt,
+    title: null,
     repoUrl: repoUrl || null,
     selectedAgent,
     selectedModel: selectedModel || null,
@@ -2865,34 +5585,30 @@ tasksRouter.post("/", async (c) => {
     status: "pending",
     progress: 0,
     logs: "[]",
-    createdAt: now2,
-    updatedAt: now2
+    error: null,
+    branchName: null,
+    sandboxId: null,
+    agentSessionId: null,
+    sandboxUrl: null,
+    previewUrl: null,
+    prUrl: null,
+    prNumber: null,
+    prStatus: null,
+    prMergeCommitSha: null,
+    mcpServerIds: null,
+    createdAt: now4,
+    updatedAt: now4
   });
-  await db.insert(taskMessages).values({
-    id: nanoid2(12),
-    taskId,
-    role: "user",
-    content: prompt,
-    createdAt: now2
-  });
-  const [newTask] = await db.select().from(tasks).where(eq3(tasks.id, taskId)).limit(1);
-  return c.json({
-    task: {
-      ...newTask,
-      logs: [],
-      mcpServerIds: null
-    }
-  });
+  const newTask = await getDb().tasks.findById(taskId);
+  return c.json({ task: { ...newTask, logs: [], mcpServerIds: null } });
 });
 tasksRouter.get("/:taskId", async (c) => {
   const authErr = requireAuth(c);
   if (authErr) return authErr;
   const session = c.get("session");
   const { taskId } = c.req.param();
-  const [task] = await db.select().from(tasks).where(and2(eq3(tasks.id, taskId), eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).limit(1);
-  if (!task) {
-    return c.json({ error: "Task not found" }, 404);
-  }
+  const task = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
+  if (!task || task.deletedAt) return c.json({ error: "Task not found" }, 404);
   return c.json({
     task: {
       ...task,
@@ -2907,18 +5623,14 @@ tasksRouter.patch("/:taskId", async (c) => {
   const session = c.get("session");
   const { taskId } = c.req.param();
   const body = await c.req.json();
-  const [existing] = await db.select().from(tasks).where(and2(eq3(tasks.id, taskId), eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).limit(1);
-  if (!existing) {
-    return c.json({ error: "Task not found" }, 404);
-  }
+  const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
+  if (!existing || existing.deletedAt) return c.json({ error: "Task not found" }, 404);
   if (body.action === "stop") {
-    if (existing.status !== "processing") {
-      return c.json({ error: "Can only stop processing tasks" }, 400);
-    }
+    if (existing.status !== "processing") return c.json({ error: "Can only stop processing tasks" }, 400);
     const logger = createTaskLogger(taskId);
     await logger.info("Task stopped by user");
     await logger.updateStatus("stopped", "Task was stopped by user");
-    const [updated] = await db.select().from(tasks).where(eq3(tasks.id, taskId)).limit(1);
+    const updated = await getDb().tasks.findById(taskId);
     return c.json({ message: "Task stopped", task: updated });
   }
   return c.json({ error: "Invalid action" }, 400);
@@ -2928,24 +5640,57 @@ tasksRouter.delete("/:taskId", async (c) => {
   if (authErr) return authErr;
   const session = c.get("session");
   const { taskId } = c.req.param();
-  const [existing] = await db.select().from(tasks).where(and2(eq3(tasks.id, taskId), eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).limit(1);
-  if (!existing) {
-    return c.json({ error: "Task not found" }, 404);
-  }
-  await db.update(tasks).set({ deletedAt: Date.now() }).where(eq3(tasks.id, taskId));
+  const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
+  if (!existing || existing.deletedAt) return c.json({ error: "Task not found" }, 404);
+  await getDb().tasks.softDelete(taskId);
   return c.json({ message: "Task deleted" });
 });
-tasksRouter.get("/:taskId/messages", async (c) => {
-  const authErr = requireAuth(c);
-  if (authErr) return authErr;
+tasksRouter.get("/:taskId/messages", requireUserEnv, async (c) => {
   const session = c.get("session");
+  const { envId, userId } = c.get("userEnv");
   const { taskId } = c.req.param();
-  const [task] = await db.select().from(tasks).where(and2(eq3(tasks.id, taskId), eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).limit(1);
-  if (!task) {
-    return c.json({ error: "Task not found" }, 404);
+  const task = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
+  if (!task || task.deletedAt) return c.json({ error: "Task not found" }, 404);
+  try {
+    const cloudbaseRecords = await persistenceService.loadDBMessages(taskId, envId, userId, 100);
+    const messages = cloudbaseRecords.map((record) => {
+      const parts = (record.parts || []).map((p) => {
+        if (p.contentType === "text") return { type: "text", text: p.content || "" };
+        else if (p.contentType === "reasoning") return { type: "thinking", text: p.content || "" };
+        else if (p.contentType === "tool_call")
+          return {
+            type: "tool_call",
+            toolCallId: p.toolCallId || p.partId,
+            toolName: p.metadata?.toolCallName || p.metadata?.toolName || "tool",
+            input: p.content || p.metadata?.input,
+            status: p.metadata?.status || void 0
+          };
+        else if (p.contentType === "tool_result")
+          return {
+            type: "tool_result",
+            toolCallId: p.toolCallId || p.partId,
+            toolName: p.metadata?.toolName || void 0,
+            content: p.content || "",
+            isError: p.metadata?.isError,
+            status: p.metadata?.status || void 0
+          };
+        return { type: "text", text: p.content || "" };
+      });
+      const textContent = parts.filter((p) => p.type === "text").map((p) => p.text).join("");
+      return {
+        id: record.recordId,
+        taskId,
+        role: record.role === "user" ? "user" : "agent",
+        content: textContent,
+        parts,
+        status: record.status,
+        createdAt: record.createTime || Date.now()
+      };
+    });
+    return c.json({ messages });
+  } catch {
+    return c.json({ messages: [] });
   }
-  const messages = await db.select().from(taskMessages).where(eq3(taskMessages.taskId, taskId)).orderBy(taskMessages.createdAt);
-  return c.json({ messages });
 });
 tasksRouter.post("/:taskId/continue", async (c) => {
   const authErr = requireAuth(c);
@@ -2954,97 +5699,1854 @@ tasksRouter.post("/:taskId/continue", async (c) => {
   const { taskId } = c.req.param();
   const body = await c.req.json();
   const { prompt } = body;
-  if (!prompt) {
-    return c.json({ error: "prompt is required" }, 400);
+  if (!prompt) return c.json({ error: "prompt is required" }, 400);
+  const task = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
+  if (!task || task.deletedAt) return c.json({ error: "Task not found" }, 404);
+  await getDb().tasks.update(taskId, { status: "processing", updatedAt: Date.now() });
+  return c.json({ message: "Message sent" });
+});
+async function findActiveTask(taskId, userId) {
+  const task = await getDb().tasks.findByIdAndUserId(taskId, userId);
+  if (!task || task.deletedAt) return null;
+  return task;
+}
+function addToFileTree(tree, filename, fileObj) {
+  const parts = filename.split("/");
+  let currentLevel = tree;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const isLastPart = i === parts.length - 1;
+    if (isLastPart) {
+      currentLevel[part] = {
+        type: "file",
+        filename: fileObj.filename,
+        status: fileObj.status,
+        additions: fileObj.additions,
+        deletions: fileObj.deletions,
+        changes: fileObj.changes
+      };
+    } else {
+      if (!currentLevel[part]) currentLevel[part] = { type: "directory", children: {} };
+      currentLevel = currentLevel[part].children;
+    }
   }
-  const [task] = await db.select().from(tasks).where(and2(eq3(tasks.id, taskId), eq3(tasks.userId, session.user.id), isNull(tasks.deletedAt))).limit(1);
-  if (!task) {
-    return c.json({ error: "Task not found" }, 404);
+}
+tasksRouter.get("/:taskId/files", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const mode = c.req.query("mode") || "remote";
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.branchName) return c.json({ success: true, files: [], fileTree: {}, branchName: null });
+    const repoUrl = task.repoUrl;
+    if (!repoUrl) return c.json({ success: true, files: [], fileTree: {}, branchName: task.branchName });
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ success: false, error: "GitHub authentication required" }, 401);
+    const githubMatch = repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!githubMatch) return c.json({ success: false, error: "Invalid repository URL format" }, 400);
+    const [, owner, repo] = githubMatch;
+    let files = [];
+    if (mode === "local") {
+      if (!task.sandboxId) return c.json({ success: false, error: "Sandbox is not running" }, 410);
+      try {
+        let sandbox = getSandbox(taskId);
+        if (!sandbox) sandbox = await reconnectSandbox(task);
+        if (!sandbox)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Sandbox not found"
+          });
+        const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
+        if (statusResult.exitCode !== 0)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Failed to get local changes"
+          });
+        const statusOutput = await statusResult.stdout();
+        const statusLines = statusOutput.trim().split("\n").filter((line) => line.trim());
+        const checkRemoteResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["rev-parse", "--verify", `origin/${task.branchName}`],
+          cwd: PROJECT_DIR
+        });
+        const remoteBranchExists = checkRemoteResult.exitCode === 0;
+        const compareRef = remoteBranchExists ? `origin/${task.branchName}` : "HEAD";
+        const numstatResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["diff", "--numstat", compareRef],
+          cwd: PROJECT_DIR
+        });
+        const diffStats = {};
+        if (numstatResult.exitCode === 0) {
+          const numstatOutput = await numstatResult.stdout();
+          for (const line of numstatOutput.trim().split("\n").filter((l) => l.trim())) {
+            const parts = line.split("	");
+            if (parts.length >= 3)
+              diffStats[parts[2]] = { additions: parseInt(parts[0]) || 0, deletions: parseInt(parts[1]) || 0 };
+          }
+        }
+        const filePromises = statusLines.map(async (line) => {
+          const indexStatus = line.charAt(0);
+          const worktreeStatus = line.charAt(1);
+          let filename = line.substring(2).trim();
+          if (indexStatus === "R" || worktreeStatus === "R") {
+            const arrowIndex = filename.indexOf(" -> ");
+            if (arrowIndex !== -1) filename = filename.substring(arrowIndex + 4).trim();
+          }
+          let status = "modified";
+          if (indexStatus === "R" || worktreeStatus === "R") status = "renamed";
+          else if (indexStatus === "A" || worktreeStatus === "A" || indexStatus === "?" && worktreeStatus === "?")
+            status = "added";
+          else if (indexStatus === "D" || worktreeStatus === "D") status = "deleted";
+          let stats = diffStats[filename] || { additions: 0, deletions: 0 };
+          if (indexStatus === "?" && worktreeStatus === "?" || indexStatus === "A" && !stats.additions && !stats.deletions) {
+            const wcResult = await sandbox.runCommand({ cmd: "wc", args: ["-l", filename], cwd: PROJECT_DIR });
+            if (wcResult.exitCode === 0) {
+              const wcOutput = await wcResult.stdout();
+              stats = { additions: parseInt(wcOutput.trim().split(/\s+/)[0]) || 0, deletions: 0 };
+            }
+          }
+          return {
+            filename,
+            status,
+            additions: stats.additions,
+            deletions: stats.deletions,
+            changes: stats.additions + stats.deletions
+          };
+        });
+        files = await Promise.all(filePromises);
+      } catch (error) {
+        const is410 = error && typeof error === "object" && ("status" in error && error.status === 410 || "response" in error && typeof error.response === "object" && error.response?.status === 410);
+        if (is410) {
+          await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null });
+          unregisterSandbox(taskId);
+          return c.json({ success: false, error: "Sandbox is not running" }, 410);
+        }
+        return c.json({ success: false, error: "Failed to fetch local changes" }, 500);
+      }
+    } else if (mode === "all-local") {
+      if (!task.sandboxId) return c.json({ success: false, error: "Sandbox is not running" }, 410);
+      try {
+        let sandbox = getSandbox(taskId);
+        if (!sandbox) sandbox = await reconnectSandbox(task);
+        if (!sandbox)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Sandbox not found"
+          });
+        const findResult = await sandbox.runCommand({
+          cmd: "find",
+          args: [
+            ".",
+            "-type",
+            "f",
+            "-not",
+            "-path",
+            "*/.git/*",
+            "-not",
+            "-path",
+            "*/node_modules/*",
+            "-not",
+            "-path",
+            "*/.next/*",
+            "-not",
+            "-path",
+            "*/dist/*",
+            "-not",
+            "-path",
+            "*/build/*",
+            "-not",
+            "-path",
+            "*/.vercel/*"
+          ],
+          cwd: PROJECT_DIR
+        });
+        if (findResult.exitCode !== 0)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Failed to list files"
+          });
+        const findOutput = await findResult.stdout();
+        const fileLines = findOutput.trim().split("\n").filter((line) => line.trim() && line !== ".").map((line) => line.replace(/^\.\//, ""));
+        const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
+        const changedFilesMap = {};
+        if (statusResult.exitCode === 0) {
+          const statusOutput = await statusResult.stdout();
+          for (const line of statusOutput.trim().split("\n").filter((l) => l.trim())) {
+            const indexStatus = line.charAt(0);
+            const worktreeStatus = line.charAt(1);
+            let filename = line.substring(2).trim();
+            if (indexStatus === "R" || worktreeStatus === "R") {
+              const arrowIndex = filename.indexOf(" -> ");
+              if (arrowIndex !== -1) filename = filename.substring(arrowIndex + 4).trim();
+            }
+            let status = "modified";
+            if (indexStatus === "R" || worktreeStatus === "R") status = "renamed";
+            else if (indexStatus === "A" || worktreeStatus === "A" || indexStatus === "?" && worktreeStatus === "?")
+              status = "added";
+            else if (indexStatus === "D" || worktreeStatus === "D") status = "deleted";
+            changedFilesMap[filename] = status;
+          }
+        }
+        files = fileLines.map((filename) => {
+          const trimmed = filename.trim();
+          const status = changedFilesMap[trimmed] || "renamed";
+          return { filename: trimmed, status, additions: 0, deletions: 0, changes: 0 };
+        });
+      } catch (error) {
+        const is410 = error && typeof error === "object" && ("status" in error && error.status === 410 || "response" in error && typeof error.response === "object" && error.response?.status === 410);
+        if (is410) {
+          await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null });
+          unregisterSandbox(taskId);
+          return c.json({ success: false, error: "Sandbox is not running" }, 410);
+        }
+        return c.json({ success: false, error: "Failed to fetch local files" }, 500);
+      }
+    } else if (mode === "all") {
+      try {
+        const treeResponse = await octokit.rest.git.getTree({
+          owner,
+          repo,
+          tree_sha: task.branchName,
+          recursive: "true"
+        });
+        files = treeResponse.data.tree.filter((item) => item.type === "blob" && item.path).map((item) => ({
+          filename: item.path,
+          status: "modified",
+          additions: 0,
+          deletions: 0,
+          changes: 0
+        }));
+      } catch (error) {
+        if (error && typeof error === "object" && "status" in error && error.status === 404)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Branch not found or still being created"
+          });
+        return c.json({ success: false, error: "Failed to fetch repository tree from GitHub" }, 500);
+      }
+    } else {
+      try {
+        try {
+          await octokit.rest.repos.getBranch({ owner, repo, branch: task.branchName });
+        } catch (branchError) {
+          if (branchError && typeof branchError === "object" && "status" in branchError && branchError.status === 404)
+            return c.json({
+              success: true,
+              files: [],
+              fileTree: {},
+              branchName: task.branchName,
+              message: "Branch is being created..."
+            });
+          throw branchError;
+        }
+        let comparison;
+        try {
+          comparison = await octokit.rest.repos.compareCommits({ owner, repo, base: "main", head: task.branchName });
+        } catch (mainError) {
+          if (mainError && typeof mainError === "object" && "status" in mainError && mainError.status === 404) {
+            try {
+              comparison = await octokit.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: "master",
+                head: task.branchName
+              });
+            } catch (masterError) {
+              if (masterError && typeof masterError === "object" && "status" in masterError && masterError.status === 404)
+                return c.json({
+                  success: true,
+                  files: [],
+                  fileTree: {},
+                  branchName: task.branchName,
+                  message: "No base branch found for comparison"
+                });
+              throw masterError;
+            }
+          } else {
+            throw mainError;
+          }
+        }
+        files = comparison.data.files?.map((file) => ({
+          filename: file.filename,
+          status: file.status,
+          additions: file.additions || 0,
+          deletions: file.deletions || 0,
+          changes: file.changes || 0
+        })) || [];
+      } catch (error) {
+        if (error && typeof error === "object" && "status" in error && error.status === 404)
+          return c.json({
+            success: true,
+            files: [],
+            fileTree: {},
+            branchName: task.branchName,
+            message: "Branch not found or still being created"
+          });
+        return c.json({ success: false, error: "Failed to fetch file changes from GitHub" }, 500);
+      }
+    }
+    const fileTree = {};
+    for (const file of files) addToFileTree(fileTree, file.filename, file);
+    return c.json({ success: true, files, fileTree, branchName: task.branchName });
+  } catch (error) {
+    console.error("Error fetching task files:", error);
+    return c.json({ success: false, error: "Failed to fetch task files" }, 500);
   }
-  const messageId = nanoid2(12);
-  const now2 = Date.now();
-  await db.insert(taskMessages).values({
-    id: messageId,
-    taskId,
-    role: "user",
-    content: prompt,
-    createdAt: now2
-  });
-  await db.update(tasks).set({ status: "processing", updatedAt: now2 }).where(eq3(tasks.id, taskId));
-  return c.json({
-    message: "Message sent",
-    messageId
-  });
+});
+tasksRouter.get("/:taskId/file-content", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const rawFilename = c.req.query("filename");
+    const mode = c.req.query("mode") || "remote";
+    if (!rawFilename) return c.json({ error: "Missing filename parameter" }, 400);
+    const filename = decodeURIComponent(rawFilename);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.branchName || !task.repoUrl)
+      return c.json({ error: "Task does not have branch or repository information" }, 400);
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub authentication required" }, 401);
+    const githubMatch = task.repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!githubMatch) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const [, owner, repo] = githubMatch;
+    const isImage = isImageFile(filename);
+    const isBinary = isBinaryFile(filename);
+    if (isBinary && !isImage)
+      return c.json({
+        success: true,
+        data: { filename, oldContent: "", newContent: "", language: "text", isBinary: true, isImage: false }
+      });
+    const isNodeModulesFile = filename.includes("/node_modules/");
+    let oldContent = "";
+    let newContent = "";
+    let isBase64 = false;
+    let fileFound = false;
+    if (mode === "local") {
+      if (!isNodeModulesFile) {
+        const remoteResult = await getFileContentFromGitHub(octokit, owner, repo, filename, task.branchName, isImage);
+        oldContent = remoteResult.content;
+        isBase64 = remoteResult.isBase64;
+      }
+      if (task.sandboxId) {
+        try {
+          const sandbox = await getOrReconnectSandbox(taskId, task);
+          if (sandbox) {
+            const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
+            const catResult = await sandbox.runCommand({ cmd: "cat", args: [normalizedPath], cwd: PROJECT_DIR });
+            if (catResult.exitCode === 0) {
+              newContent = await catResult.stdout();
+              fileFound = true;
+            }
+          }
+        } catch (sandboxError) {
+          console.error("Error reading from sandbox:", sandboxError);
+        }
+      }
+      if (!fileFound) return c.json({ error: "File not found in sandbox" }, 404);
+    } else {
+      let content = "";
+      if (isNodeModulesFile && task.sandboxId) {
+        try {
+          const sandbox = await getOrReconnectSandbox(taskId, task);
+          if (sandbox) {
+            const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
+            const catResult = await sandbox.runCommand("cat", [normalizedPath]);
+            if (catResult.exitCode === 0) {
+              content = await catResult.stdout();
+              fileFound = true;
+            }
+          }
+        } catch (sandboxError) {
+          console.error("Error reading node_modules file from sandbox:", sandboxError);
+        }
+      } else {
+        const result = await getFileContentFromGitHub(octokit, owner, repo, filename, task.branchName, isImage);
+        content = result.content;
+        isBase64 = result.isBase64;
+        if (content || isImage) fileFound = true;
+      }
+      if (!fileFound && !isImage && !isNodeModulesFile && task.sandboxId) {
+        try {
+          const sandbox = await getOrReconnectSandbox(taskId, task);
+          if (sandbox) {
+            const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
+            const catResult = await sandbox.runCommand("cat", [normalizedPath]);
+            if (catResult.exitCode === 0) {
+              content = await catResult.stdout();
+              fileFound = true;
+            }
+          }
+        } catch (sandboxError) {
+          console.error("Error reading from sandbox:", sandboxError);
+        }
+      }
+      if (!fileFound && !isImage) return c.json({ error: "File not found in branch" }, 404);
+      oldContent = "";
+      newContent = content;
+    }
+    return c.json({
+      success: true,
+      data: {
+        filename,
+        oldContent,
+        newContent,
+        language: getLanguageFromFilename(filename),
+        isBinary: false,
+        isImage,
+        isBase64
+      }
+    });
+  } catch (error) {
+    console.error("Error in file-content API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/save-file", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { filename, content } = body;
+    if (!filename || content === void 0) return c.json({ error: "Missing filename or content" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
+    const escapedFilename = "'" + filename.replace(/'/g, "'\\''") + "'";
+    const encodedContent = Buffer.from(content).toString("base64");
+    const writeCommand = `echo '${encodedContent}' | base64 -d > ${escapedFilename}`;
+    const result = await sandbox.runCommand({ cmd: "sh", args: ["-c", writeCommand], cwd: PROJECT_DIR });
+    if (result.exitCode !== 0) return c.json({ error: "Failed to write file to sandbox" }, 500);
+    return c.json({ success: true, message: "File saved successfully" });
+  } catch (error) {
+    console.error("Error in save-file API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/create-file", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { filename } = body;
+    if (!filename || typeof filename !== "string") return c.json({ success: false, error: "Filename is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
+    const pathParts = filename.split("/");
+    if (pathParts.length > 1) {
+      const dirPath = pathParts.slice(0, -1).join("/");
+      const mkdirResult = await sandbox.runCommand({ cmd: "mkdir", args: ["-p", dirPath], cwd: PROJECT_DIR });
+      if (mkdirResult.exitCode !== 0)
+        return c.json({ success: false, error: "Failed to create parent directories" }, 500);
+    }
+    const touchResult = await sandbox.runCommand({ cmd: "touch", args: [filename], cwd: PROJECT_DIR });
+    if (touchResult.exitCode !== 0) return c.json({ success: false, error: "Failed to create file" }, 500);
+    return c.json({ success: true, message: "File created successfully", filename });
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 410)
+      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+    return c.json({ success: false, error: "An error occurred while creating the file" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/create-folder", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { foldername } = body;
+    if (!foldername || typeof foldername !== "string")
+      return c.json({ success: false, error: "Foldername is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
+    const mkdirResult = await sandbox.runCommand({ cmd: "mkdir", args: ["-p", foldername], cwd: PROJECT_DIR });
+    if (mkdirResult.exitCode !== 0) return c.json({ success: false, error: "Failed to create folder" }, 500);
+    return c.json({ success: true, message: "Folder created successfully", foldername });
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 410)
+      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+    return c.json({ success: false, error: "An error occurred while creating the folder" }, 500);
+  }
+});
+tasksRouter.delete("/:taskId/delete-file", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { filename } = body;
+    if (!filename || typeof filename !== "string") return c.json({ success: false, error: "Filename is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
+    const rmResult = await sandbox.runCommand({ cmd: "rm", args: [filename], cwd: PROJECT_DIR });
+    if (rmResult.exitCode !== 0) return c.json({ success: false, error: "Failed to delete file" }, 500);
+    return c.json({ success: true, message: "File deleted successfully", filename });
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 410)
+      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+    return c.json({ success: false, error: "An error occurred while deleting the file" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/discard-file-changes", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { filename } = body;
+    if (!filename) return c.json({ success: false, error: "Missing filename parameter" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
+    const lsFilesResult = await sandbox.runCommand({ cmd: "git", args: ["ls-files", filename], cwd: PROJECT_DIR });
+    const isTracked = (await lsFilesResult.stdout()).trim().length > 0;
+    if (isTracked) {
+      const checkoutResult = await sandbox.runCommand({
+        cmd: "git",
+        args: ["checkout", "HEAD", "--", filename],
+        cwd: PROJECT_DIR
+      });
+      if (checkoutResult.exitCode !== 0) return c.json({ success: false, error: "Failed to discard changes" }, 500);
+    } else {
+      const rmResult = await sandbox.runCommand({ cmd: "rm", args: [filename], cwd: PROJECT_DIR });
+      if (rmResult.exitCode !== 0) return c.json({ success: false, error: "Failed to delete file" }, 500);
+    }
+    return c.json({
+      success: true,
+      message: isTracked ? "Changes discarded successfully" : "New file deleted successfully"
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 410)
+      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+    return c.json({ success: false, error: "An error occurred while discarding changes" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/diff", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const filename = c.req.query("filename");
+    const mode = c.req.query("mode");
+    if (!filename) return c.json({ error: "Missing filename parameter" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.branchName || !task.repoUrl)
+      return c.json({ error: "Task does not have branch or repository information" }, 400);
+    if (mode === "local") {
+      if (!task.sandboxId) return c.json({ error: "Sandbox not available" }, 400);
+      try {
+        const sandbox = await getOrReconnectSandbox(taskId, task);
+        if (!sandbox) return c.json({ error: "Sandbox not found or inactive" }, 400);
+        await sandbox.runCommand({ cmd: "git", args: ["fetch", "origin", task.branchName], cwd: PROJECT_DIR });
+        const checkRemoteResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["rev-parse", "--verify", `origin/${task.branchName}`],
+          cwd: PROJECT_DIR
+        });
+        const remoteBranchExists = checkRemoteResult.exitCode === 0;
+        if (!remoteBranchExists) {
+          const oldContentResult2 = await sandbox.runCommand({
+            cmd: "git",
+            args: ["show", `HEAD:${filename}`],
+            cwd: PROJECT_DIR
+          });
+          const oldContent3 = oldContentResult2.exitCode === 0 ? await oldContentResult2.stdout() : "";
+          const newContentResult2 = await sandbox.runCommand({ cmd: "cat", args: [filename], cwd: PROJECT_DIR });
+          const newContent3 = newContentResult2.exitCode === 0 ? await newContentResult2.stdout() : "";
+          return c.json({
+            success: true,
+            data: {
+              filename,
+              oldContent: oldContent3,
+              newContent: newContent3,
+              language: getLanguageFromFilename(filename),
+              isBinary: false,
+              isImage: false
+            }
+          });
+        }
+        const remoteBranchRef = `origin/${task.branchName}`;
+        const oldContentResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["show", `${remoteBranchRef}:${filename}`],
+          cwd: PROJECT_DIR
+        });
+        const oldContent2 = oldContentResult.exitCode === 0 ? await oldContentResult.stdout() : "";
+        const newContentResult = await sandbox.runCommand({ cmd: "cat", args: [filename], cwd: PROJECT_DIR });
+        const newContent2 = newContentResult.exitCode === 0 ? await newContentResult.stdout() : "";
+        return c.json({
+          success: true,
+          data: {
+            filename,
+            oldContent: oldContent2,
+            newContent: newContent2,
+            language: getLanguageFromFilename(filename),
+            isBinary: false,
+            isImage: false
+          }
+        });
+      } catch (error) {
+        if (error && typeof error === "object" && "status" in error && error.status === 410)
+          return c.json({ error: "Sandbox is not running" }, 410);
+        return c.json({ error: "Failed to get local diff" }, 500);
+      }
+    }
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub authentication required" }, 401);
+    const githubMatch = task.repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!githubMatch) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const [, owner, repo] = githubMatch;
+    const isImage = isImageFile(filename);
+    const isBinary = isBinaryFile(filename);
+    if (isBinary && !isImage)
+      return c.json({
+        success: true,
+        data: { filename, oldContent: "", newContent: "", language: "text", isBinary: true, isImage: false }
+      });
+    let oldContent = "";
+    let newContent = "";
+    let newIsBase64 = false;
+    let baseRef = "main";
+    let headRef = task.branchName;
+    if (task.prNumber) {
+      try {
+        const prResponse = await octokit.rest.pulls.get({ owner, repo, pull_number: task.prNumber });
+        baseRef = prResponse.data.base.sha;
+        headRef = prResponse.data.head.sha;
+        if (prResponse.data.merged_at && prResponse.data.merge_commit_sha && !task.prMergeCommitSha) {
+          await getDb().tasks.update(task.id, {
+            prMergeCommitSha: prResponse.data.merge_commit_sha,
+            updatedAt: Date.now()
+          });
+        }
+      } catch {
+      }
+    }
+    try {
+      const result = await getFileContentFromGitHub(octokit, owner, repo, filename, baseRef, isImage);
+      oldContent = result.content;
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error && error.status === 404 && baseRef === "main") {
+        try {
+          const result = await getFileContentFromGitHub(octokit, owner, repo, filename, "master", isImage);
+          oldContent = result.content;
+        } catch {
+          oldContent = "";
+        }
+      }
+    }
+    try {
+      const result = await getFileContentFromGitHub(octokit, owner, repo, filename, headRef, isImage);
+      newContent = result.content;
+      newIsBase64 = result.isBase64;
+    } catch {
+      newContent = "";
+    }
+    if (!oldContent && !newContent) return c.json({ error: "File not found in either branch" }, 404);
+    return c.json({
+      success: true,
+      data: {
+        filename,
+        oldContent: oldContent || "",
+        newContent: newContent || "",
+        language: getLanguageFromFilename(filename),
+        isBinary: false,
+        isImage,
+        isBase64: newIsBase64
+      }
+    });
+  } catch (error) {
+    console.error("Error in diff API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/pr", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { title, body: prBody, baseBranch = "main" } = body;
+    if (!title) return c.json({ error: "PR title is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.repoUrl || !task.branchName)
+      return c.json({ error: "Task does not have repository or branch information" }, 400);
+    if (task.prUrl)
+      return c.json({ success: true, data: { prUrl: task.prUrl, prNumber: task.prNumber, alreadyExists: true } });
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub account not connected" }, 401);
+    const parsed = parseGitHubUrl(task.repoUrl);
+    if (!parsed) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const { owner, repo } = parsed;
+    const response = await octokit.rest.pulls.create({
+      owner,
+      repo,
+      title,
+      body: prBody || "",
+      head: task.branchName,
+      base: baseBranch
+    });
+    const updatedTask = await getDb().tasks.update(taskId, {
+      prUrl: response.data.html_url,
+      prNumber: response.data.number,
+      prStatus: "open",
+      updatedAt: Date.now()
+    });
+    return c.json({
+      success: true,
+      data: { prUrl: response.data.html_url, prNumber: response.data.number, task: updatedTask }
+    });
+  } catch (error) {
+    console.error("Error creating pull request:", error);
+    return c.json({ error: "Failed to create pull request" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/sync-changes", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json().catch(() => ({}));
+    const { commitMessage } = body;
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    if (!task.branchName) return c.json({ success: false, error: "Branch not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
+    const addResult = await sandbox.runCommand({ cmd: "git", args: ["add", "."], cwd: PROJECT_DIR });
+    if (addResult.exitCode !== 0) return c.json({ success: false, error: "Failed to add changes" }, 500);
+    const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
+    if (statusResult.exitCode !== 0) return c.json({ success: false, error: "Failed to check status" }, 500);
+    const statusOutput = await statusResult.stdout();
+    if (!statusOutput.trim())
+      return c.json({ success: true, message: "No changes to sync", committed: false, pushed: false });
+    const message = commitMessage || "Sync local changes";
+    const commitResult = await sandbox.runCommand({ cmd: "git", args: ["commit", "-m", message], cwd: PROJECT_DIR });
+    if (commitResult.exitCode !== 0) return c.json({ success: false, error: "Failed to commit changes" }, 500);
+    const pushResult = await sandbox.runCommand({
+      cmd: "git",
+      args: ["push", "origin", task.branchName],
+      cwd: PROJECT_DIR
+    });
+    if (pushResult.exitCode !== 0) return c.json({ success: false, error: "Failed to push changes" }, 500);
+    return c.json({ success: true, message: "Changes synced successfully", committed: true, pushed: true });
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 410)
+      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+    return c.json({ success: false, error: "An error occurred while syncing changes" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/sync-pr", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.repoUrl || !task.prNumber)
+      return c.json({ error: "Task does not have repository or PR information" }, 400);
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub account not connected" }, 401);
+    const parsed = parseGitHubUrl(task.repoUrl);
+    if (!parsed) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const { owner, repo } = parsed;
+    const response = await octokit.rest.pulls.get({ owner, repo, pull_number: task.prNumber });
+    let status;
+    if (response.data.merged_at) status = "merged";
+    else if (response.data.state === "closed") status = "closed";
+    else status = "open";
+    const mergeCommitSha = response.data.merge_commit_sha || null;
+    const updateData = {
+      prStatus: status,
+      prMergeCommitSha: mergeCommitSha,
+      updatedAt: Date.now()
+    };
+    if (status === "merged") updateData.completedAt = Date.now();
+    await getDb().tasks.update(taskId, updateData);
+    return c.json({ success: true, data: { status, mergeCommitSha } });
+  } catch (error) {
+    console.error("Error syncing pull request status:", error);
+    return c.json({ error: "Failed to sync pull request status" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/merge-pr", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { commitTitle, commitMessage, mergeMethod = "squash" } = body;
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.repoUrl || !task.prNumber)
+      return c.json({ error: "Task does not have repository or PR information" }, 400);
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub account not connected" }, 401);
+    const parsed = parseGitHubUrl(task.repoUrl);
+    if (!parsed) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const { owner, repo } = parsed;
+    const response = await octokit.rest.pulls.merge({
+      owner,
+      repo,
+      pull_number: task.prNumber,
+      commit_title: commitTitle,
+      commit_message: commitMessage,
+      merge_method: mergeMethod
+    });
+    if (task.sandboxId) {
+      try {
+        const sandbox = await Sandbox.get({
+          sandboxId: task.sandboxId,
+          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+          token: process.env.SANDBOX_VERCEL_TOKEN
+        });
+        await sandbox.stop();
+        unregisterSandbox(taskId);
+      } catch (sandboxError) {
+        console.error("Error stopping sandbox after merge:", sandboxError);
+      }
+    }
+    await getDb().tasks.update(taskId, {
+      prStatus: "merged",
+      prMergeCommitSha: response.data.sha || null,
+      sandboxId: null,
+      sandboxUrl: null,
+      completedAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    return c.json({
+      success: true,
+      data: { merged: response.data.merged, message: response.data.message, sha: response.data.sha }
+    });
+  } catch (error) {
+    console.error("Error merging pull request:", error);
+    return c.json({ error: "Failed to merge pull request" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/close-pr", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.repoUrl || !task.prNumber) return c.json({ error: "Task does not have a pull request" }, 400);
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub authentication required" }, 401);
+    const parsed = parseGitHubUrl(task.repoUrl);
+    if (!parsed) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const { owner, repo } = parsed;
+    try {
+      await octokit.rest.pulls.update({ owner, repo, pull_number: task.prNumber, state: "closed" });
+      await getDb().tasks.update(task.id, { prStatus: "closed", updatedAt: Date.now() });
+      return c.json({ success: true, message: "Pull request closed successfully" });
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error) {
+        const status = error.status;
+        if (status === 404) return c.json({ error: "Pull request not found" }, 404);
+        if (status === 403) return c.json({ error: "Permission denied. Check repository access" }, 403);
+      }
+      return c.json({ error: "Failed to close pull request" }, 500);
+    }
+  } catch (error) {
+    console.error("Error in close PR API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/reopen-pr", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.repoUrl || !task.prNumber) return c.json({ error: "Task does not have a pull request" }, 400);
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ error: "GitHub authentication required" }, 401);
+    const parsed = parseGitHubUrl(task.repoUrl);
+    if (!parsed) return c.json({ error: "Invalid GitHub repository URL" }, 400);
+    const { owner, repo } = parsed;
+    try {
+      await octokit.rest.pulls.update({ owner, repo, pull_number: task.prNumber, state: "open" });
+      await getDb().tasks.update(task.id, { prStatus: "open", updatedAt: Date.now() });
+      return c.json({ success: true, message: "Pull request reopened successfully" });
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error) {
+        const status = error.status;
+        if (status === 404) return c.json({ error: "Pull request not found" }, 404);
+        if (status === 403) return c.json({ error: "Permission denied. Check repository access" }, 403);
+      }
+      return c.json({ error: "Failed to reopen pull request" }, 500);
+    }
+  } catch (error) {
+    console.error("Error in reopen PR API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/project-files", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
+    return c.json({ success: true, files: [] });
+  } catch (error) {
+    console.error("Error in project-files API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/lsp", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await getDb().tasks.findById(taskId);
+    if (!task || task.userId !== session.user.id) return c.json({ error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
+    const body = await c.req.json();
+    const { method, filename, position } = body;
+    const absoluteFilename = filename.startsWith("/") ? filename : `/${filename}`;
+    switch (method) {
+      case "textDocument/definition": {
+        const scriptPath = ".lsp-helper.mjs";
+        const helperScript = `
+import ts from 'typescript';
+import fs from 'fs';
+import path from 'path';
+const filename = '${absoluteFilename.replace(/'/g, "\\'")}';
+const line = ${position.line};
+const character = ${position.character};
+let configPath = process.cwd();
+while (configPath !== '/') { const tsconfigPath = path.join(configPath, 'tsconfig.json'); if (fs.existsSync(tsconfigPath)) { break; } configPath = path.dirname(configPath); }
+const tsconfigPath = path.join(configPath, 'tsconfig.json');
+const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+const parsedConfig = ts.parseJsonConfigFileContent(configFile.config, ts.sys, configPath);
+const files = new Map();
+const host = {
+  getScriptFileNames: () => parsedConfig.fileNames,
+  getScriptVersion: (fileName) => { const file = files.get(fileName); return file && file.version ? file.version.toString() : '0'; },
+  getScriptSnapshot: (fileName) => { if (!fs.existsSync(fileName)) return undefined; const content = fs.readFileSync(fileName, 'utf8'); return ts.ScriptSnapshot.fromString(content); },
+  getCurrentDirectory: () => configPath,
+  getCompilationSettings: () => parsedConfig.options,
+  getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+  fileExists: ts.sys.fileExists, readFile: ts.sys.readFile, readDirectory: ts.sys.readDirectory,
+  directoryExists: ts.sys.directoryExists, getDirectories: ts.sys.getDirectories,
+};
+const service = ts.createLanguageService(host, ts.createDocumentRegistry());
+const fullPath = path.resolve(configPath, filename.replace(/^\\/*/g, ''));
+const program = service.getProgram();
+if (!program) { console.error(JSON.stringify({ error: 'Failed to get program' })); process.exit(1); }
+const sourceFile = program.getSourceFile(fullPath);
+if (!sourceFile) { console.error(JSON.stringify({ error: 'File not found', filename: fullPath })); process.exit(1); }
+const offset = ts.getPositionOfLineAndCharacter(sourceFile, line, character);
+const definitions = service.getDefinitionAtPosition(fullPath, offset);
+if (definitions && definitions.length > 0) {
+  const results = definitions.map(def => { const defSourceFile = program.getSourceFile(def.fileName); if (!defSourceFile) return null; const start = ts.getLineAndCharacterOfPosition(defSourceFile, def.textSpan.start); const end = ts.getLineAndCharacterOfPosition(defSourceFile, def.textSpan.start + def.textSpan.length); return { uri: 'file://' + def.fileName, range: { start, end } }; }).filter(def => def !== null);
+  console.log(JSON.stringify({ definitions: results }));
+} else { console.log(JSON.stringify({ definitions: [] })); }
+`;
+        const writeCommand = `cat > '${scriptPath}' << 'EOF'
+${helperScript}
+EOF`;
+        await sandbox.runCommand("sh", ["-c", writeCommand]);
+        const result = await sandbox.runCommand("node", [scriptPath]);
+        let stdout = "";
+        let stderr = "";
+        try {
+          stdout = await result.stdout();
+        } catch {
+        }
+        try {
+          stderr = await result.stderr();
+        } catch {
+        }
+        await sandbox.runCommand("rm", [scriptPath]);
+        if (result.exitCode !== 0) return c.json({ definitions: [], error: stderr || "Script execution failed" });
+        try {
+          return c.json(JSON.parse(stdout.trim()));
+        } catch {
+          return c.json({ definitions: [], error: "Failed to parse TypeScript response" });
+        }
+      }
+      case "textDocument/hover":
+        return c.json({ hover: null });
+      case "textDocument/completion":
+        return c.json({ completions: [] });
+      default:
+        return c.json({ error: "Unsupported LSP method" }, 400);
+    }
+  } catch (error) {
+    console.error("LSP request error:", error);
+    return c.json({ error: "Failed to process LSP request" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/terminal", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const { command } = await c.req.json();
+    if (!command || typeof command !== "string") return c.json({ success: false, error: "Command is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "No sandbox found for this task" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    try {
+      const result = await sandbox.runCommand({ cmd: "sh", args: ["-c", command], cwd: PROJECT_DIR });
+      let stdout = "";
+      let stderr = "";
+      try {
+        stdout = await result.stdout();
+      } catch {
+      }
+      try {
+        stderr = await result.stderr();
+      } catch {
+      }
+      return c.json({ success: true, data: { exitCode: result.exitCode, stdout, stderr } });
+    } catch (error) {
+      console.error("Error executing command:", error);
+      return c.json({ success: false, error: error instanceof Error ? error.message : "Command execution failed" }, 500);
+    }
+  } catch (error) {
+    console.error("Error in terminal endpoint:", error);
+    return c.json({ success: false, error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/autocomplete", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const { partial, cwd } = await c.req.json();
+    if (typeof partial !== "string") return c.json({ success: false, error: "Partial text is required" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "No sandbox found for this task" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    try {
+      const pwdResult = await sandbox.runCommand("sh", ["-c", "pwd"]);
+      let actualCwd = cwd || "/home/vercel-sandbox";
+      try {
+        const pwdOutput = await pwdResult.stdout();
+        if (pwdOutput && pwdOutput.trim()) actualCwd = pwdOutput.trim();
+      } catch {
+      }
+      const parts = partial.split(/\s+/);
+      const lastPart = parts[parts.length - 1] || "";
+      let dir = actualCwd;
+      let prefix = "";
+      if (lastPart.includes("/")) {
+        const lastSlash = lastPart.lastIndexOf("/");
+        const pathPart = lastPart.substring(0, lastSlash + 1);
+        prefix = lastPart.substring(lastSlash + 1);
+        if (pathPart.startsWith("/")) dir = pathPart;
+        else if (pathPart.startsWith("~/")) dir = "/home/vercel-sandbox/" + pathPart.substring(2);
+        else dir = `${actualCwd}/${pathPart}`;
+      } else {
+        prefix = lastPart;
+      }
+      const escapedDir = "'" + dir.replace(/'/g, "'\\''") + "'";
+      const lsCommand = `cd ${escapedDir} 2>/dev/null && ls -1ap 2>/dev/null || echo ""`;
+      const result = await sandbox.runCommand("sh", ["-c", lsCommand]);
+      let stdout = "";
+      try {
+        stdout = await result.stdout();
+      } catch {
+      }
+      if (!stdout) return c.json({ success: true, data: { completions: [] } });
+      const files = stdout.trim().split("\n").filter((f) => f && f.toLowerCase().startsWith(prefix.toLowerCase())).map((f) => ({ name: f, isDirectory: f.endsWith("/") }));
+      return c.json({ success: true, data: { completions: files, prefix } });
+    } catch (error) {
+      console.error("Error getting completions:", error);
+      return c.json(
+        { success: false, error: error instanceof Error ? error.message : "Failed to get completions" },
+        500
+      );
+    }
+  } catch (error) {
+    console.error("Error in autocomplete endpoint:", error);
+    return c.json({ success: false, error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/check-runs", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.branchName || !task.repoUrl) return c.json({ success: false, error: "Task does not have a branch" }, 400);
+    const repoMatch = task.repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!repoMatch) return c.json({ success: false, error: "Invalid repository URL" }, 400);
+    const [, owner, repo] = repoMatch;
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ success: false, error: "GitHub authentication required" }, 401);
+    let branchData;
+    try {
+      branchData = await octokit.rest.repos.getBranch({ owner, repo, branch: task.branchName });
+    } catch (branchError) {
+      if (branchError && typeof branchError === "object" && "status" in branchError && branchError.status === 404)
+        return c.json({ success: true, checkRuns: [] });
+      throw branchError;
+    }
+    const commitSha = branchData.data.commit.sha;
+    const { data: checkRunsData } = await octokit.rest.checks.listForRef({ owner, repo, ref: commitSha });
+    return c.json({
+      success: true,
+      checkRuns: checkRunsData.check_runs.map((run) => ({
+        id: run.id,
+        name: run.name,
+        status: run.status,
+        conclusion: run.conclusion,
+        html_url: run.html_url,
+        started_at: run.started_at,
+        completed_at: run.completed_at
+      }))
+    });
+  } catch (error) {
+    console.error("Error fetching check runs:", error);
+    return c.json({ success: false, error: "Failed to fetch check runs" }, 500);
+  }
+});
+function convertFeedbackUrlToDeploymentUrl(url) {
+  const feedbackMatch = url.match(/vercel\.live\/open-feedback\/(.+)/);
+  if (feedbackMatch) return `https://${feedbackMatch[1]}`;
+  return url;
+}
+tasksRouter.get("/:taskId/deployment", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (task.previewUrl) {
+      const previewUrl = convertFeedbackUrlToDeploymentUrl(task.previewUrl);
+      if (previewUrl !== task.previewUrl) await getDb().tasks.update(taskId, { previewUrl });
+      return c.json({ success: true, data: { hasDeployment: true, previewUrl, cached: true } });
+    }
+    if (!task.branchName || !task.repoUrl)
+      return c.json({
+        success: true,
+        data: { hasDeployment: false, message: "Task does not have branch or repository information" }
+      });
+    const githubMatch = task.repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!githubMatch)
+      return c.json({ success: true, data: { hasDeployment: false, message: "Invalid GitHub repository URL" } });
+    const [, owner, repo] = githubMatch;
+    try {
+      const octokit = await getOctokit(session.user.id);
+      if (!octokit.auth)
+        return c.json({ success: true, data: { hasDeployment: false, message: "GitHub account not connected" } });
+      let latestCommitSha = null;
+      try {
+        const { data: branch } = await octokit.rest.repos.getBranch({ owner, repo, branch: task.branchName });
+        latestCommitSha = branch.commit.sha;
+      } catch (branchError) {
+        if (branchError && typeof branchError === "object" && "status" in branchError && branchError.status === 404)
+          return c.json({ success: true, data: { hasDeployment: false, message: "Branch not found" } });
+        throw branchError;
+      }
+      if (latestCommitSha) {
+        try {
+          const { data: checkRuns } = await octokit.rest.checks.listForRef({
+            owner,
+            repo,
+            ref: latestCommitSha,
+            per_page: 100
+          });
+          const extractPreviewUrl = (check) => {
+            if (check.output?.summary) {
+              const urlMatch = check.output.summary.match(/https?:\/\/[^\s\)\]<]+\.vercel\.app/i);
+              if (urlMatch) return urlMatch[0];
+            }
+            if (check.output?.text) {
+              const urlMatch = check.output.text.match(/https?:\/\/[^\s\)\]<]+\.vercel\.app/i);
+              if (urlMatch) return urlMatch[0];
+            }
+            return null;
+          };
+          const vercelPreviewCheck = checkRuns.check_runs.find(
+            (check) => check.app?.slug === "vercel" && check.name === "Vercel Preview Comments" && check.status === "completed"
+          );
+          const vercelDeploymentCheck = checkRuns.check_runs.find(
+            (check) => check.app?.slug === "vercel" && check.name === "Vercel" && check.conclusion === "success" && check.status === "completed"
+          );
+          let previewUrl = null;
+          if (vercelPreviewCheck) previewUrl = extractPreviewUrl(vercelPreviewCheck);
+          if (!previewUrl && vercelDeploymentCheck) previewUrl = extractPreviewUrl(vercelDeploymentCheck);
+          if (!previewUrl && vercelDeploymentCheck?.details_url)
+            previewUrl = convertFeedbackUrlToDeploymentUrl(vercelDeploymentCheck.details_url);
+          if (previewUrl) {
+            await getDb().tasks.update(taskId, { previewUrl });
+            return c.json({
+              success: true,
+              data: {
+                hasDeployment: true,
+                previewUrl,
+                checkId: vercelDeploymentCheck?.id || vercelPreviewCheck?.id,
+                createdAt: vercelDeploymentCheck?.completed_at || vercelPreviewCheck?.completed_at
+              }
+            });
+          }
+        } catch (checksError) {
+          console.error("Error checking GitHub Checks:", checksError);
+        }
+      }
+      try {
+        const { data: ghDeployments } = await octokit.rest.repos.listDeployments({
+          owner,
+          repo,
+          ref: task.branchName,
+          per_page: 10
+        });
+        if (ghDeployments && ghDeployments.length > 0) {
+          for (const deployment of ghDeployments) {
+            if (deployment.environment === "Preview" || deployment.environment === "preview" || deployment.description?.toLowerCase().includes("vercel")) {
+              const { data: statuses } = await octokit.rest.repos.listDeploymentStatuses({
+                owner,
+                repo,
+                deployment_id: deployment.id,
+                per_page: 1
+              });
+              if (statuses && statuses.length > 0) {
+                const status = statuses[0];
+                if (status.state === "success") {
+                  let previewUrl = status.environment_url || status.target_url;
+                  if (previewUrl) {
+                    previewUrl = convertFeedbackUrlToDeploymentUrl(previewUrl);
+                    await getDb().tasks.update(taskId, { previewUrl });
+                    return c.json({
+                      success: true,
+                      data: {
+                        hasDeployment: true,
+                        previewUrl,
+                        deploymentId: deployment.id,
+                        createdAt: deployment.created_at
+                      }
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (deploymentsError) {
+        console.error("Error checking GitHub Deployments:", deploymentsError);
+      }
+      if (latestCommitSha) {
+        try {
+          const { data: statuses } = await octokit.rest.repos.listCommitStatusesForRef({
+            owner,
+            repo,
+            ref: latestCommitSha,
+            per_page: 100
+          });
+          const vercelStatus = statuses.find(
+            (s) => s.context?.toLowerCase().includes("vercel") && s.state === "success" && s.target_url
+          );
+          if (vercelStatus && vercelStatus.target_url) {
+            const previewUrl = convertFeedbackUrlToDeploymentUrl(vercelStatus.target_url);
+            await getDb().tasks.update(taskId, { previewUrl });
+            return c.json({
+              success: true,
+              data: { hasDeployment: true, previewUrl, createdAt: vercelStatus.created_at }
+            });
+          }
+        } catch (statusError) {
+          console.error("Error checking commit statuses:", statusError);
+        }
+      }
+      return c.json({ success: true, data: { hasDeployment: false, message: "No successful Vercel deployment found" } });
+    } catch (error) {
+      console.error("Error fetching deployment status:", error);
+      if (error && typeof error === "object" && "status" in error && error.status === 404)
+        return c.json({ success: true, data: { hasDeployment: false, message: "Branch or repository not found" } });
+      return c.json({ success: true, data: { hasDeployment: false, message: "Failed to fetch deployment status" } });
+    }
+  } catch (error) {
+    console.error("Error in deployment API:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/deployments", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    const taskDeployments = await getDb().deployments.findByTaskId(taskId);
+    return c.json({
+      deployments: taskDeployments.map((d) => ({ ...d, metadata: d.metadata ? JSON.parse(d.metadata) : null }))
+    });
+  } catch (error) {
+    console.error("Error fetching deployments:", error);
+    return c.json({ error: "Failed to fetch deployments" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/deployments", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { type = "web", url, qrCodeUrl, pagePath, appId, label, metadata } = body;
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    let path5 = null;
+    if (type === "web" && url) {
+      try {
+        const urlObj = new URL(url);
+        path5 = urlObj.pathname;
+      } catch {
+      }
+    }
+    const now4 = Date.now();
+    const deploymentId = nanoid6(12);
+    if (type === "miniprogram") {
+      const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, "miniprogram", null);
+      if (existing) {
+        const updated = await getDb().deployments.update(existing.id, {
+          qrCodeUrl: qrCodeUrl || existing.qrCodeUrl,
+          pagePath: pagePath || existing.pagePath,
+          appId: appId || existing.appId,
+          label: label || existing.label,
+          metadata: metadata ? JSON.stringify(metadata) : existing.metadata,
+          updatedAt: now4
+        });
+        return c.json({ deployment: { ...updated, metadata } });
+      }
+    } else if (type === "web" && path5) {
+      const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, "web", path5);
+      if (existing) {
+        const updated = await getDb().deployments.update(existing.id, {
+          url: url || existing.url,
+          label: label || existing.label,
+          metadata: metadata ? JSON.stringify(metadata) : existing.metadata,
+          updatedAt: now4
+        });
+        return c.json({ deployment: { ...updated, metadata } });
+      }
+    }
+    const newDeployment = await getDb().deployments.create({
+      id: deploymentId,
+      taskId,
+      type,
+      url: url || null,
+      path: path5 || null,
+      qrCodeUrl: qrCodeUrl || null,
+      pagePath: pagePath || null,
+      appId: appId || null,
+      label: label || null,
+      metadata: metadata ? JSON.stringify(metadata) : null,
+      createdAt: now4,
+      updatedAt: now4
+    });
+    return c.json({ deployment: { ...newDeployment, metadata } });
+  } catch (error) {
+    console.error("Error creating deployment:", error);
+    return c.json({ error: "Failed to create deployment" }, 500);
+  }
+});
+tasksRouter.delete("/:taskId/deployments/:deploymentId", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId, deploymentId } = c.req.param();
+    const deployment = await getDb().deployments.findByTaskIdAndUserId(taskId, session.user.id);
+    if (!deployment || deployment.id !== deploymentId) return c.json({ error: "Deployment not found" }, 404);
+    await getDb().deployments.softDelete(deploymentId);
+    return c.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting deployment:", error);
+    return c.json({ error: "Failed to delete deployment" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/sandbox-health", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ status: "not_found" });
+    if (!task.sandboxId || !task.sandboxUrl)
+      return c.json({ status: "not_available", message: "Sandbox not created yet" });
+    try {
+      const sandbox = await Sandbox.get({
+        teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+        projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+        token: process.env.SANDBOX_VERCEL_TOKEN,
+        sandboxId: task.sandboxId
+      });
+      if (!sandbox) return c.json({ status: "stopped", message: "Sandbox has stopped or expired" });
+      try {
+        const response = await fetch(task.sandboxUrl, { method: "GET", signal: AbortSignal.timeout(5e3) });
+        const contentLength = response.headers.get("content-length");
+        const body = await response.text();
+        if (response.status === 200 && (contentLength === "0" || body.length === 0))
+          return c.json({ status: "starting", message: "Dev server is starting up" });
+        if (response.ok && body.length > 0)
+          return c.json({ status: "running", message: "Sandbox and dev server are running" });
+        else if (response.status === 410 || response.status === 502)
+          return c.json({ status: "stopped", message: "Sandbox has stopped or expired" });
+        else if (response.status >= 500)
+          return c.json({ status: "error", message: "Dev server returned an error", statusCode: response.status });
+        else if (response.status === 404 || response.status === 503)
+          return c.json({ status: "starting", message: "Dev server is starting up" });
+        else return c.json({ status: "starting", message: "Dev server is initializing" });
+      } catch (fetchError) {
+        if (fetchError instanceof Error) {
+          if (fetchError.name === "TimeoutError" || fetchError.message.includes("timeout"))
+            return c.json({ status: "starting", message: "Dev server is starting or not responding" });
+          return c.json({ status: "stopped", message: "Cannot connect to sandbox" });
+        }
+        return c.json({ status: "starting", message: "Checking dev server status..." });
+      }
+    } catch (sandboxError) {
+      console.error("Sandbox.get() error:", sandboxError);
+      return c.json({ status: "stopped", message: "Sandbox no longer exists" });
+    }
+  } catch (error) {
+    console.error("Error checking sandbox health:", error);
+    return c.json({ status: "error", message: "Failed to check sandbox health" });
+  }
+});
+tasksRouter.post("/:taskId/start-sandbox", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await getDb().tasks.findById(taskId);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
+    if (!task.keepAlive) return c.json({ error: "Keep-alive is not enabled for this task" }, 400);
+    const logger = createTaskLogger(taskId);
+    if (task.sandboxId && task.sandboxUrl) {
+      try {
+        const existingSandbox = await Sandbox.get({
+          sandboxId: task.sandboxId,
+          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+          token: process.env.SANDBOX_VERCEL_TOKEN
+        });
+        const testResult = await runCommandInSandbox(existingSandbox, "echo", ["test"]);
+        if (testResult.success) return c.json({ error: "Sandbox is already running" }, 400);
+      } catch {
+        await logger.info("Existing sandbox not accessible, clearing and creating new one");
+        unregisterSandbox(taskId);
+        await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null, updatedAt: Date.now() });
+      }
+    }
+    await logger.info("Starting sandbox");
+    const githubToken = await getUserGitHubToken(session.user.id);
+    let gitName = "Coding Agent";
+    let gitEmail = "agent@example.com";
+    if (githubToken) {
+      try {
+        const octokit = new Octokit2({ auth: githubToken });
+        const { data } = await octokit.rest.users.getAuthenticated();
+        gitName = data.name || data.login || gitName;
+        gitEmail = `${data.login}@users.noreply.github.com`;
+      } catch {
+      }
+    }
+    const maxDurationMinutes = task.maxDuration || MAX_SANDBOX_DURATION;
+    let port = 3e3;
+    if (task.repoUrl && githubToken) {
+      const urlMatch = task.repoUrl.match(/github\.com[/:]([\w-]+)\/([\w-]+?)(\.git)?$/);
+      if (urlMatch) {
+        try {
+          const octokit = new Octokit2({ auth: githubToken });
+          const { data } = await octokit.repos.getContent({
+            owner: urlMatch[1],
+            repo: urlMatch[2],
+            path: "package.json"
+          });
+          if ("content" in data && data.type === "file") {
+            const pkgJson = JSON.parse(Buffer.from(data.content, "base64").toString("utf-8"));
+            if (pkgJson.dependencies?.vite || pkgJson.devDependencies?.vite) port = 5173;
+          }
+        } catch {
+        }
+      }
+    }
+    const sandbox = await Sandbox.create({
+      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+      token: process.env.SANDBOX_VERCEL_TOKEN,
+      source: task.repoUrl && task.branchName ? { type: "git", url: task.repoUrl, revision: task.branchName, depth: 1 } : void 0,
+      timeout: maxDurationMinutes * 60 * 1e3,
+      ports: [port],
+      runtime: "node22",
+      resources: { vcpus: 4 }
+    });
+    const sandboxId = sandbox?.sandboxId;
+    await logger.info("Sandbox created");
+    registerSandbox(taskId, sandbox);
+    await logger.info("Configuring Git");
+    await runInProject(sandbox, "git", ["config", "user.name", gitName]);
+    await runInProject(sandbox, "git", ["config", "user.email", gitEmail]);
+    const packageJsonCheck = await runInProject(sandbox, "test", ["-f", "package.json"]);
+    const requirementsTxtCheck = await runInProject(sandbox, "test", ["-f", "requirements.txt"]);
+    if (packageJsonCheck.success) {
+      await logger.info("Installing Node.js dependencies");
+      const packageManager = await detectPackageManager(sandbox);
+      const installCmd = packageManager === "pnpm" ? ["pnpm", "install", "--frozen-lockfile"] : packageManager === "yarn" ? ["yarn", "install", "--frozen-lockfile"] : ["npm", "install", "--no-audit", "--no-fund"];
+      await logger.info("Installing dependencies");
+      const installResult = await runInProject(sandbox, installCmd[0], installCmd.slice(1));
+      if (!installResult.success && packageManager !== "npm")
+        await runInProject(sandbox, "npm", ["install", "--no-audit", "--no-fund"]);
+    } else if (requirementsTxtCheck.success) {
+      await logger.info("Installing Python dependencies");
+      await runInProject(sandbox, "python3", ["-m", "pip", "install", "-r", "requirements.txt"]);
+    }
+    let sandboxUrl;
+    if (packageJsonCheck.success) {
+      const packageJsonRead = await runInProject(sandbox, "cat", ["package.json"]);
+      if (packageJsonRead.success && packageJsonRead.output) {
+        const packageJson = JSON.parse(packageJsonRead.output);
+        const hasDevScript = packageJson?.scripts?.dev;
+        if (hasDevScript) {
+          await logger.info("Starting development server");
+          const packageManager = await detectPackageManager(sandbox);
+          const devCommand = packageManager === "npm" ? "npm" : packageManager;
+          let devArgs = packageManager === "npm" ? ["run", "dev"] : ["dev"];
+          const hasVite = packageJson?.dependencies?.vite || packageJson?.devDependencies?.vite;
+          let devPort = 3e3;
+          if (hasVite) {
+            devPort = 5173;
+            await logger.info("Vite project detected, using port 5173");
+            await runInProject(sandbox, "sh", [
+              "-c",
+              `cat > vite.sandbox.config.js << 'VITEEOF'
+${SANDBOX_VITE_CONFIG}
+VITEEOF`
+            ]);
+            if (packageManager === "npm")
+              devArgs = ["run", "dev", "--", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
+            else devArgs = ["dev", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
+          }
+          const nextVersion = packageJson?.dependencies?.next || packageJson?.devDependencies?.next || "";
+          const isNext16 = nextVersion.startsWith("16.") || nextVersion.startsWith("^16.") || nextVersion.startsWith("~16.");
+          if (isNext16) {
+            await logger.info("Next.js 16 detected, adding --webpack flag");
+            devArgs = packageManager === "npm" ? ["run", "dev", "--", "--webpack"] : ["dev", "--webpack"];
+          }
+          const fullDevCommand = devArgs.length > 0 ? `${devCommand} ${devArgs.join(" ")}` : devCommand;
+          const { Writable } = await import("stream");
+          const captureStdout = new Writable({
+            write(chunk, _enc, cb) {
+              chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
+              }));
+              cb();
+            }
+          });
+          const captureStderr = new Writable({
+            write(chunk, _enc, cb) {
+              chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
+              }));
+              cb();
+            }
+          });
+          await sandbox.runCommand({
+            cmd: "sh",
+            args: ["-c", `cd ${PROJECT_DIR} && ${fullDevCommand}`],
+            detached: true,
+            stdout: captureStdout,
+            stderr: captureStderr
+          });
+          await logger.info("Development server started");
+          await new Promise((resolve2) => setTimeout(resolve2, 3e3));
+          sandboxUrl = sandbox.domain(devPort);
+        }
+      }
+    }
+    await getDb().tasks.update(taskId, { sandboxId, sandboxUrl: sandboxUrl || void 0, updatedAt: Date.now() });
+    await logger.info("Sandbox started successfully");
+    return c.json({ success: true, message: "Sandbox started successfully", sandboxId, sandboxUrl });
+  } catch (error) {
+    console.error("Error starting sandbox:", error);
+    return c.json(
+      { error: "Failed to start sandbox", details: error instanceof Error ? error.message : "Unknown error" },
+      500
+    );
+  }
+});
+tasksRouter.post("/:taskId/stop-sandbox", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await getDb().tasks.findById(taskId);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
+    if (!task.sandboxId) return c.json({ error: "Sandbox is not active" }, 400);
+    const sandbox = await Sandbox.get({
+      sandboxId: task.sandboxId,
+      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+      token: process.env.SANDBOX_VERCEL_TOKEN
+    });
+    await sandbox.stop();
+    unregisterSandbox(taskId);
+    await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null, updatedAt: Date.now() });
+    return c.json({ success: true, message: "Sandbox stopped successfully" });
+  } catch (error) {
+    console.error("Error stopping sandbox:", error);
+    return c.json(
+      { error: "Failed to stop sandbox", details: error instanceof Error ? error.message : "Unknown error" },
+      500
+    );
+  }
+});
+tasksRouter.post("/:taskId/restart-dev", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await getDb().tasks.findById(taskId);
+    if (!task) return c.json({ error: "Task not found" }, 404);
+    if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
+    if (!task.sandboxId) return c.json({ error: "Sandbox is not active" }, 400);
+    const sandbox = await Sandbox.get({
+      sandboxId: task.sandboxId,
+      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
+      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
+      token: process.env.SANDBOX_VERCEL_TOKEN
+    });
+    const logger = createTaskLogger(taskId);
+    const packageJsonCheck = await runInProject(sandbox, "test", ["-f", "package.json"]);
+    if (!packageJsonCheck.success) return c.json({ error: "No package.json found in sandbox" }, 400);
+    const packageJsonRead = await runCommandInSandbox(sandbox, "sh", ["-c", `cd ${PROJECT_DIR} && cat package.json`]);
+    if (!packageJsonRead.success || !packageJsonRead.output)
+      return c.json({ error: "Could not read package.json" }, 500);
+    const packageJson = JSON.parse(packageJsonRead.output);
+    if (!packageJson?.scripts?.dev) return c.json({ error: "No dev script found in package.json" }, 400);
+    const hasVite = packageJson?.dependencies?.vite || packageJson?.devDependencies?.vite;
+    const devPort = hasVite ? 5173 : 3e3;
+    await runCommandInSandbox(sandbox, "sh", ["-c", `lsof -ti:${devPort} | xargs -r kill -9 2>/dev/null || true`]);
+    await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+    const packageManager = await detectPackageManager(sandbox);
+    const devCommand = packageManager === "npm" ? "npm" : packageManager;
+    let devArgs = packageManager === "npm" ? ["run", "dev"] : ["dev"];
+    if (hasVite) {
+      await runInProject(sandbox, "sh", [
+        "-c",
+        `cat > vite.sandbox.config.js << 'VITEEOF'
+${SANDBOX_VITE_CONFIG}
+VITEEOF`
+      ]);
+      devArgs = packageManager === "npm" ? ["run", "dev", "--", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"] : ["dev", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
+    }
+    const nextVersion = packageJson?.dependencies?.next || packageJson?.devDependencies?.next || "";
+    const isNext16 = nextVersion.startsWith("16.") || nextVersion.startsWith("^16.") || nextVersion.startsWith("~16.");
+    if (isNext16) devArgs = packageManager === "npm" ? ["run", "dev", "--", "--webpack"] : ["dev", "--webpack"];
+    const fullDevCommand = devArgs.length > 0 ? `${devCommand} ${devArgs.join(" ")}` : devCommand;
+    const { Writable } = await import("stream");
+    const captureStdout = new Writable({
+      write(chunk, _enc, cb) {
+        chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
+        }));
+        cb();
+      }
+    });
+    const captureStderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
+        }));
+        cb();
+      }
+    });
+    await sandbox.runCommand({
+      cmd: "sh",
+      args: ["-c", `cd ${PROJECT_DIR} && ${fullDevCommand}`],
+      detached: true,
+      stdout: captureStdout,
+      stderr: captureStderr
+    });
+    return c.json({ success: true, message: "Dev server restarted successfully" });
+  } catch (error) {
+    console.error("Error restarting dev server:", error);
+    return c.json(
+      { error: "Failed to restart dev server", details: error instanceof Error ? error.message : "Unknown error" },
+      500
+    );
+  }
+});
+tasksRouter.post("/:taskId/clear-logs", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    await getDb().tasks.update(taskId, { logs: "[]" });
+    return c.json({ success: true, message: "Logs cleared successfully" });
+  } catch (error) {
+    console.error("Error clearing logs:", error);
+    return c.json({ success: false, error: error instanceof Error ? error.message : "Failed to clear logs" }, 500);
+  }
+});
+tasksRouter.get("/:taskId/pr-comments", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.prNumber || !task.repoUrl) return c.json({ success: false, error: "Task does not have a PR" }, 400);
+    const repoMatch = task.repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (!repoMatch) return c.json({ success: false, error: "Invalid repository URL" }, 400);
+    const [, owner, repo] = repoMatch;
+    const octokit = await getOctokit(session.user.id);
+    if (!octokit.auth) return c.json({ success: false, error: "GitHub authentication required" }, 401);
+    const [issueCommentsResponse, reviewCommentsResponse] = await Promise.all([
+      octokit.rest.issues.listComments({ owner, repo, issue_number: task.prNumber }),
+      octokit.rest.pulls.listReviewComments({ owner, repo, pull_number: task.prNumber })
+    ]);
+    const allComments = [
+      ...issueCommentsResponse.data.map((comment) => ({
+        id: comment.id,
+        user: { login: comment.user?.login || "unknown", avatar_url: comment.user?.avatar_url || "" },
+        body: comment.body || "",
+        created_at: comment.created_at,
+        html_url: comment.html_url
+      })),
+      ...reviewCommentsResponse.data.map((comment) => ({
+        id: comment.id,
+        user: { login: comment.user?.login || "unknown", avatar_url: comment.user?.avatar_url || "" },
+        body: comment.body || "",
+        created_at: comment.created_at,
+        html_url: comment.html_url
+      }))
+    ];
+    allComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    return c.json({ success: true, comments: allComments });
+  } catch (error) {
+    console.error("Error fetching PR comments:", error);
+    return c.json({ success: false, error: "Failed to fetch PR comments" }, 500);
+  }
+});
+tasksRouter.post("/:taskId/file-operation", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const { taskId } = c.req.param();
+    const body = await c.req.json();
+    const { operation, sourceFile, targetPath } = body;
+    if (!operation || !sourceFile) return c.json({ success: false, error: "Missing required parameters" }, 400);
+    const task = await findActiveTask(taskId, session.user.id);
+    if (!task) return c.json({ success: false, error: "Task not found" }, 404);
+    if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
+    const sandbox = await getOrReconnectSandbox(taskId, task);
+    if (!sandbox) return c.json({ success: false, error: "Sandbox not found" }, 404);
+    const sourceBasename = sourceFile.split("/").pop();
+    const targetFile = targetPath ? `${targetPath}/${sourceBasename}` : sourceBasename;
+    if (operation === "copy") {
+      const copyResult = await sandbox.runCommand({ cmd: "cp", args: ["-r", sourceFile, targetFile], cwd: PROJECT_DIR });
+      if (copyResult.exitCode !== 0) return c.json({ success: false, error: "Failed to copy file" }, 500);
+      return c.json({ success: true, message: "File copied successfully" });
+    } else if (operation === "cut") {
+      const mvResult = await sandbox.runCommand({ cmd: "mv", args: [sourceFile, targetFile], cwd: PROJECT_DIR });
+      if (mvResult.exitCode !== 0) return c.json({ success: false, error: "Failed to move file" }, 500);
+      return c.json({ success: true, message: "File moved successfully" });
+    } else return c.json({ success: false, error: "Invalid operation" }, 400);
+  } catch (error) {
+    console.error("Error performing file operation:", error);
+    return c.json({ success: false, error: "Failed to perform file operation" }, 500);
+  }
 });
 var tasks_default = tasksRouter;
 
 // src/routes/connectors.ts
-import { Hono as Hono4 } from "hono";
-import { nanoid as nanoid3 } from "nanoid";
-import { eq as eq4, and as and3 } from "drizzle-orm";
-
-// src/lib/crypto.ts
-import crypto from "crypto";
-var ALGORITHM = "aes-256-cbc";
-var IV_LENGTH = 16;
-var getEncryptionKey = () => {
-  const key = process.env.ENCRYPTION_KEY;
-  if (!key) {
-    return null;
-  }
-  const keyBuffer = Buffer.from(key, "hex");
-  if (keyBuffer.length !== 32) {
-    throw new Error(
-      "ENCRYPTION_KEY must be a 32-byte hex string (64 characters). Generate one with: openssl rand -hex 32"
-    );
-  }
-  return keyBuffer;
-};
-var encrypt = (text2) => {
-  if (!text2) return text2;
-  const ENCRYPTION_KEY = getEncryptionKey();
-  if (!ENCRYPTION_KEY) {
-    throw new Error(
-      "ENCRYPTION_KEY environment variable is required for MCP encryption. Generate one with: openssl rand -hex 32"
-    );
-  }
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-  const encrypted = Buffer.concat([cipher.update(text2, "utf8"), cipher.final()]);
-  return `${iv.toString("hex")}:${encrypted.toString("hex")}`;
-};
-var decrypt = (encryptedText) => {
-  if (!encryptedText) return encryptedText;
-  const ENCRYPTION_KEY = getEncryptionKey();
-  if (!ENCRYPTION_KEY) {
-    throw new Error(
-      "ENCRYPTION_KEY environment variable is required for MCP decryption. Generate one with: openssl rand -hex 32"
-    );
-  }
-  if (!encryptedText.includes(":")) {
-    throw new Error("Invalid encrypted text format");
-  }
-  try {
-    const [ivHex, encryptedHex] = encryptedText.split(":");
-    const iv = Buffer.from(ivHex, "hex");
-    const encrypted = Buffer.from(encryptedHex, "hex");
-    const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    return decrypted.toString("utf8");
-  } catch (error) {
-    throw new Error("Failed to decrypt: " + (error instanceof Error ? error.message : "unknown error"));
-  }
-};
-
-// src/routes/connectors.ts
-var app = new Hono4();
-app.get("/", async (c) => {
+import { Hono as Hono6 } from "hono";
+import { nanoid as nanoid7 } from "nanoid";
+var app2 = new Hono6();
+app2.get("/", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
     const session = c.get("session");
     const userId = session.user.id;
-    const userConnectors = await db.select().from(connectors).where(eq4(connectors.userId, userId));
+    const userConnectors = await getDb().connectors.findByUserId(userId);
     const decryptedConnectors = userConnectors.map((connector) => ({
       ...connector,
       oauthClientSecret: connector.oauthClientSecret ? decrypt(connector.oauthClientSecret) : null,
@@ -3066,7 +7568,7 @@ app.get("/", async (c) => {
     );
   }
 });
-app.post("/", async (c) => {
+app2.post("/", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -3074,7 +7576,7 @@ app.post("/", async (c) => {
     const userId = session.user.id;
     const body = await c.req.json();
     const connectorData = {
-      id: nanoid3(),
+      id: nanoid7(),
       userId,
       name: body.name,
       description: body.description?.trim() || void 0,
@@ -3086,7 +7588,7 @@ app.post("/", async (c) => {
       env: body.env,
       status: "connected"
     };
-    await db.insert(connectors).values({
+    await getDb().connectors.create({
       id: connectorData.id,
       userId: connectorData.userId,
       name: connectorData.name,
@@ -3115,7 +7617,7 @@ app.post("/", async (c) => {
     );
   }
 });
-app.patch("/:id", async (c) => {
+app2.patch("/:id", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -3136,7 +7638,7 @@ app.patch("/:id", async (c) => {
       status: body.status || "connected"
     };
     const validatedData = connectorData;
-    await db.update(connectors).set({
+    await getDb().connectors.update(id, userId, {
       name: validatedData.name,
       description: validatedData.description || null,
       type: validatedData.type,
@@ -3147,7 +7649,7 @@ app.patch("/:id", async (c) => {
       env: validatedData.env ? encrypt(JSON.stringify(validatedData.env)) : null,
       status: validatedData.status,
       updatedAt: Date.now()
-    }).where(and3(eq4(connectors.id, id), eq4(connectors.userId, userId)));
+    });
     return c.json({
       success: true,
       message: "Connector updated successfully"
@@ -3163,14 +7665,14 @@ app.patch("/:id", async (c) => {
     );
   }
 });
-app.delete("/:id", async (c) => {
+app2.delete("/:id", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
     const session = c.get("session");
     const userId = session.user.id;
     const id = c.req.param("id");
-    await db.delete(connectors).where(and3(eq4(connectors.id, id), eq4(connectors.userId, userId)));
+    await getDb().connectors.delete(id, userId);
     return c.json({
       success: true,
       message: "Connector deleted successfully"
@@ -3186,7 +7688,7 @@ app.delete("/:id", async (c) => {
     );
   }
 });
-app.patch("/:id/status", async (c) => {
+app2.patch("/:id/status", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -3204,7 +7706,7 @@ app.patch("/:id/status", async (c) => {
         { status: 400 }
       );
     }
-    await db.update(connectors).set({ status }).where(and3(eq4(connectors.id, id), eq4(connectors.userId, userId)));
+    await getDb().connectors.update(id, userId, { status });
     return c.json({
       success: true,
       message: `Connector ${status === "connected" ? "connected" : "disconnected"} successfully`
@@ -3220,36 +7722,385 @@ app.patch("/:id/status", async (c) => {
     );
   }
 });
-var connectors_default = app;
+var connectors_default = app2;
+
+// src/routes/api-keys.ts
+import { Hono as Hono7 } from "hono";
+import { nanoid as nanoid8 } from "nanoid";
+var VALID_PROVIDERS = ["openai", "gemini", "cursor", "anthropic", "aigateway"];
+var AGENT_PROVIDER_MAP = {
+  claude: "aigateway",
+  codex: "aigateway",
+  copilot: null,
+  // uses GitHub token
+  cursor: "cursor",
+  gemini: "gemini",
+  opencode: "openai"
+};
+function isAnthropicModel(model) {
+  return ["claude", "sonnet", "opus"].some((p) => model.toLowerCase().includes(p));
+}
+function isOpenAIModel(model) {
+  return ["gpt", "openai"].some((p) => model.toLowerCase().includes(p));
+}
+function isGeminiModel(model) {
+  return model.toLowerCase().includes("gemini");
+}
+async function getUserGitHubToken2(userId) {
+  try {
+    const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
+    if (account?.accessToken) {
+      return decrypt(account.accessToken);
+    }
+    const user = await getDb().users.findById(userId);
+    if (user?.provider === "github" && user.accessToken) {
+      return decrypt(user.accessToken);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+async function getUserApiKey(userId, provider) {
+  const systemKeys = {
+    openai: process.env.OPENAI_API_KEY,
+    gemini: process.env.GEMINI_API_KEY,
+    cursor: process.env.CURSOR_API_KEY,
+    anthropic: process.env.ANTHROPIC_API_KEY,
+    aigateway: process.env.AI_GATEWAY_API_KEY
+  };
+  try {
+    const userKey = await getDb().keys.findByUserIdAndProvider(userId, provider);
+    if (userKey?.value) {
+      return decrypt(userKey.value);
+    }
+  } catch {
+  }
+  return systemKeys[provider];
+}
+var app3 = new Hono7();
+app3.get("/", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const userId = session.user.id;
+    const userKeys = await getDb().keys.findByUserId(userId);
+    return c.json({
+      success: true,
+      apiKeys: userKeys.map((k) => ({ provider: k.provider, createdAt: k.createdAt }))
+    });
+  } catch (error) {
+    console.error("Error fetching API keys:", error);
+    return c.json({ error: "Failed to fetch API keys" }, 500);
+  }
+});
+app3.post("/", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const userId = session.user.id;
+    const body = await c.req.json();
+    const { provider, apiKey } = body;
+    if (!provider || !apiKey) {
+      return c.json({ error: "Provider and API key are required" }, 400);
+    }
+    if (!VALID_PROVIDERS.includes(provider)) {
+      return c.json({ error: "Invalid provider" }, 400);
+    }
+    const encryptedKey = encrypt(apiKey);
+    await getDb().keys.upsert({
+      id: nanoid8(),
+      userId,
+      provider,
+      value: encryptedKey
+    });
+    return c.json({ success: true });
+  } catch (error) {
+    console.error("Error saving API key:", error);
+    return c.json({ error: "Failed to save API key" }, 500);
+  }
+});
+app3.delete("/", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const userId = session.user.id;
+    const provider = c.req.query("provider");
+    if (!provider) {
+      return c.json({ error: "Provider is required" }, 400);
+    }
+    await getDb().keys.delete(userId, provider);
+    return c.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting API key:", error);
+    return c.json({ error: "Failed to delete API key" }, 500);
+  }
+});
+app3.get("/check", async (c) => {
+  try {
+    const agent = c.req.query("agent");
+    const model = c.req.query("model");
+    if (!agent) {
+      return c.json({ error: "Agent parameter is required" }, 400);
+    }
+    if (!(agent in AGENT_PROVIDER_MAP)) {
+      return c.json({ error: "Invalid agent" }, 400);
+    }
+    if (agent === "copilot") {
+      const session2 = c.get("session");
+      const userId2 = session2?.user?.id;
+      const githubToken = userId2 ? await getUserGitHubToken2(userId2) : null;
+      return c.json({
+        success: true,
+        hasKey: !!githubToken,
+        provider: "github",
+        agentName: "Copilot"
+      });
+    }
+    let provider = AGENT_PROVIDER_MAP[agent];
+    if (model && (agent === "cursor" || agent === "opencode")) {
+      if (isAnthropicModel(model)) {
+        provider = "anthropic";
+      } else if (isGeminiModel(model)) {
+        provider = "gemini";
+      } else if (isOpenAIModel(model)) {
+        provider = "aigateway";
+      }
+    }
+    const session = c.get("session");
+    const userId = session?.user?.id;
+    const apiKey = userId ? await getUserApiKey(userId, provider) : process.env[`${provider.toUpperCase()}_API_KEY`];
+    const hasKey = !!apiKey;
+    return c.json({
+      success: true,
+      hasKey,
+      provider,
+      agentName: agent.charAt(0).toUpperCase() + agent.slice(1)
+    });
+  } catch (error) {
+    console.error("Error checking API key:", error);
+    return c.json({ error: "Failed to check API key" }, 500);
+  }
+});
+var api_keys_default = app3;
+
+// src/routes/misc.ts
+import { Hono as Hono8 } from "hono";
+var GITHUB_REPO = "vercel-labs/coding-agent-template";
+var CACHE_DURATION_MS = 5 * 60 * 1e3;
+var cachedStars = null;
+var lastFetch = 0;
+var app4 = new Hono8();
+app4.get("/github-stars", async (c) => {
+  try {
+    const now4 = Date.now();
+    if (cachedStars !== null && now4 - lastFetch < CACHE_DURATION_MS) {
+      return c.json({ stars: cachedStars });
+    }
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "coding-agent-template"
+      }
+    });
+    if (!response.ok) {
+      throw new Error("GitHub API request failed");
+    }
+    const data = await response.json();
+    cachedStars = data.stargazers_count;
+    lastFetch = now4;
+    return c.json({ stars: cachedStars });
+  } catch (error) {
+    console.error("Error fetching GitHub stars:", error);
+    return c.json({ stars: cachedStars || 1200 });
+  }
+});
+app4.get("/sandboxes", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const userId = session.user.id;
+    const allTasks = await getDb().tasks.findByUserId(userId);
+    const runningSandboxes = allTasks.filter((t) => t.sandboxId && !t.deletedAt).map((t) => ({
+      id: t.id,
+      taskId: t.id,
+      prompt: t.prompt,
+      repoUrl: t.repoUrl,
+      branchName: t.branchName,
+      sandboxId: t.sandboxId,
+      sandboxUrl: t.sandboxUrl,
+      createdAt: t.createdAt,
+      status: t.status,
+      keepAlive: t.keepAlive,
+      maxDuration: t.maxDuration
+    }));
+    return c.json({ sandboxes: runningSandboxes });
+  } catch (error) {
+    console.error("Error fetching sandboxes:", error);
+    return c.json({ error: "Failed to fetch sandboxes" }, 500);
+  }
+});
+app4.get("/vercel/teams", (c) => {
+  return c.json({ scopes: [] });
+});
+var misc_default = app4;
+
+// src/routes/repos.ts
+import { Hono as Hono9 } from "hono";
+import { Octokit as Octokit3 } from "@octokit/rest";
+var app5 = new Hono9();
+async function getGitHubToken2(userId) {
+  try {
+    const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
+    if (account?.accessToken) {
+      return decrypt(account.accessToken);
+    }
+    const user = await getDb().users.findById(userId);
+    if (user?.provider === "github" && user.accessToken) {
+      return decrypt(user.accessToken);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+app5.get("/:owner/:repo/commits", async (c) => {
+  try {
+    const owner = c.req.param("owner");
+    const repo = c.req.param("repo");
+    const session = c.get("session");
+    const token = session?.user?.id ? await getGitHubToken2(session.user.id) : null;
+    if (!token) {
+      return c.json({ error: "GitHub authentication required" }, 401);
+    }
+    const octokit = new Octokit3({ auth: token });
+    const { data: commits } = await octokit.rest.repos.listCommits({
+      owner,
+      repo,
+      per_page: 30
+    });
+    return c.json({ commits });
+  } catch (error) {
+    console.error("Error fetching commits:", error);
+    return c.json({ error: "Failed to fetch commits" }, 500);
+  }
+});
+app5.get("/:owner/:repo/issues", async (c) => {
+  try {
+    const owner = c.req.param("owner");
+    const repo = c.req.param("repo");
+    const session = c.get("session");
+    const token = session?.user?.id ? await getGitHubToken2(session.user.id) : null;
+    if (!token) {
+      return c.json({ error: "GitHub authentication required" }, 401);
+    }
+    const octokit = new Octokit3({ auth: token });
+    const { data: issues } = await octokit.rest.issues.listForRepo({
+      owner,
+      repo,
+      state: "open",
+      per_page: 30
+    });
+    const filteredIssues = issues.filter((issue) => !issue.pull_request);
+    return c.json({ issues: filteredIssues });
+  } catch (error) {
+    console.error("Error fetching issues:", error);
+    return c.json({ error: "Failed to fetch issues" }, 500);
+  }
+});
+app5.get("/:owner/:repo/pull-requests", async (c) => {
+  try {
+    const owner = c.req.param("owner");
+    const repo = c.req.param("repo");
+    const session = c.get("session");
+    const token = session?.user?.id ? await getGitHubToken2(session.user.id) : null;
+    if (!token) {
+      return c.json({ error: "GitHub authentication required" }, 401);
+    }
+    const octokit = new Octokit3({ auth: token });
+    const { data: pullRequests } = await octokit.rest.pulls.list({
+      owner,
+      repo,
+      state: "open",
+      per_page: 30,
+      sort: "updated",
+      direction: "desc"
+    });
+    return c.json({ pullRequests });
+  } catch (error) {
+    console.error("Error fetching pull requests:", error);
+    return c.json({ error: "Failed to fetch pull requests" }, 500);
+  }
+});
+app5.get("/:owner/:repo/pull-requests/:pr_number/check-task", async (c) => {
+  try {
+    const authErr = requireAuth(c);
+    if (authErr) return authErr;
+    const session = c.get("session");
+    const userId = session.user.id;
+    const owner = c.req.param("owner");
+    const repo = c.req.param("repo");
+    const prNumberStr = c.req.param("pr_number");
+    const prNumber = parseInt(prNumberStr, 10);
+    if (isNaN(prNumber)) {
+      return c.json({ error: "Invalid PR number" }, 400);
+    }
+    const repoUrl = `https://github.com/${owner}/${repo}`;
+    const existingTasks = await getDb().tasks.findByRepoAndPr(userId, prNumber, repoUrl);
+    return c.json({
+      hasTask: existingTasks.length > 0,
+      taskId: existingTasks.length > 0 ? existingTasks[0].id : null
+    });
+  } catch (error) {
+    console.error("Error checking for existing task:", error);
+    return c.json({ error: "Failed to check for existing task" }, 500);
+  }
+});
+app5.patch("/:owner/:repo/pull-requests/:pr_number/close", async (c) => {
+  try {
+    const owner = c.req.param("owner");
+    const repo = c.req.param("repo");
+    const prNumberStr = c.req.param("pr_number");
+    const prNumber = parseInt(prNumberStr, 10);
+    if (isNaN(prNumber)) {
+      return c.json({ error: "Invalid pull request number" }, 400);
+    }
+    const session = c.get("session");
+    const token = session?.user?.id ? await getGitHubToken2(session.user.id) : null;
+    if (!token) {
+      return c.json({ error: "GitHub authentication required" }, 401);
+    }
+    const octokit = new Octokit3({ auth: token });
+    const { data: pullRequest } = await octokit.rest.pulls.update({
+      owner,
+      repo,
+      pull_number: prNumber,
+      state: "closed"
+    });
+    return c.json({ pullRequest });
+  } catch (error) {
+    console.error("Error closing pull request:", error);
+    return c.json({ error: "Failed to close pull request" }, 500);
+  }
+});
+var repos_default = app5;
 
 // src/routes/database.ts
-import { Hono as Hono5 } from "hono";
+import { Hono as Hono10 } from "hono";
 
 // src/cloudbase/database.ts
-import CloudBase3 from "@cloudbase/manager-node";
-import { AuthSupervisor as AuthSupervisor3 } from "@cloudbase/toolbox";
-var auth2 = AuthSupervisor3.getInstance({});
-async function getManager() {
-  if (process.env.TCB_SECRET_ID && process.env.TCB_ENV_ID) {
-    return new CloudBase3({
-      secretId: process.env.TCB_SECRET_ID,
-      secretKey: process.env.TCB_SECRET_KEY || "",
-      token: process.env.TCB_TOKEN || "",
-      envId: process.env.TCB_ENV_ID,
-      proxy: process.env.http_proxy
-    });
-  }
-  const loginState = await auth2.getLoginState();
-  if (!loginState) throw new Error("\u672A\u767B\u5F55");
-  const config = loadConfig();
-  if (!config.cloudbase?.envId) throw new Error("\u672A\u7ED1\u5B9A\u73AF\u5883");
-  return new CloudBase3({
-    secretId: loginState.secretId,
-    secretKey: loginState.secretKey,
-    token: loginState.token,
-    envId: config.cloudbase.envId,
-    proxy: process.env.http_proxy,
-    region: config.cloudbase.region
+import CloudBase4 from "@cloudbase/manager-node";
+function createManager(creds) {
+  return new CloudBase4({
+    secretId: creds.secretId,
+    secretKey: creds.secretKey,
+    token: creds.sessionToken || "",
+    envId: creds.envId,
+    proxy: process.env.http_proxy
   });
 }
 async function getDatabaseInstanceId(manager) {
@@ -3259,8 +8110,8 @@ async function getDatabaseInstanceId(manager) {
   }
   return EnvInfo.Databases[0].InstanceId;
 }
-async function listCollections() {
-  const manager = await getManager();
+async function listCollections(creds) {
+  const manager = createManager(creds);
   const result = await manager.database.listCollections({
     MgoOffset: 0,
     MgoLimit: 1e3
@@ -3277,17 +8128,17 @@ async function listCollections() {
     total: result.Pager?.Total ?? collections.length
   };
 }
-async function createCollection(name) {
-  const manager = await getManager();
+async function createCollection(creds, name) {
+  const manager = createManager(creds);
   await manager.database.createCollection(name);
   await waitForCollectionReady(manager, name);
 }
-async function deleteCollection(name) {
-  const manager = await getManager();
+async function deleteCollection(creds, name) {
+  const manager = createManager(creds);
   await manager.database.deleteCollection(name);
 }
-async function queryDocuments(collection, page = 1, pageSize = 50, where) {
-  const manager = await getManager();
+async function queryDocuments(creds, collection, page = 1, pageSize = 50, where) {
+  const manager = createManager(creds);
   const instanceId = await getDatabaseInstanceId(manager);
   const offset = (page - 1) * pageSize;
   const mgoQuery = where && Object.keys(where).length > 0 ? JSON.stringify(where) : "{}";
@@ -3319,8 +8170,8 @@ async function queryDocuments(collection, page = 1, pageSize = 50, where) {
     pageSize
   };
 }
-async function insertDocument(collection, data) {
-  const manager = await getManager();
+async function insertDocument(creds, collection, data) {
+  const manager = createManager(creds);
   const instanceId = await getDatabaseInstanceId(manager);
   const result = await manager.commonService("tcb", "2018-06-08").call({
     Action: "PutItem",
@@ -3332,8 +8183,8 @@ async function insertDocument(collection, data) {
   });
   return result.InsertedIds?.[0] ?? "";
 }
-async function updateDocument(collection, docId, data) {
-  const manager = await getManager();
+async function updateDocument(creds, collection, docId, data) {
+  const manager = createManager(creds);
   const instanceId = await getDatabaseInstanceId(manager);
   const { _id, ...updateData } = data;
   await manager.commonService("tcb", "2018-06-08").call({
@@ -3348,8 +8199,8 @@ async function updateDocument(collection, docId, data) {
     }
   });
 }
-async function deleteDocument(collection, docId) {
-  const manager = await getManager();
+async function deleteDocument(creds, collection, docId) {
+  const manager = createManager(creds);
   const instanceId = await getDatabaseInstanceId(manager);
   await manager.commonService("tcb", "2018-06-08").call({
     Action: "DeleteItem",
@@ -3362,7 +8213,7 @@ async function deleteDocument(collection, docId) {
   });
 }
 function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 async function waitForCollectionReady(manager, name, timeoutMs = 1e4, intervalMs = 500) {
   const deadline = Date.now() + timeoutMs;
@@ -3379,33 +8230,42 @@ async function waitForCollectionReady(manager, name, timeoutMs = 1e4, intervalMs
 }
 
 // src/routes/database.ts
-var router = new Hono5();
-router.get("/collections", async (c) => {
+var router = new Hono10();
+function getCreds(c) {
+  const { envId, credentials } = c.get("userEnv");
+  return {
+    envId,
+    secretId: credentials.secretId,
+    secretKey: credentials.secretKey,
+    sessionToken: credentials.sessionToken
+  };
+}
+router.get("/collections", requireUserEnv, async (c) => {
   try {
-    const result = await listCollections();
+    const result = await listCollections(getCreds(c));
     return c.json(result.collections);
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.post("/collections", async (c) => {
+router.post("/collections", requireUserEnv, async (c) => {
   try {
     const { name } = await c.req.json();
-    await createCollection(name);
+    await createCollection(getCreds(c), name);
     return c.json({ success: true });
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.delete("/collections/:name", async (c) => {
+router.delete("/collections/:name", requireUserEnv, async (c) => {
   try {
-    await deleteCollection(c.req.param("name"));
+    await deleteCollection(getCreds(c), c.req.param("name"));
     return c.json({ success: true });
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.get("/collections/:name/documents", async (c) => {
+router.get("/collections/:name/documents", requireUserEnv, async (c) => {
   try {
     const name = c.req.param("name");
     const page = Number(c.req.query("page") || "1");
@@ -3421,33 +8281,33 @@ router.get("/collections/:name/documents", async (c) => {
         where = { _id: search };
       }
     }
-    const result = await queryDocuments(name, page, pageSize, where);
+    const result = await queryDocuments(getCreds(c), name, page, pageSize, where);
     return c.json(result);
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.post("/collections/:name/documents", async (c) => {
+router.post("/collections/:name/documents", requireUserEnv, async (c) => {
   try {
     const data = await c.req.json();
-    const id = await insertDocument(c.req.param("name"), data);
+    const id = await insertDocument(getCreds(c), c.req.param("name"), data);
     return c.json({ _id: id });
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.put("/collections/:name/documents/:id", async (c) => {
+router.put("/collections/:name/documents/:id", requireUserEnv, async (c) => {
   try {
     const data = await c.req.json();
-    await updateDocument(c.req.param("name"), c.req.param("id"), data);
+    await updateDocument(getCreds(c), c.req.param("name"), c.req.param("id"), data);
     return c.json({ success: true });
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router.delete("/collections/:name/documents/:id", async (c) => {
+router.delete("/collections/:name/documents/:id", requireUserEnv, async (c) => {
   try {
-    await deleteDocument(c.req.param("name"), c.req.param("id"));
+    await deleteDocument(getCreds(c), c.req.param("name"), c.req.param("id"));
     return c.json({ success: true });
   } catch (e) {
     return c.json({ error: e.message }, 500);
@@ -3456,13 +8316,12 @@ router.delete("/collections/:name/documents/:id", async (c) => {
 var database_default = router;
 
 // src/routes/storage.ts
-import { Hono as Hono6 } from "hono";
+import { Hono as Hono11 } from "hono";
 
 // src/cloudbase/storage.ts
-async function getBuckets() {
-  const manager = await getManager();
+async function getBuckets(creds) {
+  const manager = createManager(creds);
   const { EnvInfo } = await manager.env.getEnvInfo();
-  const envId = process.env.TCB_ENV_ID || "";
   const buckets = [];
   const storage = EnvInfo?.Storages?.[0];
   if (storage) {
@@ -3506,9 +8365,8 @@ async function getBuckets() {
   }
   return buckets;
 }
-async function listStorageFiles(prefix = "") {
-  const manager = await getManager();
-  const envId = process.env.TCB_ENV_ID || "";
+async function listStorageFiles(creds, prefix = "") {
+  const manager = createManager(creds);
   const files = await manager.storage.walkCloudDir(prefix);
   const fileMap = /* @__PURE__ */ new Map();
   for (const f of files) {
@@ -3536,14 +8394,14 @@ async function listStorageFiles(prefix = "") {
         size: Number(f.Size) || 0,
         lastModified: f.LastModified,
         isDir: false,
-        fileId: `cloud://${envId}/${key}`
+        fileId: `cloud://${creds.envId}/${key}`
       });
     }
   }
   return Array.from(fileMap.values());
 }
-async function listHostingFiles(prefix = "", cdnDomain = "") {
-  const manager = await getManager();
+async function listHostingFiles(creds, prefix = "", cdnDomain = "") {
+  const manager = createManager(creds);
   const result = await manager.hosting.listFiles();
   const fileMap = /* @__PURE__ */ new Map();
   for (const f of result || []) {
@@ -3579,57 +8437,68 @@ async function listHostingFiles(prefix = "", cdnDomain = "") {
   }
   return Array.from(fileMap.values());
 }
-async function getDownloadUrl(cloudPath) {
-  const manager = await getManager();
+async function getDownloadUrl(creds, cloudPath) {
+  const manager = createManager(creds);
   const result = await manager.storage.getTemporaryUrl([{ cloudPath, maxAge: 3600 }]);
   return result?.[0]?.url || "";
 }
-async function deleteFile(cloudPath) {
-  const manager = await getManager();
+async function deleteFile(creds, cloudPath) {
+  const manager = createManager(creds);
   await manager.storage.deleteFile([cloudPath]);
 }
-async function deleteHostingFile(cloudPath) {
-  const manager = await getManager();
+async function deleteHostingFile(creds, cloudPath) {
+  const manager = createManager(creds);
   await manager.hosting.deleteFiles({ cloudPath, isDir: false });
 }
 
 // src/routes/storage.ts
-var router2 = new Hono6();
-router2.get("/buckets", async (c) => {
+var router2 = new Hono11();
+function getCreds2(c) {
+  const { envId, credentials } = c.get("userEnv");
+  return {
+    envId,
+    secretId: credentials.secretId,
+    secretKey: credentials.secretKey,
+    sessionToken: credentials.sessionToken
+  };
+}
+router2.get("/buckets", requireUserEnv, async (c) => {
   try {
-    return c.json(await getBuckets());
+    return c.json(await getBuckets(getCreds2(c)));
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router2.get("/files", async (c) => {
+router2.get("/files", requireUserEnv, async (c) => {
   try {
     const prefix = c.req.query("prefix") || "";
     const bucketType = c.req.query("bucketType") || "storage";
     const cdnDomain = c.req.query("cdnDomain") || "";
-    const files = bucketType === "static" ? await listHostingFiles(prefix, cdnDomain) : await listStorageFiles(prefix);
+    const creds = getCreds2(c);
+    const files = bucketType === "static" ? await listHostingFiles(creds, prefix, cdnDomain) : await listStorageFiles(creds, prefix);
     return c.json(files);
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router2.get("/url", async (c) => {
+router2.get("/url", requireUserEnv, async (c) => {
   try {
     const path5 = c.req.query("path") || "";
     if (!path5) return c.json({ error: "\u7F3A\u5C11 path \u53C2\u6570" }, 400);
-    return c.json({ url: await getDownloadUrl(path5) });
+    return c.json({ url: await getDownloadUrl(getCreds2(c), path5) });
   } catch (e) {
     return c.json({ error: e.message }, 500);
   }
 });
-router2.delete("/files", async (c) => {
+router2.delete("/files", requireUserEnv, async (c) => {
   try {
     const { path: path5, bucketType } = await c.req.json();
     if (!path5) return c.json({ error: "\u7F3A\u5C11 path \u53C2\u6570" }, 400);
+    const creds = getCreds2(c);
     if (bucketType === "static") {
-      await deleteHostingFile(path5);
+      await deleteHostingFile(creds, path5);
     } else {
-      await deleteFile(path5);
+      await deleteFile(creds, path5);
     }
     return c.json({ success: true });
   } catch (e) {
@@ -3639,11 +8508,20 @@ router2.delete("/files", async (c) => {
 var storage_default = router2;
 
 // src/routes/functions.ts
-import { Hono as Hono7 } from "hono";
-var router3 = new Hono7();
-router3.get("/", async (c) => {
+import { Hono as Hono12 } from "hono";
+var router3 = new Hono12();
+function getCreds3(c) {
+  const { envId, credentials } = c.get("userEnv");
+  return {
+    envId,
+    secretId: credentials.secretId,
+    secretKey: credentials.secretKey,
+    sessionToken: credentials.sessionToken
+  };
+}
+router3.get("/", requireUserEnv, async (c) => {
   try {
-    const manager = await getManager();
+    const manager = createManager(getCreds3(c));
     const result = await manager.functions.getFunctionList(100, 0);
     const functions = (result.Functions || []).map((f) => ({
       name: f.FunctionName,
@@ -3662,9 +8540,9 @@ router3.get("/", async (c) => {
     return c.json({ error: e.message }, 500);
   }
 });
-router3.post("/:name/invoke", async (c) => {
+router3.post("/:name/invoke", requireUserEnv, async (c) => {
   try {
-    const manager = await getManager();
+    const manager = createManager(getCreds3(c));
     const name = c.req.param("name");
     const body = await c.req.json();
     const result = await manager.functions.invokeFunction(name, body);
@@ -3676,26 +8554,19 @@ router3.post("/:name/invoke", async (c) => {
 var functions_default = router3;
 
 // src/routes/sql.ts
-import { Hono as Hono8 } from "hono";
-var router4 = new Hono8();
+import { Hono as Hono13 } from "hono";
+var router4 = new Hono13();
 router4.post("/query", async (c) => {
   return c.json({ error: "\u8BF7\u5148\u914D\u7F6E SQL \u6570\u636E\u5E93\u8FDE\u63A5\uFF08MySQL/PostgreSQL\uFF09" }, 501);
 });
 var sql_default = router4;
 
 // src/routes/capi.ts
-import { Hono as Hono9 } from "hono";
-import CloudBase4 from "@cloudbase/manager-node";
-var router5 = new Hono9();
-router5.post("/", async (c) => {
-  const authError = requireAuth(c);
-  if (authError) return authError;
-  const secretId = process.env.TCB_SECRET_ID;
-  const secretKey = process.env.TCB_SECRET_KEY;
-  const envId = process.env.TCB_ENV_ID;
-  if (!secretId || !secretKey || !envId) {
-    return c.json({ error: "\u670D\u52A1\u7AEF\u672A\u914D\u7F6E\u5BC6\u94A5" }, 500);
-  }
+import { Hono as Hono14 } from "hono";
+import CloudBase5 from "@cloudbase/manager-node";
+var router5 = new Hono14();
+router5.post("/", requireUserEnv, async (c) => {
+  const { envId, credentials } = c.get("userEnv");
   let body;
   try {
     body = await c.req.json();
@@ -3707,12 +8578,13 @@ router5.post("/", async (c) => {
     return c.json({ error: "\u7F3A\u5C11 service / action \u53C2\u6570" }, 400);
   }
   try {
-    const app3 = new CloudBase4({
-      secretId,
-      secretKey,
+    const app7 = new CloudBase5({
+      secretId: credentials.secretId,
+      secretKey: credentials.secretKey,
+      token: credentials.sessionToken || "",
       envId
     });
-    const result = await app3.commonService(service).call({
+    const result = await app7.commonService(service).call({
       Action: action,
       Param: params
     });
@@ -3724,33 +8596,77 @@ router5.post("/", async (c) => {
 var capi_default = router5;
 
 // src/index.ts
+var __filename = fileURLToPath2(import.meta.url);
+var __dirname = dirname2(__filename);
 process.on("unhandledRejection", (err) => {
   console.error("[Server] Unhandled rejection:", err);
 });
-var app2 = new Hono10();
-app2.use(
+var app6 = new Hono15();
+app6.use(
   "*",
   cors({
     origin: (origin) => origin || "*",
     credentials: true
   })
 );
-app2.use("*", authMiddleware);
-app2.get("/health", (c) => c.json({ status: "ok" }));
-app2.route("/api/auth", auth_default);
-app2.route("/api/agent", acp_default);
-app2.route("/api/tasks", tasks_default);
-app2.route("/api/connectors", connectors_default);
-app2.route("/api/database", database_default);
-app2.route("/api/storage", storage_default);
-app2.route("/api/functions", functions_default);
-app2.route("/api/sql", sql_default);
-app2.route("/api/capi", capi_default);
+app6.use("*", authMiddleware);
+app6.get("/health", (c) => c.json({ status: "ok" }));
+app6.route("/api/auth", auth_default);
+app6.route("/api/auth/github", github_auth_default);
+app6.route("/api/github", github_default);
+app6.route("/api/agent", acp_default);
+app6.route("/api/tasks", tasks_default);
+app6.route("/api/connectors", connectors_default);
+app6.route("/api/api-keys", api_keys_default);
+app6.route("/api", misc_default);
+app6.route("/api/repos", repos_default);
+app6.route("/api/database", database_default);
+app6.route("/api/storage", storage_default);
+app6.route("/api/functions", functions_default);
+app6.route("/api/sql", sql_default);
+app6.route("/api/capi", capi_default);
+var webDistPath = resolve(__dirname, "../web/dist");
+var serveStaticFiles = existsSync2(webDistPath);
+if (serveStaticFiles) {
+  console.log(`[Server] Serving static files from: ${webDistPath}`);
+  app6.use("/assets/*", serveStatic({ root: webDistPath }));
+  app6.use("/*", serveStatic({ root: webDistPath }));
+  app6.get("*", async (c, next) => {
+    const path5 = c.req.path;
+    if (path5.startsWith("/api")) {
+      return next();
+    }
+    return c.html(
+      `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coding Agent</title>
+  <link rel="stylesheet" href="/assets/index.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/assets/index.js"></script>
+</body>
+</html>`
+    );
+  });
+} else {
+  console.log("[Server] Running in API-only mode (no static files)");
+  console.log("[Server] For full-stack mode, build the web package first: pnpm build:web");
+}
 var PORT = Number(process.env.PORT) || 3001;
-serve({ fetch: app2.fetch, port: PORT }, () => {
+serve({ fetch: app6.fetch, port: PORT }, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  if (serveStaticFiles) {
+    console.log(`Open http://localhost:${PORT} in your browser`);
+  } else {
+    console.log(`API endpoint: http://localhost:${PORT}/api`);
+    console.log(`For development, run: pnpm dev:web`);
+  }
 });
-var index_default = app2;
+var index_default = app6;
 export {
   index_default as default
 };

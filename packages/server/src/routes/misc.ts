@@ -1,7 +1,5 @@
 import { Hono } from 'hono'
-import { drizzleDb as db } from '../db/drizzle/client.js'
-import { tasks } from '../db/schema'
-import { eq, and, isNotNull } from 'drizzle-orm'
+import { getDb } from '../db/index.js'
 import { requireAuth, type AppEnv } from '../middleware/auth'
 
 const GITHUB_REPO = 'vercel-labs/coding-agent-template'
@@ -51,24 +49,23 @@ app.get('/sandboxes', async (c) => {
     const session = c.get('session')!
     const userId = session.user.id
 
-    // This specialized query (isNotNull(sandboxId) + specific fields) doesn't map to a repository method
-    const runningSandboxes = await db
-      .select({
-        id: tasks.id,
-        taskId: tasks.id,
-        prompt: tasks.prompt,
-        repoUrl: tasks.repoUrl,
-        branchName: tasks.branchName,
-        sandboxId: tasks.sandboxId,
-        sandboxUrl: tasks.sandboxUrl,
-        createdAt: tasks.createdAt,
-        status: tasks.status,
-        keepAlive: tasks.keepAlive,
-        maxDuration: tasks.maxDuration,
-      })
-      .from(tasks)
-      .where(and(eq(tasks.userId, userId), isNotNull(tasks.sandboxId)))
-      .orderBy(tasks.createdAt)
+    // Filter tasks with active sandboxes using repository interface
+    const allTasks = await getDb().tasks.findByUserId(userId)
+    const runningSandboxes = allTasks
+      .filter((t) => t.sandboxId && !t.deletedAt)
+      .map((t) => ({
+        id: t.id,
+        taskId: t.id,
+        prompt: t.prompt,
+        repoUrl: t.repoUrl,
+        branchName: t.branchName,
+        sandboxId: t.sandboxId,
+        sandboxUrl: t.sandboxUrl,
+        createdAt: t.createdAt,
+        status: t.status,
+        keepAlive: t.keepAlive,
+        maxDuration: t.maxDuration,
+      }))
 
     return c.json({ sandboxes: runningSandboxes })
   } catch (error) {

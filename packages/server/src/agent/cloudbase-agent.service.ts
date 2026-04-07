@@ -17,7 +17,7 @@ import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage } from '@code
 const DEFAULT_MODEL = 'glm-5.0'
 const OAUTH_TOKEN_ENDPOINT = 'https://copilot.tencent.com/oauth2/token'
 const CONNECT_TIMEOUT_MS = 60_000
-const ITERATION_TIMEOUT_MS = 30 * 1000
+const ITERATION_TIMEOUT_MS = 45 * 1000
 const HEALTH_MAX_RETRIES = 20
 const HEALTH_INTERVAL_MS = 2000
 
@@ -102,11 +102,13 @@ async function waitForSandboxHealth(sandbox: SandboxInstance, callback: AgentCal
 
 /**
  * 初始化沙箱工作空间：POST /api/session/init 注入凭证和环境变量
+ * 然后创建会话工作目录
  * 返回容器内的工作目录路径（可能为 undefined）
  */
 async function initSandboxWorkspace(
   sandbox: SandboxInstance,
   secret: { envId: string; secretId: string; secretKey: string; token?: string },
+  conversationId: string,
 ): Promise<string | undefined> {
   try {
     const res = await sandbox.request('/api/session/init', {
@@ -124,9 +126,25 @@ async function initSandboxWorkspace(
     })
 
     if (res.ok) {
-      const data = (await res.json()) as any
-      console.log('[Agent] initSandboxWorkspace success, workspace:', data?.workspace)
-      return data?.workspace || undefined
+      const workspace = `/tmp/workspace/${secret.envId}/${conversationId}`
+      console.log('[Agent] initSandboxWorkspace success, workspace:', workspace)
+
+      // 创建会话工作目录
+      const mkdirRes = await sandbox.request('/api/tools/bash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: `mkdir -p "${workspace}"`,
+          timeout: 5000,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      })
+
+      if (mkdirRes.ok) {
+        console.log('[Agent] Workspace directory created:', workspace)
+      }
+
+      return workspace
     }
     console.error('[Agent] initSandboxWorkspace failed, status:', res.status)
   } catch (e) {
@@ -271,7 +289,7 @@ Bash 超时处理策略：对于耗时较长的命令（如 npm install、yarn i
 4. 也可以通过 KillShell 关闭后台执行的任务
 
 ${
-  true
+  false
     ? `小程序开发规则：
 当用户的需求涉及微信小程序开发（创建、修改、部署小程序项目）时：
 1. 必须先使用 AskUserQuestion 工具获取用户的微信小程序 appId
@@ -285,11 +303,11 @@ ${
 
   if (sandboxCwd) {
     return `${base}
-
-当前用户的项目工作目录为: ${sandboxCwd}
-当前使用的云开发环境为: ${envId}
+工具默认在 Home: /tmp/workspace/${envId} 下执行
+为项目开辟工作目录为: ${sandboxCwd}
+使用的云开发环境为: ${envId}
 请注意：
-- 所有文件读写、终端命令都应在此目录下执行
+- 所有文件读写、终端命令都应在工作目录中执行，注意 cd 到工作目录操作。
 - 使用 cloudbase_uploadFiles 部署文件时，localPath 必须是容器内的**绝对路径**（即当前工作目录 ${sandboxCwd} 下的路径），例如 ${sandboxCwd}/index.html
 - 如用户没有特别要求，cloudPath 需要为 ${conversationId}，即在当前会话路径下
 - 不要使用相对路径给 cloudbase_uploadFiles`
@@ -325,7 +343,7 @@ export class CloudbaseAgentService {
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
     console.log('[Agent] userContext:', JSON.stringify(userContext))
 
-    const actualCwd = cwd || `/tmp/workspace/${conversationId}`
+    const actualCwd = cwd || `/tmp/workspace/${userContext.envId}/${conversationId}`
     mkdirSync(actualCwd, { recursive: true })
     console.log('[Agent] cwd:', actualCwd)
 
@@ -366,6 +384,15 @@ export class CloudbaseAgentService {
               .join('\n'),
           }
           await persistenceService.updateToolResult(conversationId, recordId, toolCallId, output, 'completed')
+          if (recordId !== assistantMessageId) {
+            await persistenceService.updateToolResult(
+              conversationId,
+              assistantMessageId,
+              toolCallId,
+              output,
+              'completed',
+            )
+          }
         }
       }
 
@@ -501,12 +528,16 @@ export class CloudbaseAgentService {
           sandboxInstance = null
         } else {
           // ── 初始化工作空间：注入【登录用户凭证】──────────────────
-          const sandboxCwd = await initSandboxWorkspace(sandboxInstance, {
-            envId: userContext.envId,
-            secretId: userCredentials?.secretId || '',
-            secretKey: userCredentials?.secretKey || '',
-            token: userCredentials?.sessionToken,
-          })
+          const sandboxCwd = await initSandboxWorkspace(
+            sandboxInstance,
+            {
+              envId: userContext.envId,
+              secretId: userCredentials?.secretId || '',
+              secretKey: userCredentials?.secretKey || '',
+              token: userCredentials?.sessionToken,
+            },
+            conversationId,
+          )
           if (sandboxCwd) {
             wrappedCallback({ type: 'session', sandboxCwd } as any)
             console.log(`[Agent] Sandbox workspace initialized, cwd: ${sandboxCwd}`)
@@ -515,7 +546,8 @@ export class CloudbaseAgentService {
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             baseUrl: sandboxInstance.baseUrl,
-            sessionId: conversationId,
+            scfSessionId: userContext.envId,
+            conversationId,
             getAccessToken: () => sandboxInstance!.getAccessToken(),
             getCredentials: async () => ({
               cloudbaseEnvId: userContext.envId,
@@ -611,20 +643,8 @@ export class CloudbaseAgentService {
           canUseTool: async (toolName: string, input: unknown, _options: unknown) => {
             const toolUseId = (_options as any)?.toolUseID
 
-            // AskUserQuestion 处理
+            // AskUserQuestion 处理：统一由 resume 预处理（更新 DB + restore）驱动，不在 canUseTool 注入答案
             if (toolName === 'AskUserQuestion') {
-              // Resume 场景：已有用户答案（新结构：通过 toolCallId 匹配）
-              if (askAnswers) {
-                const matched = Object.values(askAnswers).find((v) => v.toolCallId === toolUseId)
-                if (matched && Object.keys(matched.answers).length > 0) {
-                  const resolvedInput = { ...(input as Record<string, unknown>), answers: matched.answers }
-                  return {
-                    behavior: 'allow' as const,
-                    updatedInput: resolvedInput,
-                  }
-                }
-              }
-
               // 通知前端需要用户回答
               wrappedCallback({
                 type: 'ask_user',
@@ -756,7 +776,7 @@ export class CloudbaseAgentService {
           stderr: (data: string) => {
             console.error('[Agent CLI stderr]', data.trim())
           },
-          disallowedTools: ['AskUserQuestion'],
+          // disallowedTools: ['AskUserQuestion'],
         },
       }
 

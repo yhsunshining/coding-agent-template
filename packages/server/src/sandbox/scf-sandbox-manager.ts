@@ -89,7 +89,10 @@ export class SandboxInstance {
 
   async getAuthHeaders(): Promise<Record<string, string>> {
     const accessToken = await this.getAccessToken()
-    return SandboxInstance.buildAuthHeaders(accessToken, this.conversationId)
+    return {
+      ...SandboxInstance.buildAuthHeaders(accessToken, this.envId),
+      'X-Conversation-Id': this.conversationId,
+    }
   }
 
   async getToolOverrideConfig(): Promise<{ url: string; headers: Record<string, string> }> {
@@ -226,6 +229,7 @@ export class ScfSandboxManager {
 
   private async buildSandboxMcpConfig(
     functionName: string,
+    scfSessionId: string,
     conversationId: string,
     sandboxEnvId: string,
   ): Promise<SandboxInstance['mcpConfig']> {
@@ -234,7 +238,10 @@ export class ScfSandboxManager {
     return {
       type: 'http' as const,
       url,
-      headers: SandboxInstance.buildAuthHeaders(accessToken, conversationId),
+      headers: {
+        ...SandboxInstance.buildAuthHeaders(accessToken, scfSessionId),
+        'X-Conversation-Id': conversationId,
+      },
     }
   }
 
@@ -261,7 +268,7 @@ export class ScfSandboxManager {
     if (functionExists) {
       await this.waitForFunctionReady(functionName)
       const instanceDeps = await this.buildInstanceDeps()
-      const mcpConfig = await this.buildSandboxMcpConfig(functionName, conversationId, instanceDeps.sandboxEnvId)
+      const mcpConfig = await this.buildSandboxMcpConfig(functionName, envId, conversationId, instanceDeps.sandboxEnvId)
 
       return new SandboxInstance(instanceDeps, {
         functionName,
@@ -274,6 +281,28 @@ export class ScfSandboxManager {
     }
 
     return this.createNewFunction(functionName, conversationId, envId, mode, options, progress)
+  }
+
+  /**
+   * 获取已存在的沙箱实例（不创建新实例）
+   * 适用于任务删除等场景，沙箱不存在时返回 null
+   */
+  async getExisting(conversationId: string, envId: string): Promise<SandboxInstance | null> {
+    const envConfig = this.getEnvConfig()
+    const functionPrefix = envConfig.functionPrefix || this.config.functionPrefix
+    const functionName = this.generateFunctionName('shared', functionPrefix)
+
+    const { exists } = await this.checkFunctionExists(functionName)
+    if (!exists) return null
+
+    const instanceDeps = await this.buildInstanceDeps()
+    return new SandboxInstance(instanceDeps, {
+      functionName,
+      conversationId,
+      envId,
+      status: 'ready',
+      mode: 'shared',
+    })
   }
 
   private async createNewFunction(
@@ -302,7 +331,7 @@ export class ScfSandboxManager {
       }
 
       const instanceDeps = await this.buildInstanceDeps()
-      const mcpConfig = await this.buildSandboxMcpConfig(functionName, conversationId, instanceDeps.sandboxEnvId)
+      const mcpConfig = await this.buildSandboxMcpConfig(functionName, envId, conversationId, instanceDeps.sandboxEnvId)
 
       return new SandboxInstance(instanceDeps, {
         functionName,
@@ -363,8 +392,8 @@ export class ScfSandboxManager {
             SessionSource: 'HEADER',
             SessionName: 'X-Cloudbase-Session-Id',
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 1800,
-            MaximumIdleTimeInSeconds: 1800,
+            MaximumTTLInSeconds: 1200,
+            MaximumIdleTimeInSeconds: 300,
             IdleTimeoutStrategy: 'PAUSE',
           },
         },

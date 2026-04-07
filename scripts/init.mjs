@@ -185,7 +185,33 @@ async function checkPnpm() {
     return true
   }
 
-  log('pnpm 未安装', 'warn')
+  // pnpm --version 失败 — 判断是签名/缓存错误还是真正未安装
+  const errorOutput = result.output || ''
+  const isSignatureError =
+    errorOutput.includes('keyid') ||
+    errorOutput.includes('signature') ||
+    errorOutput.includes('Cannot find matching keyid') ||
+    errorOutput.includes('verifySignature')
+
+  if (isSignatureError) {
+    log('pnpm 存在但 corepack 签名验证失败', 'warn')
+    log('正在尝试修复 corepack 缓存...')
+    try {
+      runCommand('corepack disable && corepack enable')
+      // 验证修复结果
+      const verify = runCommandSafe('pnpm --version')
+      if (verify.success) {
+        log(`pnpm ${verify.output.trim()} 已恢复`, 'success')
+        return true
+      }
+    } catch {
+      // corepack disable/enable 失败，继续走安装流程
+    }
+    // 修复失败，引导用户手动处理或重新安装
+    log('自动修复失败，将尝试重新安装 pnpm', 'warn')
+  } else {
+    log('pnpm 未安装', 'warn')
+  }
 
   const install = await askYesNo('是否立即安装 pnpm？', true)
   if (!install) {
@@ -218,10 +244,10 @@ function checkDocker() {
     log('Docker 守护进程正在运行', 'success')
     return true
   } catch {
-    log('Docker 守护进程未运行或未安装', 'error')
-    log('请启动 Docker 后重试：', 'info')
-    log('  colima start', 'info')
-    log('  # 或打开 Docker Desktop', 'info')
+    log('Docker 未安装或未运行', 'error')
+    log('请先安装并启动 Docker，然后重新运行 ./init.sh：', 'info')
+    log('  brew install colima docker && colima start', 'info')
+    log('  # 或从 https://www.docker.com/products/docker-desktop 下载 Docker Desktop', 'info')
     return false
   }
 }
@@ -243,6 +269,36 @@ function loadEnvFile() {
     })
   }
   return env
+}
+
+function saveServerEnvVar(key, value) {
+  const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
+  const env = {}
+  if (existsSync(serverEnvFile)) {
+    readFileSync(serverEnvFile, 'utf-8').split('\n').forEach((line) => {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [k, ...v] = trimmed.split('=')
+        if (k) env[k.trim()] = v.join('=').trim()
+      }
+    })
+  }
+
+  if (env[key]) {
+    const content = readFileSync(serverEnvFile, 'utf-8')
+    const lines = content.split('\n')
+    const newLines = lines.map((line) => {
+      if (line.trim().startsWith(`${key}=`)) {
+        return `${key}=${value}`
+      }
+      return line
+    })
+    writeFileSync(serverEnvFile, newLines.join('\n'))
+  } else {
+    const newline = Object.keys(env).length > 0 ? '\n' : ''
+    const content = existsSync(serverEnvFile) ? readFileSync(serverEnvFile, 'utf-8') : ''
+    writeFileSync(serverEnvFile, `${content}${newline}${key}=${value}`)
+  }
 }
 
 function saveEnvVar(key, value) {
@@ -397,7 +453,11 @@ async function setupCloudbaseConfig() {
 
       tcbConfig.secretId = secretId
       tcbConfig.secretKey = secretKey
-      log('永久密钥已记录（将写入 packages/server/.env）', 'success')
+
+      // 立即写入文件，避免中断后需要重复输入
+      saveServerEnvVar('TCB_SECRET_ID', secretId)
+      saveServerEnvVar('TCB_SECRET_KEY', secretKey)
+      log('密钥已写入 packages/server/.env', 'success')
 
       // 使用永久密钥登录 cloudbase CLI
       log('正在使用永久密钥登录 cloudbase CLI...')
@@ -428,18 +488,16 @@ async function setupCloudbaseConfig() {
 
   log('正在获取 CloudBase 环境列表...')
   let envList = []
+  let output
   try {
-    const output = execSync('cloudbase env list --json 2>/dev/null', {
+    output = execSync('cloudbase env list --json 2>/dev/null', {
       encoding: 'utf-8',
       stdio: 'pipe',
     })
-    const jsonStart = output.indexOf('{')
-    if (jsonStart !== -1) {
-      const parsed = JSON.parse(output.slice(jsonStart))
-      envList = (parsed.data || []).filter(e => e.status === 'NORMAL')
-    }
-  } catch {
-    log('无法从 cloudbase CLI 获取环境列表', 'warn')
+    const parsed = JSON.parse(output)
+    envList = (parsed.data || []).filter(e => e.status === 'NORMAL')
+  } catch (e) {
+    log(`无法从 cloudbase CLI 获取环境列表: ${e.message || output}`, 'warn')
   }
 
   let selectedEnvId = ''
@@ -837,16 +895,16 @@ TCB_PROVISION_MODE=${get('TCB_PROVISION_MODE', 'shared')}
 # 认证方式: API Key（优先）或 OAuth（企业旗舰版）
 # 设置 CODEBUDDY_API_KEY 后将跳过 OAuth 认证
 ${codebuddyConfig.authMode === 'apikey'
-  ? `CODEBUDDY_API_KEY=${codebuddyConfig.apiKey}`
-  : `# CODEBUDDY_API_KEY=`
-}${codebuddyConfig.internetEnv
-  ? `\nCODEBUDDY_INTERNET_ENVIRONMENT=${codebuddyConfig.internetEnv}`
-  : `\n# CODEBUDDY_INTERNET_ENVIRONMENT=internal   # 国内版填 internal, iOA 填 ioa`
-}
+      ? `CODEBUDDY_API_KEY=${codebuddyConfig.apiKey}`
+      : `# CODEBUDDY_API_KEY=`
+    }${codebuddyConfig.internetEnv
+      ? `\nCODEBUDDY_INTERNET_ENVIRONMENT=${codebuddyConfig.internetEnv}`
+      : `\n# CODEBUDDY_INTERNET_ENVIRONMENT=internal   # 国内版填 internal, iOA 填 ioa`
+    }
 ${codebuddyConfig.authMode === 'oauth'
-  ? `\n# --- OAuth 配置（当前已配置 API Key，OAuth 不生效）---\nCODEBUDDY_CLIENT_ID=${codebuddyConfig.clientId}\nCODEBUDDY_CLIENT_SECRET=${codebuddyConfig.clientSecret}\nCODEBUDDY_OAUTH_ENDPOINT=${codebuddyConfig.oauthEndpoint}`
-  : `\n# --- OAuth 配置（企业旗舰版，API Key 优先时此项不生效）---\n# CODEBUDDY_CLIENT_ID=\n# CODEBUDDY_CLIENT_SECRET=\n# CODEBUDDY_OAUTH_ENDPOINT=https://copilot.tencent.com/oauth2/token`
-}
+      ? `\n# --- OAuth 配置（当前已配置 API Key，OAuth 不生效）---\nCODEBUDDY_CLIENT_ID=${codebuddyConfig.clientId}\nCODEBUDDY_CLIENT_SECRET=${codebuddyConfig.clientSecret}\nCODEBUDDY_OAUTH_ENDPOINT=${codebuddyConfig.oauthEndpoint}`
+      : `\n# --- OAuth 配置（企业旗舰版，API Key 优先时此项不生效）---\n# CODEBUDDY_CLIENT_ID=\n# CODEBUDDY_CLIENT_SECRET=\n# CODEBUDDY_OAUTH_ENDPOINT=https://copilot.tencent.com/oauth2/token`
+    }
 
 GIT_ARCHIVE_REPO=${getPreserved('GIT_ARCHIVE_REPO')}
 GIT_ARCHIVE_USER=${getPreserved('GIT_ARCHIVE_USER')}
@@ -947,37 +1005,37 @@ async function main() {
     process.exit(1)
   }
 
-  // Step 6: Setup TCR
+  // Step 6: Setup Server Environment
+  if (!(await setupServerEnv())) {
+    process.exit(1)
+  }
+
+  // Step 7: Install dependencies (setup-tcr.mjs needs tencentcloud-sdk-nodejs)
+  if (!(await installDependencies())) {
+    process.exit(1)
+  }
+
+  // Step 8: CodeBuddy auth configuration
+  await setupCodebuddy()
+
+  // Step 9: Setup TCR (requires node_modules)
   logSection('TCR 配置')
   if (!(await setupTcr())) {
     process.exit(1)
   }
 
-  // Step 7: CodeBuddy auth configuration
-  await setupCodebuddy()
-
-  // Step 8: Setup Server Environment
-  if (!(await setupServerEnv())) {
-    process.exit(1)
-  }
-
-  // Step 9: Install dependencies
-  if (!(await installDependencies())) {
-    process.exit(1)
-  }
-
-  // Step 8: Initialize database
+  // Step 10: Initialize database
   logSection('初始化数据库')
   const serverEnvPath = resolve(process.cwd(), 'packages/server/.env')
   const serverEnvVars = existsSync(serverEnvPath)
     ? readFileSync(serverEnvPath, 'utf-8').split('\n').reduce((acc, line) => {
-        const trimmed = line.trim()
-        if (trimmed && !trimmed.startsWith('#')) {
-          const [key, ...rest] = trimmed.split('=')
-          if (key) acc[key.trim()] = rest.join('=').trim()
-        }
-        return acc
-      }, {})
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...rest] = trimmed.split('=')
+        if (key) acc[key.trim()] = rest.join('=').trim()
+      }
+      return acc
+    }, {})
     : {}
 
   const dbProvider = serverEnvVars['DB_PROVIDER'] || 'cloudbase'

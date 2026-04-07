@@ -1,5 +1,4 @@
 import type { DatabaseProvider } from './types'
-import { createDrizzleProvider } from './drizzle/repositories'
 import { createCloudBaseProvider } from './cloudbase/repositories'
 
 export type { DatabaseProvider } from './types'
@@ -17,6 +16,10 @@ export function getDb(): DatabaseProvider {
   const backend = process.env.DB_PROVIDER || 'cloudbase'
 
   if (backend === 'drizzle') {
+    // Dynamic import to avoid loading better-sqlite3 in cloudbase mode
+    const { createDrizzleProvider } = require('./drizzle/repositories') as {
+      createDrizzleProvider: () => DatabaseProvider
+    }
     _provider = createDrizzleProvider()
   } else {
     _provider = createCloudBaseProvider()

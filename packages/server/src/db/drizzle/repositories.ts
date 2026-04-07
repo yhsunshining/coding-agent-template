@@ -81,6 +81,10 @@ class DrizzleUserRepository implements UserRepository {
       .where(eq(users.id, id))
     return this.findById(id)
   }
+
+  async deleteById(id: string): Promise<void> {
+    await drizzleDb.delete(users).where(eq(users.id, id))
+  }
 }
 
 // ─── LocalCredential Repository ─────────────────────────────────────────────
@@ -129,6 +133,22 @@ class DrizzleTaskRepository implements TaskRepository {
     return rows as unknown as Task[]
   }
 
+  async findByRepoAndPr(userId: string, prNumber: number, repoUrl: string): Promise<Task[]> {
+    const rows = await drizzleDb
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.prNumber, prNumber),
+          eq(tasks.repoUrl, repoUrl),
+          isNull(tasks.deletedAt),
+        ),
+      )
+      .limit(1)
+    return rows as unknown as Task[]
+  }
+
   async create(task: NewTask): Promise<Task> {
     const ts = now()
     const values = {
@@ -147,6 +167,10 @@ class DrizzleTaskRepository implements TaskRepository {
       .set({ ...data, updatedAt: data.updatedAt ?? now() })
       .where(eq(tasks.id, id))
     return this.findById(id)
+  }
+
+  async updateUserId(fromUserId: string, toUserId: string): Promise<void> {
+    await drizzleDb.update(tasks).set({ userId: toUserId }).where(eq(tasks.userId, fromUserId))
   }
 
   async softDelete(id: string): Promise<void> {
@@ -190,6 +214,10 @@ class DrizzleConnectorRepository implements ConnectorRepository {
     return this.findByIdAndUserId(id, userId)
   }
 
+  async updateUserId(fromUserId: string, toUserId: string): Promise<void> {
+    await drizzleDb.update(connectors).set({ userId: toUserId }).where(eq(connectors.userId, fromUserId))
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     await drizzleDb.delete(connectors).where(and(eq(connectors.id, id), eq(connectors.userId, userId)))
   }
@@ -203,6 +231,15 @@ class DrizzleAccountRepository implements AccountRepository {
       .select()
       .from(accounts)
       .where(and(eq(accounts.userId, userId), eq(accounts.provider, provider)))
+      .limit(1)
+    return (row as Account) ?? null
+  }
+
+  async findByProviderAndExternalUserId(provider: string, externalUserId: string): Promise<Account | null> {
+    const [row] = await drizzleDb
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.provider, provider), eq(accounts.externalUserId, externalUserId)))
       .limit(1)
     return (row as Account) ?? null
   }
@@ -225,6 +262,10 @@ class DrizzleAccountRepository implements AccountRepository {
       .where(eq(accounts.id, id))
     const [row] = await drizzleDb.select().from(accounts).where(eq(accounts.id, id)).limit(1)
     return (row as Account) ?? null
+  }
+
+  async updateUserId(fromUserId: string, toUserId: string): Promise<void> {
+    await drizzleDb.update(accounts).set({ userId: toUserId }).where(eq(accounts.userId, fromUserId))
   }
 
   async delete(userId: string, provider: string): Promise<void> {
@@ -267,6 +308,10 @@ class DrizzleKeyRepository implements KeyRepository {
     }
     await drizzleDb.insert(keys).values(values)
     return values as Key
+  }
+
+  async updateUserId(fromUserId: string, toUserId: string): Promise<void> {
+    await drizzleDb.update(keys).set({ userId: toUserId }).where(eq(keys.userId, fromUserId))
   }
 
   async delete(userId: string, provider: string): Promise<void> {
@@ -365,6 +410,16 @@ class DrizzleDeploymentRepository implements DeploymentRepository {
       .where(and(...conditions))
       .limit(1)
     return (row as Deployment) ?? null
+  }
+
+  async findByTaskIdAndUserId(taskId: string, userId: string): Promise<Deployment | null> {
+    const [row] = await drizzleDb
+      .select()
+      .from(deployments)
+      .innerJoin(tasks, eq(deployments.taskId, tasks.id))
+      .where(and(eq(deployments.taskId, taskId), eq(tasks.userId, userId), isNull(deployments.deletedAt)))
+      .limit(1)
+    return row ? (row.deployments as Deployment) : null
   }
 
   async create(deployment: NewDeployment): Promise<Deployment> {

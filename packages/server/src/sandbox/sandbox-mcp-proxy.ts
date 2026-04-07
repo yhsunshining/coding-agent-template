@@ -19,8 +19,10 @@ import { z } from 'zod'
 export interface SandboxMcpDeps {
   /** 沙箱 CloudBase Gateway 基础 URL */
   baseUrl: string
-  /** 会话 ID（X-Cloudbase-Session-Id） */
-  sessionId: string
+  /** SCF session ID (envId) for X-Cloudbase-Session-Id header */
+  scfSessionId: string
+  /** Conversation ID for per-conversation isolation in shared container */
+  conversationId: string
   /** 获取最新网关 access token（带缓存，调每次都是最新） */
   getAccessToken: () => Promise<string>
   /** 获取最新 TencentCloud 密钥（用于注入容器 env） */
@@ -132,7 +134,8 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
 }> {
   const {
     baseUrl,
-    sessionId,
+    scfSessionId,
+    conversationId,
     getAccessToken,
     getCredentials,
     bashTimeoutMs = 30_000,
@@ -147,7 +150,8 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
     const token = await getAccessToken()
     return {
       'Content-Type': 'application/json',
-      ...SandboxInstance.buildAuthHeaders(token, sessionId),
+      ...SandboxInstance.buildAuthHeaders(token, scfSessionId),
+      'X-Conversation-Id': conversationId,
     }
   }
 
@@ -178,6 +182,7 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
       method: 'PUT',
       headers,
       body: JSON.stringify({
+        conversationId,
         CLOUDBASE_ENV_ID: creds.cloudbaseEnvId,
         TENCENTCLOUD_SECRETID: creds.secretId,
         TENCENTCLOUD_SECRETKEY: creds.secretKey,
@@ -431,7 +436,9 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
     tools: sdkTools,
   })
 
-  log(`[sandbox-mcp] Ready. baseUrl=${baseUrl} session=${sessionId} tools=${cloudbaseTools.length}\n`)
+  log(
+    `[sandbox-mcp] Ready. baseUrl=${baseUrl} session=${scfSessionId} conversation=${conversationId} tools=${cloudbaseTools.length}\n`,
+  )
 
   return {
     client,

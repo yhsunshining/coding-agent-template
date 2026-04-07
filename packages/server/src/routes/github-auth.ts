@@ -1,9 +1,6 @@
 import { Hono } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { getDb } from '../db/index.js'
-import { drizzleDb as db } from '../db/drizzle/client.js'
-import { tasks, connectors, accounts, keys, users } from '../db/schema'
-import { eq } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { encryptJWE } from '../lib/session'
 import { encrypt } from '../lib/crypto'
@@ -250,25 +247,18 @@ githubAuth.get('/callback', async (c) => {
       const encryptedToken = encrypt(tokenData.access_token)
 
       const existingAccount = await getDb().accounts.findByUserIdAndProvider(storedUserId!, 'github')
-      // Also check if another user has this GitHub account connected
-      // We need to search by externalUserId - use direct db for this specific query
-      const [accountByExternal] = await db
-        .select()
-        .from(accounts)
-        .where(eq(accounts.externalUserId, `${githubUser.id}`))
-        .limit(1)
+      const accountByExternal = await getDb().accounts.findByProviderAndExternalUserId('github', `${githubUser.id}`)
 
       if (accountByExternal) {
         const connectedUserId = accountByExternal.userId
 
         if (connectedUserId !== storedUserId) {
           // Merge accounts: transfer everything from old user to new user
-          // These bulk-update-by-userId operations don't map to repository methods
-          await db.update(tasks).set({ userId: storedUserId! }).where(eq(tasks.userId, connectedUserId))
-          await db.update(connectors).set({ userId: storedUserId! }).where(eq(connectors.userId, connectedUserId))
-          await db.update(accounts).set({ userId: storedUserId! }).where(eq(accounts.userId, connectedUserId))
-          await db.update(keys).set({ userId: storedUserId! }).where(eq(keys.userId, connectedUserId))
-          await db.delete(users).where(eq(users.id, connectedUserId))
+          await getDb().tasks.updateUserId(connectedUserId, storedUserId!)
+          await getDb().connectors.updateUserId(connectedUserId, storedUserId!)
+          await getDb().accounts.updateUserId(connectedUserId, storedUserId!)
+          await getDb().keys.updateUserId(connectedUserId, storedUserId!)
+          await getDb().users.deleteById(connectedUserId)
 
           await getDb().accounts.update(accountByExternal.id, {
             userId: storedUserId!,
