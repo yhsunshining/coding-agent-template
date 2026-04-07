@@ -118,7 +118,7 @@ export class ScfSandboxManager {
     maxCacheSize: 50,
     functionPrefix: 'sandbox',
     runtime: 'Nodejs16.13',
-    memory: 3072,
+    memory: 2048,
     timeout: 900,
   }
 
@@ -363,7 +363,7 @@ export class ScfSandboxManager {
             SessionSource: 'HEADER',
             SessionName: 'X-Cloudbase-Session-Id',
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 21600,
+            MaximumTTLInSeconds: 1800,
             MaximumIdleTimeInSeconds: 1800,
             IdleTimeoutStrategy: 'PAUSE',
           },
