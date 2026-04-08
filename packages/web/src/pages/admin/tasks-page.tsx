@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router'
 import { api } from '../../lib/api'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
@@ -37,6 +38,7 @@ function formatTimeAgo(ts: number) {
 }
 
 export function AdminTasksPage() {
+  const navigate = useNavigate()
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
@@ -113,7 +115,11 @@ export function AdminTasksPage() {
               {tasks.map((task) => {
                 const meta = statusLabels[task.status] || { label: task.status, variant: 'outline' as const }
                 return (
-                  <TableRow key={task.id}>
+                  <TableRow
+                    key={task.id}
+                    className="cursor-pointer hover:bg-accent/50"
+                    onClick={() => navigate(`/admin/tasks/${task.id}`)}
+                  >
                     <TableCell>
                       <div className="min-w-0">
                         <div className="text-sm truncate">{task.title || task.id.slice(0, 8)}</div>

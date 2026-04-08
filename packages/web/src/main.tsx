@@ -7,6 +7,7 @@ import { HomePage } from './pages/HomePage'
 import { TaskPage } from './pages/TaskPage'
 import { TasksListPage } from './pages/TasksListPage'
 import { LoginPage } from './pages/LoginPage'
+import { MiniProgramPage } from './pages/miniprogram-page'
 import { RequireAdmin } from './components/require-admin'
 import { AdminLayout } from './components/admin/admin-layout'
 import { AdminUsersPage } from './pages/admin/users-page'
@@ -14,6 +15,7 @@ import { AdminEnvironmentsPage } from './pages/admin/environments-page'
 import { AdminTasksPage } from './pages/admin/tasks-page'
 import { AdminLogsPage } from './pages/admin/logs-page'
 import { AdminEnvDashboardPage } from './pages/admin/env-dashboard-page'
+import { AdminTaskDetailPage } from './pages/admin/task-detail-page'
 import { sessionAtom, sessionLoadedAtom } from './lib/atoms/session'
 import { api } from './lib/api'
 import { Loader2 } from 'lucide-react'
@@ -149,6 +151,7 @@ function App() {
             <Route path="tasks" element={<AdminTasksPage />} />
             <Route path="logs" element={<AdminLogsPage />} />
             <Route path="dashboard/:userId" element={<AdminEnvDashboardPage />} />
+            <Route path="tasks/:taskId" element={<AdminTaskDetailPage />} />
           </Route>
 
           {/* Regular routes */}
@@ -176,6 +179,16 @@ function App() {
               <RequireAuth>
                 <AppLayout>
                   <TaskPage />
+                </AppLayout>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/miniprogram"
+            element={
+              <RequireAuth>
+                <AppLayout>
+                  <MiniProgramPage />
                 </AppLayout>
               </RequireAuth>
             }

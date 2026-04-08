@@ -501,9 +501,14 @@ admin.get('/tasks', async (c) => {
       userId: t.userId,
       username: userMap.get(t.userId) || t.userId,
       title: t.title,
+      prompt: t.prompt,
       status: t.status,
       selectedAgent: t.selectedAgent,
       repoUrl: t.repoUrl,
+      branchName: t.branchName,
+      sandboxUrl: t.sandboxUrl,
+      previewUrl: t.previewUrl,
+      error: t.error,
       createdAt: t.createdAt,
       completedAt: t.completedAt,
     })),
@@ -512,6 +517,46 @@ admin.get('/tasks', async (c) => {
       limit,
       total,
       totalPages: Math.ceil(total / limit),
+    },
+  })
+})
+
+// Get single task details (admin, read-only)
+admin.get('/tasks/:taskId', async (c) => {
+  const taskId = c.req.param('taskId')
+  const db = getDb()
+
+  const task = await db.tasks.findById(taskId)
+  if (!task || task.deletedAt) {
+    return c.json({ error: 'Task not found' }, 404)
+  }
+
+  const user = await db.users.findById(task.userId)
+
+  return c.json({
+    task: {
+      id: task.id,
+      userId: task.userId,
+      username: user?.username || task.userId,
+      title: task.title,
+      prompt: task.prompt,
+      status: task.status,
+      progress: task.progress,
+      selectedAgent: task.selectedAgent,
+      selectedModel: task.selectedModel,
+      repoUrl: task.repoUrl,
+      branchName: task.branchName,
+      sandboxId: task.sandboxId,
+      sandboxUrl: task.sandboxUrl,
+      previewUrl: task.previewUrl,
+      prUrl: task.prUrl,
+      prNumber: task.prNumber,
+      prStatus: task.prStatus,
+      error: task.error,
+      logs: task.logs,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      completedAt: task.completedAt,
     },
   })
 })
