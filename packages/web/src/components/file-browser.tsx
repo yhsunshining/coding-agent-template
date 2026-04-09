@@ -72,6 +72,7 @@ interface FileBrowserProps {
   taskId: string
   branchName?: string | null
   repoUrl?: string | null
+  sandboxId?: string | null
   onFileSelect?: (filename: string, isFolder?: boolean) => void
   onFilesLoaded?: (filenames: string[]) => void
   selectedFile?: string
@@ -85,14 +86,19 @@ export function FileBrowser({
   taskId,
   branchName,
   repoUrl,
+  sandboxId,
   onFileSelect,
   onFilesLoaded,
   selectedFile,
   refreshKey,
-  viewMode = 'remote',
+  viewMode: viewModeProp = 'remote',
   onViewModeChange,
   hideHeader = false,
 }: FileBrowserProps) {
+  // When no branch but sandbox exists, force local-only mode
+  const hasBranch = !!(branchName && branchName.trim().length > 0)
+  const sandboxOnly = !hasBranch && !!sandboxId
+  const viewMode = sandboxOnly ? 'all-local' : viewModeProp
   // Use Jotai atom for state management
   const taskStateAtom = useMemo(() => getTaskFileBrowserState(taskId), [taskId])
   const [state, setState] = useAtom(taskStateAtom)
@@ -206,7 +212,7 @@ export function FileBrowser({
   }, [])
 
   const fetchBranchFiles = useCallback(async () => {
-    if (!branchName) return
+    if (!hasBranch && !sandboxId) return
 
     const isInitialLoad = files.length === 0 && !fetchAttempted
 
@@ -294,7 +300,7 @@ export function FileBrowser({
   ])
 
   const handleSyncChanges = useCallback(async () => {
-    if (isSyncing || !branchName) return
+    if (isSyncing || (!hasBranch && !sandboxId)) return
 
     setIsSyncing(true)
     setShowSyncDialog(false)
@@ -342,7 +348,7 @@ export function FileBrowser({
   }, [isSyncing, branchName, taskId, syncCommitMessage, viewMode, currentViewData, setState])
 
   const handleResetChanges = useCallback(async () => {
-    if (isResetting || !branchName) return
+    if (isResetting || (!hasBranch && !sandboxId)) return
 
     setIsResetting(true)
     setShowCommitMessageDialog(false)
@@ -579,18 +585,18 @@ export function FileBrowser({
   )
 
   useEffect(() => {
-    if (branchName && files.length === 0 && !loading && !fetchAttempted) {
+    if ((hasBranch || sandboxId) && files.length === 0 && !loading && !fetchAttempted) {
       fetchBranchFiles()
     }
-  }, [branchName, files.length, loading, fetchAttempted, fetchBranchFiles])
+  }, [hasBranch, sandboxId, files.length, loading, fetchAttempted, fetchBranchFiles])
 
   useEffect(() => {
-    if (branchName && refreshKey !== undefined && refreshKey > 0) {
+    if ((hasBranch || sandboxId) && refreshKey !== undefined && refreshKey > 0) {
       setState({ [viewMode]: { ...currentViewData, fetchAttempted: false } })
       fetchBranchFiles()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey, branchName])
+  }, [refreshKey, hasBranch, sandboxId])
 
   const toggleFolder = (path: string) => {
     const newExpanded = new Set(expandedFolders)
@@ -1083,7 +1089,7 @@ export function FileBrowser({
     })
   }
 
-  if (!branchName) {
+  if (!hasBranch && !sandboxId) {
     return (
       <div className="flex flex-col h-full">
         <div className="p-3 md:p-4 border-b">
@@ -1099,10 +1105,9 @@ export function FileBrowser({
               </div>
             </div>
             <div className="space-y-2">
-              <h4 className="text-sm md:text-base font-medium">Branch Not Created Yet</h4>
+              <h4 className="text-sm md:text-base font-medium">Sandbox Not Ready</h4>
               <p className="text-xs md:text-sm text-muted-foreground max-w-xs px-2 md:px-0">
-                The coding agent is still working on this task. File changes will appear here once the agent creates a
-                branch.
+                The coding agent is still working on this task. File changes will appear here once the sandbox is ready.
               </p>
             </div>
             <div className="text-xs text-muted-foreground">Check the logs for progress updates</div>

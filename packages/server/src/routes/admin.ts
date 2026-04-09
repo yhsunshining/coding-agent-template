@@ -3,6 +3,7 @@ import { getDb } from '../db/index.js'
 import { requireAdmin, type AppEnv } from '../middleware/admin'
 import { issueTempCredentials } from '../middleware/auth.js'
 import { provisionUserResources } from '../cloudbase/provision.js'
+import { persistenceService } from '../agent/persistence.service.js'
 import { nanoid } from 'nanoid'
 import bcrypt from 'bcryptjs'
 import type { CloudBaseCredentials } from '../cloudbase/database.js'
@@ -544,21 +545,90 @@ admin.get('/tasks/:taskId', async (c) => {
       progress: task.progress,
       selectedAgent: task.selectedAgent,
       selectedModel: task.selectedModel,
+      installDependencies: task.installDependencies,
+      maxDuration: task.maxDuration,
+      keepAlive: task.keepAlive,
+      enableBrowser: task.enableBrowser,
       repoUrl: task.repoUrl,
       branchName: task.branchName,
       sandboxId: task.sandboxId,
+      agentSessionId: task.agentSessionId,
       sandboxUrl: task.sandboxUrl,
       previewUrl: task.previewUrl,
       prUrl: task.prUrl,
       prNumber: task.prNumber,
       prStatus: task.prStatus,
+      prMergeCommitSha: task.prMergeCommitSha,
+      mcpServerIds: task.mcpServerIds,
       error: task.error,
       logs: task.logs,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
       completedAt: task.completedAt,
+      deletedAt: task.deletedAt,
     },
   })
+})
+
+// Get task messages (admin, read-only) — mirrors /tasks/:taskId/messages but uses system credentials
+admin.get('/tasks/:taskId/messages', async (c) => {
+  const taskId = c.req.param('taskId')
+  const db = getDb()
+
+  const task = await db.tasks.findById(taskId)
+  if (!task || task.deletedAt) {
+    return c.json({ error: 'Task not found' }, 404)
+  }
+
+  // Look up user's envId from userResources
+  const userResources = await db.userResources.findByUserId(task.userId)
+  if (!userResources?.envId) {
+    return c.json({ messages: [] })
+  }
+
+  try {
+    const cloudbaseRecords = await persistenceService.loadDBMessages(taskId, userResources.envId, task.userId, 200)
+    const messages = cloudbaseRecords.map((record) => {
+      const parts = (record.parts || []).map((p) => {
+        if (p.contentType === 'text') return { type: 'text' as const, text: p.content || '' }
+        else if (p.contentType === 'reasoning') return { type: 'thinking' as const, text: p.content || '' }
+        else if (p.contentType === 'tool_call')
+          return {
+            type: 'tool_call' as const,
+            toolCallId: p.toolCallId || p.partId,
+            toolName: (p.metadata?.toolCallName as string) || (p.metadata?.toolName as string) || 'tool',
+            input: p.content || p.metadata?.input,
+            status: (p.metadata?.status as string) || undefined,
+          }
+        else if (p.contentType === 'tool_result')
+          return {
+            type: 'tool_result' as const,
+            toolCallId: p.toolCallId || p.partId,
+            toolName: (p.metadata?.toolName as string) || undefined,
+            content: p.content || '',
+            isError: p.metadata?.isError as boolean | undefined,
+            status: (p.metadata?.status as string) || undefined,
+          }
+        return { type: 'text' as const, text: p.content || '' }
+      })
+      const textContent = parts
+        .filter((p) => p.type === 'text')
+        .map((p) => (p as { type: 'text'; text: string }).text)
+        .join('')
+      return {
+        id: record.recordId,
+        taskId,
+        role: record.role === 'user' ? 'user' : 'agent',
+        content: textContent,
+        parts,
+        status: record.status,
+        createdAt: record.createTime || Date.now(),
+      }
+    })
+    return c.json({ messages })
+  } catch {
+    return c.json({ messages: [] })
+  }
 })
 
 // ─── Operation Logs ─────────────────────────────────────────────────────

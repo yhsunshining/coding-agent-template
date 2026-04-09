@@ -65,6 +65,10 @@ export interface TaskChatProps {
   initialPrompt?: string
   /** 初始 prompt 已被消费后回调，父组件应清除 initialPrompt 防止 remount 时重复触发 */
   onInitialPromptConsumed?: () => void
+  /** 只读模式：隐藏输入框、禁止流式交互，仅展示消息 */
+  readOnly?: boolean
+  /** 消息 API 基础路径，默认 ''。管理员查看时设为 '/api/admin' */
+  messagesApiBase?: string
 }
 
 // ─── Tab Data Types ───────────────────────────────────────────────────

@@ -23,17 +23,19 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var schema_exports = {};
 __export(schema_exports, {
   accounts: () => accounts,
+  adminLogs: () => adminLogs,
   connectors: () => connectors,
   deployments: () => deployments,
   keys: () => keys,
   localCredentials: () => localCredentials,
+  miniprogramApps: () => miniprogramApps,
   settings: () => settings,
   tasks: () => tasks,
   userResources: () => userResources,
   users: () => users
 });
 import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
-var now2, users, localCredentials, tasks, connectors, accounts, keys, userResources, settings, deployments;
+var now2, users, localCredentials, tasks, connectors, miniprogramApps, accounts, keys, userResources, settings, deployments, adminLogs;
 var init_schema = __esm({
   "src/db/schema.ts"() {
     "use strict";
@@ -52,6 +54,15 @@ var init_schema = __esm({
         email: text("email"),
         name: text("name"),
         avatarUrl: text("avatar_url"),
+        // Role and status fields for admin system
+        role: text("role").notNull().default("user"),
+        // 'user' | 'admin'
+        status: text("status").notNull().default("active"),
+        // 'active' | 'disabled'
+        disabledReason: text("disabled_reason"),
+        disabledAt: integer("disabled_at"),
+        disabledBy: text("disabled_by"),
+        // Admin user ID who disabled this user
         createdAt: integer("created_at").notNull().$defaultFn(now2),
         updatedAt: integer("updated_at").notNull().$defaultFn(now2),
         lastLoginAt: integer("last_login_at").notNull().$defaultFn(now2)
@@ -113,6 +124,17 @@ var init_schema = __esm({
       env: text("env"),
       status: text("status").notNull().default("disconnected"),
       // 'connected' | 'disconnected'
+      createdAt: integer("created_at").notNull().$defaultFn(now2),
+      updatedAt: integer("updated_at").notNull().$defaultFn(now2)
+    });
+    miniprogramApps = sqliteTable("miniprogram_apps", {
+      id: text("id").primaryKey(),
+      userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+      name: text("name").notNull(),
+      appId: text("app_id").notNull(),
+      privateKey: text("private_key").notNull(),
+      // stored encrypted via lib/crypto
+      description: text("description"),
       createdAt: integer("created_at").notNull().$defaultFn(now2),
       updatedAt: integer("updated_at").notNull().$defaultFn(now2)
     });
@@ -209,6 +231,27 @@ var init_schema = __esm({
         taskTypePathIdx: index("deployments_task_type_path_idx").on(table.taskId, table.type, table.path)
       })
     );
+    adminLogs = sqliteTable(
+      "admin_logs",
+      {
+        id: text("id").primaryKey(),
+        adminUserId: text("admin_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+        action: text("action").notNull(),
+        // 'user_disable' | 'user_enable' | 'user_role_change' | 'password_reset' | ...
+        targetUserId: text("target_user_id").references(() => users.id, { onDelete: "set null" }),
+        details: text("details"),
+        // JSON string
+        ipAddress: text("ip_address"),
+        userAgent: text("user_agent"),
+        createdAt: integer("created_at").notNull().$defaultFn(now2)
+      },
+      (table) => ({
+        adminUserIdIdx: index("admin_logs_admin_user_id_idx").on(table.adminUserId),
+        targetUserIdIdx: index("admin_logs_target_user_id_idx").on(table.targetUserId),
+        actionIdx: index("admin_logs_action_idx").on(table.action),
+        createdAtIdx: index("admin_logs_created_at_idx").on(table.createdAt)
+      })
+    );
   }
 });
 
@@ -236,7 +279,7 @@ var repositories_exports = {};
 __export(repositories_exports, {
   createDrizzleProvider: () => createDrizzleProvider
 });
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { eq, and, isNull, desc, sql } from "drizzle-orm";
 import { nanoid as nanoid2 } from "nanoid";
 function createDrizzleProvider() {
   return {
@@ -244,14 +287,16 @@ function createDrizzleProvider() {
     localCredentials: new DrizzleLocalCredentialRepository(),
     tasks: new DrizzleTaskRepository(),
     connectors: new DrizzleConnectorRepository(),
+    miniprogramApps: new DrizzleMiniProgramAppRepository(),
     accounts: new DrizzleAccountRepository(),
     keys: new DrizzleKeyRepository(),
     userResources: new DrizzleUserResourceRepository(),
     settings: new DrizzleSettingRepository(),
-    deployments: new DrizzleDeploymentRepository()
+    deployments: new DrizzleDeploymentRepository(),
+    adminLogs: new DrizzleAdminLogRepository()
   };
 }
-var now3, DrizzleUserRepository, DrizzleLocalCredentialRepository, DrizzleTaskRepository, DrizzleConnectorRepository, DrizzleAccountRepository, DrizzleKeyRepository, DrizzleUserResourceRepository, DrizzleSettingRepository, DrizzleDeploymentRepository;
+var now3, DrizzleUserRepository, DrizzleLocalCredentialRepository, DrizzleTaskRepository, DrizzleConnectorRepository, DrizzleMiniProgramAppRepository, DrizzleAccountRepository, DrizzleKeyRepository, DrizzleUserResourceRepository, DrizzleSettingRepository, DrizzleDeploymentRepository, DrizzleAdminLogRepository;
 var init_repositories = __esm({
   "src/db/drizzle/repositories.ts"() {
     "use strict";
@@ -285,6 +330,39 @@ var init_repositories = __esm({
       async deleteById(id) {
         await drizzleDb.delete(users).where(eq(users.id, id));
       }
+      // Admin methods
+      async findAll(limit = 20, offset = 0) {
+        const rows = await drizzleDb.select().from(users).limit(limit).offset(offset).orderBy(desc(users.createdAt));
+        return rows;
+      }
+      async count() {
+        const [result] = await drizzleDb.select({ count: users.id }).from(users);
+        return result ? 1 : 0;
+      }
+      async updateRole(id, role) {
+        await drizzleDb.update(users).set({ role, updatedAt: now3() }).where(eq(users.id, id));
+        return this.findById(id);
+      }
+      async disable(id, reason, adminUserId) {
+        await drizzleDb.update(users).set({
+          status: "disabled",
+          disabledReason: reason,
+          disabledAt: now3(),
+          disabledBy: adminUserId,
+          updatedAt: now3()
+        }).where(eq(users.id, id));
+        return this.findById(id);
+      }
+      async enable(id) {
+        await drizzleDb.update(users).set({
+          status: "active",
+          disabledReason: null,
+          disabledAt: null,
+          disabledBy: null,
+          updatedAt: now3()
+        }).where(eq(users.id, id));
+        return this.findById(id);
+      }
     };
     DrizzleLocalCredentialRepository = class {
       async findByUserId(userId) {
@@ -300,6 +378,10 @@ var init_repositories = __esm({
         };
         await drizzleDb.insert(localCredentials).values(values);
         return values;
+      }
+      async update(userId, data) {
+        await drizzleDb.update(localCredentials).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(eq(localCredentials.userId, userId));
+        return this.findByUserId(userId);
       }
     };
     DrizzleTaskRepository = class {
@@ -325,6 +407,20 @@ var init_repositories = __esm({
           )
         ).limit(1);
         return rows;
+      }
+      async findAll(limit, offset, filters) {
+        const conditions = [isNull(tasks.deletedAt)];
+        if (filters?.userId) conditions.push(eq(tasks.userId, filters.userId));
+        if (filters?.status) conditions.push(eq(tasks.status, filters.status));
+        const rows = await drizzleDb.select().from(tasks).where(and(...conditions)).orderBy(desc(tasks.createdAt)).limit(limit).offset(offset);
+        return rows;
+      }
+      async count(filters) {
+        const conditions = [isNull(tasks.deletedAt)];
+        if (filters?.userId) conditions.push(eq(tasks.userId, filters.userId));
+        if (filters?.status) conditions.push(eq(tasks.status, filters.status));
+        const rows = await drizzleDb.select({ count: sql`count(*)` }).from(tasks).where(and(...conditions));
+        return Number(rows[0]?.count ?? 0);
       }
       async create(task) {
         const ts = now3();
@@ -376,6 +472,40 @@ var init_repositories = __esm({
       }
       async delete(id, userId) {
         await drizzleDb.delete(connectors).where(and(eq(connectors.id, id), eq(connectors.userId, userId)));
+      }
+    };
+    DrizzleMiniProgramAppRepository = class {
+      async findByUserId(userId) {
+        const rows = await drizzleDb.select().from(miniprogramApps).where(eq(miniprogramApps.userId, userId));
+        return rows;
+      }
+      async findByIdAndUserId(id, userId) {
+        const [row] = await drizzleDb.select().from(miniprogramApps).where(and(eq(miniprogramApps.id, id), eq(miniprogramApps.userId, userId))).limit(1);
+        return row ?? null;
+      }
+      async findByAppIdAndUserId(appId, userId) {
+        const [row] = await drizzleDb.select().from(miniprogramApps).where(and(eq(miniprogramApps.appId, appId), eq(miniprogramApps.userId, userId))).limit(1);
+        return row ?? null;
+      }
+      async create(app8) {
+        const ts = now3();
+        const values = {
+          ...app8,
+          createdAt: app8.createdAt ?? ts,
+          updatedAt: app8.updatedAt ?? ts
+        };
+        await drizzleDb.insert(miniprogramApps).values(values);
+        return values;
+      }
+      async update(id, userId, data) {
+        await drizzleDb.update(miniprogramApps).set({ ...data, updatedAt: data.updatedAt ?? now3() }).where(and(eq(miniprogramApps.id, id), eq(miniprogramApps.userId, userId)));
+        return this.findByIdAndUserId(id, userId);
+      }
+      async updateUserId(fromUserId, toUserId) {
+        await drizzleDb.update(miniprogramApps).set({ userId: toUserId }).where(eq(miniprogramApps.userId, fromUserId));
+      }
+      async delete(id, userId) {
+        await drizzleDb.delete(miniprogramApps).where(and(eq(miniprogramApps.id, id), eq(miniprogramApps.userId, userId)));
       }
     };
     DrizzleAccountRepository = class {
@@ -526,12 +656,35 @@ var init_repositories = __esm({
         await drizzleDb.update(deployments).set({ deletedAt: now3() }).where(eq(deployments.id, id));
       }
     };
+    DrizzleAdminLogRepository = class {
+      async create(log) {
+        const ts = now3();
+        const values = {
+          ...log,
+          createdAt: log.createdAt ?? ts
+        };
+        await drizzleDb.insert(adminLogs).values(values);
+        return values;
+      }
+      async findByAdminUserId(adminUserId, limit = 50) {
+        const rows = await drizzleDb.select().from(adminLogs).where(eq(adminLogs.adminUserId, adminUserId)).limit(limit).orderBy(desc(adminLogs.createdAt));
+        return rows;
+      }
+      async findByTargetUserId(targetUserId, limit = 50) {
+        const rows = await drizzleDb.select().from(adminLogs).where(eq(adminLogs.targetUserId, targetUserId)).limit(limit).orderBy(desc(adminLogs.createdAt));
+        return rows;
+      }
+      async findAll(limit = 50, offset = 0) {
+        const rows = await drizzleDb.select().from(adminLogs).limit(limit).offset(offset).orderBy(desc(adminLogs.createdAt));
+        return rows;
+      }
+    };
   }
 });
 
 // src/index.ts
 import { serve } from "@hono/node-server";
-import { Hono as Hono15 } from "hono";
+import { Hono as Hono17 } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync as existsSync2 } from "fs";
@@ -659,6 +812,47 @@ var CloudBaseUserRepository = class {
     const collection = await getCollection("users");
     await collection.where({ id: _.eq(id) }).remove();
   }
+  // Admin methods
+  async findAll(limit = 20, offset = 0) {
+    const collection = await getCollection("users");
+    const { data } = await collection.limit(limit).skip(offset).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async count() {
+    const collection = await getCollection("users");
+    const { total } = await collection.count();
+    return total;
+  }
+  async updateRole(id, role) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    await collection.where({ id: _.eq(id) }).update({ role, updatedAt: now() });
+    return this.findById(id);
+  }
+  async disable(id, reason, adminUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    await collection.where({ id: _.eq(id) }).update({
+      status: "disabled",
+      disabledReason: reason,
+      disabledAt: now(),
+      disabledBy: adminUserId,
+      updatedAt: now()
+    });
+    return this.findById(id);
+  }
+  async enable(id) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    await collection.where({ id: _.eq(id) }).update({
+      status: "active",
+      disabledReason: null,
+      disabledAt: null,
+      disabledBy: null,
+      updatedAt: now()
+    });
+    return this.findById(id);
+  }
 };
 var CloudBaseLocalCredentialRepository = class {
   async findByUserId(userId) {
@@ -678,6 +872,12 @@ var CloudBaseLocalCredentialRepository = class {
     };
     await collection.add(doc);
     return doc;
+  }
+  async update(userId, data) {
+    const _ = getCommand();
+    const collection = await getCollection("local_credentials");
+    await collection.where({ userId: _.eq(userId) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    return this.findByUserId(userId);
   }
 };
 var CloudBaseTaskRepository = class {
@@ -706,6 +906,25 @@ var CloudBaseTaskRepository = class {
     const collection = await getCollection("tasks");
     const { data } = await collection.where({ userId: _.eq(userId), prNumber: _.eq(prNumber), repoUrl: _.eq(repoUrl), deletedAt: _.eq(null) }).limit(1).get();
     return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findAll(limit, offset, filters) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const where = { deletedAt: _.eq(null) };
+    if (filters?.userId) where.userId = _.eq(filters.userId);
+    if (filters?.status) where.status = _.eq(filters.status);
+    const { data } = await collection.where(where).orderBy("createdAt", "desc").skip(offset).limit(limit).get();
+    if (!data) return [];
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async count(filters) {
+    const _ = getCommand();
+    const collection = await getCollection("tasks");
+    const where = { deletedAt: _.eq(null) };
+    if (filters?.userId) where.userId = _.eq(filters.userId);
+    if (filters?.status) where.status = _.eq(filters.status);
+    const { total } = await collection.where(where).count();
+    return total;
   }
   async create(task) {
     const collection = await getCollection("tasks");
@@ -776,6 +995,55 @@ var CloudBaseConnectorRepository = class {
   async delete(id, userId) {
     const _ = getCommand();
     const collection = await getCollection("connectors");
+    await collection.where({ id: _.eq(id), userId: _.eq(userId) }).remove();
+  }
+};
+var CloudBaseMiniProgramAppRepository = class {
+  async findByUserId(userId) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
+    const { data } = await collection.where({ userId: _.eq(userId) }).limit(1e3).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByIdAndUserId(id, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
+    const { data } = await collection.where({ id: _.eq(id), userId: _.eq(userId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByAppIdAndUserId(appId, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
+    const { data } = await collection.where({ appId: _.eq(appId), userId: _.eq(userId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async create(app8) {
+    const collection = await getCollection("miniprogram_apps");
+    const ts = now();
+    const doc = {
+      ...app8,
+      createdAt: app8.createdAt ?? ts,
+      updatedAt: app8.updatedAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async update(id, userId, data) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
+    await collection.where({ id: _.eq(id), userId: _.eq(userId) }).update({ ...data, updatedAt: data.updatedAt ?? now() });
+    return this.findByIdAndUserId(id, userId);
+  }
+  async updateUserId(fromUserId, toUserId) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
+    await collection.where({ userId: _.eq(fromUserId) }).update({ userId: toUserId });
+  }
+  async delete(id, userId) {
+    const _ = getCommand();
+    const collection = await getCollection("miniprogram_apps");
     await collection.where({ id: _.eq(id), userId: _.eq(userId) }).remove();
   }
 };
@@ -987,17 +1255,48 @@ var CloudBaseDeploymentRepository = class {
     await collection.where({ id: _.eq(id) }).update({ deletedAt: now() });
   }
 };
+var CloudBaseAdminLogRepository = class {
+  async create(log) {
+    const collection = await getCollection("admin_logs");
+    const ts = now();
+    const doc = {
+      ...log,
+      createdAt: log.createdAt ?? ts
+    };
+    await collection.add(doc);
+    return doc;
+  }
+  async findByAdminUserId(adminUserId, limit = 50) {
+    const _ = getCommand();
+    const collection = await getCollection("admin_logs");
+    const { data } = await collection.where({ adminUserId: _.eq(adminUserId) }).limit(limit).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findByTargetUserId(targetUserId, limit = 50) {
+    const _ = getCommand();
+    const collection = await getCollection("admin_logs");
+    const { data } = await collection.where({ targetUserId: _.eq(targetUserId) }).limit(limit).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+  async findAll(limit = 50, offset = 0) {
+    const collection = await getCollection("admin_logs");
+    const { data } = await collection.limit(limit).skip(offset).get();
+    return data.map((doc) => stripCloudBaseId(doc));
+  }
+};
 function createCloudBaseProvider() {
   return {
     users: new CloudBaseUserRepository(),
     localCredentials: new CloudBaseLocalCredentialRepository(),
     tasks: new CloudBaseTaskRepository(),
     connectors: new CloudBaseConnectorRepository(),
+    miniprogramApps: new CloudBaseMiniProgramAppRepository(),
     accounts: new CloudBaseAccountRepository(),
     keys: new CloudBaseKeyRepository(),
     userResources: new CloudBaseUserResourceRepository(),
     settings: new CloudBaseSettingRepository(),
-    deployments: new CloudBaseDeploymentRepository()
+    deployments: new CloudBaseDeploymentRepository(),
+    adminLogs: new CloudBaseAdminLogRepository()
   };
 }
 
@@ -1222,8 +1521,8 @@ async function issueTempCredentials(envId, userId) {
   const systemEnvId = process.env.TCB_ENV_ID;
   if (!systemSecretId || !systemSecretKey || !systemEnvId) return void 0;
   try {
-    const app7 = new CloudBaseManager({ secretId: systemSecretId, secretKey: systemSecretKey, envId: systemEnvId });
-    const result = await app7.commonService("sts").call({
+    const app8 = new CloudBaseManager({ secretId: systemSecretId, secretKey: systemSecretKey, envId: systemEnvId });
+    const result = await app8.commonService("sts").call({
       Action: "GetFederationToken",
       Param: {
         Name: `vibe-user-${userId.slice(0, 8)}`,
@@ -1424,6 +1723,9 @@ auth.post("/login", async (c) => {
     if (!valid) {
       return c.json({ error: "Invalid username or password" }, 401);
     }
+    if (user.status === "disabled") {
+      return c.json({ error: "Account has been disabled" }, 403);
+    }
     await getDb().users.update(user.id, { lastLoginAt: Date.now(), updatedAt: Date.now() });
     const session = {
       created: Date.now(),
@@ -1458,13 +1760,25 @@ auth.get("/me", async (c) => {
   if (!session) {
     return c.json({ user: void 0 });
   }
+  const user = await getDb().users.findById(session.user.id);
+  if (user?.status === "disabled") {
+    deleteCookie(c, SESSION_COOKIE_NAME2, { path: "/" });
+    return c.json({ user: void 0 });
+  }
   let envId;
   try {
     const resource = await getDb().userResources.findByUserId(session.user.id);
     envId = resource?.envId || void 0;
   } catch {
   }
-  return c.json({ user: session.user, authProvider: session.authProvider, envId });
+  return c.json({
+    user: {
+      ...session.user,
+      role: user?.role || "user"
+    },
+    authProvider: session.authProvider,
+    envId
+  });
 });
 auth.get("/provision-status", async (c) => {
   const session = c.get("session");
@@ -1680,6 +1994,11 @@ githubAuth.get("/callback", async (c) => {
       const existing = await getDb().users.findByProviderAndExternalId("github", externalId);
       let userId;
       if (existing) {
+        if (existing.status === "disabled") {
+          const loginUrl = new URL("/login", c.req.url);
+          loginUrl.searchParams.set("error", "disabled");
+          return c.redirect(loginUrl.toString());
+        }
         userId = existing.id;
         await getDb().users.update(userId, {
           accessToken: encryptedToken,
@@ -2402,8 +2721,8 @@ var PersistenceService = class {
   }
   collectionEnsured = false;
   async getCollection() {
-    const app7 = await this.getCloudBaseApp();
-    const db = app7.database();
+    const app8 = await this.getCloudBaseApp();
+    const db = app8.database();
     if (!this.collectionEnsured) {
       try {
         await db.createCollection(COLLECTION_NAME);
@@ -2553,8 +2872,8 @@ var PersistenceService = class {
   async loadDBMessages(conversationId, envId, userId, limit = 20) {
     try {
       const collection = await this.getCollection();
-      const app7 = await this.getCloudBaseApp();
-      const _ = app7.database().command;
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
@@ -2597,15 +2916,15 @@ var PersistenceService = class {
   }
   async updateRecordStatus(recordId, status) {
     const collection = await this.getCollection();
-    const app7 = await this.getCloudBaseApp();
-    const _ = app7.database().command;
+    const app8 = await this.getCloudBaseApp();
+    const _ = app8.database().command;
     await collection.where({ recordId: _.eq(recordId) }).update({ status, updateTime: Date.now() });
   }
   async appendPartsToRecord(recordId, parts) {
     if (parts.length === 0) return;
     const collection = await this.getCollection();
-    const app7 = await this.getCloudBaseApp();
-    const _ = app7.database().command;
+    const app8 = await this.getCloudBaseApp();
+    const _ = app8.database().command;
     const { data } = await collection.where({ recordId: _.eq(recordId) }).get();
     if (!data || data.length === 0) return;
     const existingRecord = data[0];
@@ -2615,8 +2934,8 @@ var PersistenceService = class {
   }
   async replacePartsInRecord(recordId, parts) {
     const collection = await this.getCollection();
-    const app7 = await this.getCloudBaseApp();
-    const _ = app7.database().command;
+    const app8 = await this.getCloudBaseApp();
+    const _ = app8.database().command;
     await collection.where({ recordId: _.eq(recordId) }).update({ parts, updateTime: Date.now() });
   }
   // ========== Message Grouping ==========
@@ -2874,8 +3193,8 @@ var PersistenceService = class {
   async getLatestRecordStatus(conversationId, userId, envId) {
     try {
       const collection = await this.getCollection();
-      const app7 = await this.getCloudBaseApp();
-      const _ = app7.database().command;
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
@@ -2894,8 +3213,8 @@ var PersistenceService = class {
   async conversationExists(conversationId, userId, envId) {
     try {
       const collection = await this.getCollection();
-      const app7 = await this.getCloudBaseApp();
-      const _ = app7.database().command;
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         envId: _.eq(envId),
@@ -2925,8 +3244,8 @@ var PersistenceService = class {
     const outputStr = typeof output === "string" ? output : JSON.stringify(output);
     try {
       const collection = await this.getCollection();
-      const app7 = await this.getCloudBaseApp();
-      const _ = app7.database().command;
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         recordId: _.eq(recordId)
@@ -3034,8 +3353,8 @@ var PersistenceService = class {
   async getToolCallInfo(conversationId, recordId, callId) {
     try {
       const collection = await this.getCollection();
-      const app7 = await this.getCloudBaseApp();
-      const _ = app7.database().command;
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
       const { data } = await collection.where({
         conversationId: _.eq(conversationId),
         recordId: _.eq(recordId)
@@ -3058,6 +3377,28 @@ var PersistenceService = class {
       return toolName ? { toolName, input } : null;
     } catch {
       return null;
+    }
+  }
+  /**
+   * 删除指定会话的所有消息记录
+   *
+   * @param conversationId 会话 ID
+   * @param envId 用户环境 ID
+   * @param userId 用户 ID
+   */
+  async deleteConversationMessages(conversationId, envId, userId) {
+    try {
+      const collection = await this.getCollection();
+      const app8 = await this.getCloudBaseApp();
+      const _ = app8.database().command;
+      await collection.where({
+        conversationId: _.eq(conversationId),
+        envId: _.eq(envId),
+        userId: _.eq(userId),
+        agentId: _.eq(AGENT_ID)
+      }).remove();
+    } catch {
+      console.error("Failed to delete conversation messages");
     }
   }
 };
@@ -3136,7 +3477,7 @@ var ScfSandboxManager = class {
       secretId: process.env.TCB_SECRET_ID || "",
       secretKey: process.env.TCB_SECRET_KEY || "",
       token: process.env.TCB_TOKEN || "",
-      functionPrefix: process.env.SCF_SANDBOX_FUNCTION_PREFIX || "sandbox-test",
+      functionPrefix: process.env.SCF_SANDBOX_FUNCTION_PREFIX || "sandbox",
       imageConfig: {
         ImageType: process.env.SCF_SANDBOX_IMAGE_TYPE || "personal",
         ImageUri: process.env.SCF_SANDBOX_IMAGE_URI || "",
@@ -3249,6 +3590,25 @@ var ScfSandboxManager = class {
     }
     return this.createNewFunction(functionName, conversationId, envId, mode, options, progress);
   }
+  /**
+   * 获取已存在的沙箱实例（不创建新实例）
+   * 适用于任务删除等场景，沙箱不存在时返回 null
+   */
+  async getExisting(conversationId, envId) {
+    const envConfig = this.getEnvConfig();
+    const functionPrefix = envConfig.functionPrefix || this.config.functionPrefix;
+    const functionName = this.generateFunctionName("shared", functionPrefix);
+    const { exists } = await this.checkFunctionExists(functionName);
+    if (!exists) return null;
+    const instanceDeps = await this.buildInstanceDeps();
+    return new SandboxInstance(instanceDeps, {
+      functionName,
+      conversationId,
+      envId,
+      status: "ready",
+      mode: "shared"
+    });
+  }
   async createNewFunction(functionName, conversationId, envId, mode, options, onProgress) {
     const progress = onProgress || (() => {
     });
@@ -3288,7 +3648,7 @@ var ScfSandboxManager = class {
   async createFunction(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app7 = new CloudBase3({
+      const app8 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
@@ -3322,7 +3682,7 @@ var ScfSandboxManager = class {
             SessionSource: "HEADER",
             SessionName: "X-Cloudbase-Session-Id",
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 1200,
+            MaximumTTLInSeconds: 600,
             MaximumIdleTimeInSeconds: 300,
             IdleTimeoutStrategy: "PAUSE"
           }
@@ -3332,7 +3692,7 @@ var ScfSandboxManager = class {
         },
         Description: "SCF Sandbox for conversation (Image-based)"
       };
-      await app7.commonService("scf").call({
+      await app8.commonService("scf").call({
         Action: "CreateFunction",
         Param: createParams
       });
@@ -3347,14 +3707,14 @@ var ScfSandboxManager = class {
   async createGatewayApi(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app7 = new CloudBase3({
+      const app8 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
       const domain = `${envConfig.envId}.ap-shanghai.app.tcloudbase.com`;
-      await app7.commonService().call({
+      await app8.commonService().call({
         Action: "CreateCloudBaseGWAPI",
         Param: {
           ServiceId: envConfig.envId,
@@ -3379,13 +3739,13 @@ var ScfSandboxManager = class {
   async checkFunctionExists(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app7 = new CloudBase3({
+      const app8 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
-      const result = await app7.commonService().call({
+      const result = await app8.commonService().call({
         Action: "GetFunction",
         Param: {
           FunctionName: functionName,
@@ -3405,7 +3765,7 @@ var ScfSandboxManager = class {
   }
   async waitForFunctionReady(functionName, maxRetries = 120, retryInterval = 3e3) {
     const envConfig = this.getEnvConfig();
-    const app7 = new CloudBase3({
+    const app8 = new CloudBase3({
       secretId: envConfig.secretId,
       secretKey: envConfig.secretKey,
       token: envConfig.token,
@@ -3413,7 +3773,7 @@ var ScfSandboxManager = class {
     });
     for (let i = 0; i < maxRetries; i++) {
       try {
-        const result = await app7.commonService().call({
+        const result = await app8.commonService().call({
           Action: "GetFunction",
           Param: {
             FunctionName: functionName,
@@ -3454,13 +3814,13 @@ var ScfSandboxManager = class {
   async deleteFunction(functionName) {
     const envConfig = this.getEnvConfig();
     try {
-      const app7 = new CloudBase3({
+      const app8 = new CloudBase3({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId
       });
-      await app7.commonService().call({
+      await app8.commonService().call({
         Action: "DeleteFunction",
         Param: {
           FunctionName: functionName,
@@ -3547,7 +3907,8 @@ async function createSandboxMcpClient(deps) {
     bashTimeoutMs = 3e4,
     workspaceFolderPaths = "",
     log = (msg) => console.log(msg),
-    onDeployUrl
+    onDeployUrl,
+    getMpDeployCredentials
   } = deps;
   async function buildHeaders() {
     const token = await getAccessToken();
@@ -3747,6 +4108,155 @@ async function createSandboxMcpClient(deps) {
       isError: true
     }));
   }
+  server.tool(
+    "auth",
+    'Re-authenticate and inject fresh CloudBase credentials. Call with action "start_auth" when credentials expire.',
+    { action: z.enum(["start_auth"]).describe("Authentication action") },
+    async () => {
+      try {
+        await injectCredentials();
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: true, message: "Credentials refreshed" }) }]
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, message: e.message }) }],
+          isError: true
+        };
+      }
+    }
+  );
+  server.tool(
+    "publishMiniprogram",
+    "\u5C0F\u7A0B\u5E8F\u53D1\u5E03/\u9884\u89C8\u5DE5\u5177\u3002\u652F\u6301\u9884\u89C8\uFF08preview\uFF09\u548C\u4E0A\u4F20\uFF08upload\uFF09\u4E24\u79CD\u64CD\u4F5C\u3002\u9884\u89C8\u4F1A\u751F\u6210\u4E8C\u7EF4\u7801\u4F9B\u626B\u7801\u4F53\u9A8C\uFF0C\u4E0A\u4F20\u4F1A\u5C06\u4EE3\u7801\u63D0\u4EA4\u5230\u5FAE\u4FE1\u540E\u53F0\u3002\u90E8\u7F72\u53EF\u80FD\u8017\u65F6\u8F83\u957F\uFF0C\u82E5\u8D85\u8FC7 60s \u672A\u5B8C\u6210\u4F1A\u8FD4\u56DE async=true \u548C jobId\uFF0C\u8BF7\u4F7F\u7528 getDeployJobStatus \u5DE5\u5177\u67E5\u8BE2\u7ED3\u679C\u3002",
+    {
+      action: z.enum(["preview", "upload"]).describe("\u64CD\u4F5C\u7C7B\u578B\uFF1Apreview=\u9884\u89C8, upload=\u4E0A\u4F20"),
+      projectPath: z.string().describe("\u5C0F\u7A0B\u5E8F\u9879\u76EE\u8DEF\u5F84\uFF08\u6C99\u7BB1\u5185\u7684\u7EDD\u5BF9\u8DEF\u5F84\uFF09"),
+      appId: z.string().describe("\u5FAE\u4FE1\u5C0F\u7A0B\u5E8F AppId"),
+      version: z.string().optional().describe('\u7248\u672C\u53F7\uFF08upload \u65F6\u5EFA\u8BAE\u63D0\u4F9B\uFF0C\u5982 "1.0.0"\uFF09'),
+      description: z.string().optional().describe("\u7248\u672C\u63CF\u8FF0"),
+      robot: z.number().optional().describe("CI \u673A\u5668\u4EBA\u7F16\u53F7\uFF081-30\uFF09\uFF0C\u9ED8\u8BA4 1")
+    },
+    async (args) => {
+      try {
+        let privateKey;
+        const appId = args.appId;
+        if (getMpDeployCredentials) {
+          const creds = await getMpDeployCredentials(appId);
+          if (creds) {
+            privateKey = creds.privateKey;
+          }
+        }
+        if (!privateKey) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: true,
+                  message: `\u672A\u627E\u5230 appId ${appId} \u7684\u90E8\u7F72\u5BC6\u94A5\uFF0C\u8BF7\u5148\u5728\u5C0F\u7A0B\u5E8F\u7BA1\u7406\u4E2D\u5173\u8054\u8BE5 appId`
+                })
+              }
+            ],
+            isError: true
+          };
+        }
+        const headers = await buildHeaders();
+        const res = await fetch(`${baseUrl}/api/miniprogram/deploy`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            appid: appId,
+            privateKey,
+            action: args.action,
+            projectPath: args.projectPath,
+            version: args.version,
+            description: args.description,
+            robot: args.robot
+          }),
+          signal: AbortSignal.timeout(12e4)
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok || !body) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: true,
+                  status: res.status,
+                  message: body?.error || body?.message || `HTTP ${res.status}`
+                })
+              }
+            ],
+            isError: true
+          };
+        }
+        if (body.async) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  async: true,
+                  jobId: body.jobId,
+                  message: "\u90E8\u7F72\u4ECD\u5728\u8FDB\u884C\u4E2D\uFF0C\u8BF7\u7A0D\u540E\u4F7F\u7528 getDeployJobStatus \u5DE5\u5177\u67E5\u8BE2\u7ED3\u679C"
+                })
+              }
+            ]
+          };
+        }
+        if (!body.success) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: true,
+                  message: body.error || body.result?.errMsg || "Deploy failed",
+                  result: body.result
+                })
+              }
+            ],
+            isError: true
+          };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(body) }] };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: true, message: e.message }) }],
+          isError: true
+        };
+      }
+    }
+  );
+  server.tool(
+    "getDeployJobStatus",
+    "\u67E5\u8BE2\u5C0F\u7A0B\u5E8F\u53D1\u5E03/\u9884\u89C8\u4EFB\u52A1\u7684\u72B6\u6001\u3002\u5F53 publishMiniprogram \u8FD4\u56DE async=true \u65F6\u4F7F\u7528\u6B64\u5DE5\u5177\u8F6E\u8BE2\u7ED3\u679C\u3002",
+    { jobId: z.string().describe("publishMiniprogram \u8FD4\u56DE\u7684 jobId") },
+    async (args) => {
+      try {
+        const headers = await buildHeaders();
+        const res = await fetch(
+          `${baseUrl}/api/miniprogram/deploy/status?jobId=${encodeURIComponent(args.jobId)}`,
+          {
+            method: "GET",
+            headers,
+            signal: AbortSignal.timeout(3e4)
+          }
+        );
+        const body = await res.json().catch(() => null);
+        return {
+          content: [{ type: "text", text: JSON.stringify(body ?? { error: true, status: res.status }) }]
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: true, message: e.message }) }],
+          isError: true
+        };
+      }
+    }
+  );
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "cloudbase-agent", version: "1.0.0" });
@@ -3779,6 +4289,107 @@ async function createSandboxMcpClient(deps) {
       }
     );
   });
+  sdkTools.push(
+    sdkTool(
+      "auth",
+      'Re-authenticate and inject fresh CloudBase credentials. Call with action "start_auth" when credentials expire.',
+      { action: z.enum(["start_auth"]).describe("Authentication action") },
+      async () => {
+        try {
+          await injectCredentials();
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+        }
+      }
+    )
+  );
+  sdkTools.push(
+    sdkTool(
+      "publishMiniprogram",
+      "\u5C0F\u7A0B\u5E8F\u53D1\u5E03/\u9884\u89C8\u5DE5\u5177\u3002\u652F\u6301\u9884\u89C8\uFF08preview\uFF09\u548C\u4E0A\u4F20\uFF08upload\uFF09\u4E24\u79CD\u64CD\u4F5C\u3002",
+      {
+        action: z.enum(["preview", "upload"]).describe("\u64CD\u4F5C\u7C7B\u578B"),
+        projectPath: z.string().describe("\u5C0F\u7A0B\u5E8F\u9879\u76EE\u8DEF\u5F84"),
+        appId: z.string().describe("\u5FAE\u4FE1\u5C0F\u7A0B\u5E8F AppId"),
+        version: z.string().optional().describe("\u7248\u672C\u53F7"),
+        description: z.string().optional().describe("\u7248\u672C\u63CF\u8FF0"),
+        robot: z.number().optional().describe("CI \u673A\u5668\u4EBA\u7F16\u53F7")
+      },
+      async (args) => {
+        try {
+          let privateKey;
+          const appId = args.appId;
+          if (getMpDeployCredentials) {
+            const creds = await getMpDeployCredentials(appId);
+            if (creds) privateKey = creds.privateKey;
+          }
+          if (!privateKey) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({ error: true, message: `\u672A\u627E\u5230 appId ${appId} \u7684\u90E8\u7F72\u5BC6\u94A5` })
+                }
+              ],
+              isError: true
+            };
+          }
+          const headers = await buildHeaders();
+          const res = await fetch(`${baseUrl}/api/miniprogram/deploy`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              appid: appId,
+              privateKey,
+              action: args.action,
+              projectPath: args.projectPath,
+              version: args.version,
+              description: args.description,
+              robot: args.robot
+            }),
+            signal: AbortSignal.timeout(12e4)
+          });
+          const body = await res.json().catch(() => null);
+          if (!res.ok || !body) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: true, status: res.status }) }],
+              isError: true
+            };
+          }
+          return { content: [{ type: "text", text: JSON.stringify(body) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+        }
+      }
+    )
+  );
+  sdkTools.push(
+    sdkTool(
+      "getDeployJobStatus",
+      "\u67E5\u8BE2\u5C0F\u7A0B\u5E8F\u53D1\u5E03/\u9884\u89C8\u4EFB\u52A1\u7684\u72B6\u6001\u3002",
+      { jobId: z.string().describe("publishMiniprogram \u8FD4\u56DE\u7684 jobId") },
+      async (args) => {
+        try {
+          const headers = await buildHeaders();
+          const res = await fetch(
+            `${baseUrl}/api/miniprogram/deploy/status?jobId=${encodeURIComponent(args.jobId)}`,
+            {
+              method: "GET",
+              headers,
+              signal: AbortSignal.timeout(3e4)
+            }
+          );
+          const body = await res.json().catch(() => null);
+          return {
+            content: [{ type: "text", text: JSON.stringify(body ?? { error: true, status: res.status }) }]
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
+        }
+      }
+    )
+  );
   const sdkServer = createSdkMcpServer({
     name: "cloudbase",
     version: "1.0.0",
@@ -3846,12 +4457,30 @@ async function archiveToGit(sandbox, conversationId, prompt) {
     console.error("[GitArchive] Error:", err?.message);
   }
 }
+async function deleteConversationViaSandbox(sandbox, envId, conversationId) {
+  const workspace = `/tmp/workspace/${envId}/${conversationId}`;
+  try {
+    const res = await sandbox.request("/api/tools/bash", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: `rm -rf "${workspace}"`, timeout: 1e4 }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return;
+    }
+    await archiveToGit(sandbox, conversationId, `delete conversation ${conversationId}`);
+  } catch (err) {
+    console.warn(`[GitArchive] deleteConversationViaSandbox failed: ${err.message}`);
+  }
+}
 
 // src/agent/cloudbase-agent.service.ts
 var DEFAULT_MODEL = "glm-5.0";
 var OAUTH_TOKEN_ENDPOINT = "https://copilot.tencent.com/oauth2/token";
 var CONNECT_TIMEOUT_MS = 6e4;
-var ITERATION_TIMEOUT_MS = 30 * 1e3;
+var ITERATION_TIMEOUT_MS = 45 * 1e3;
 var HEALTH_MAX_RETRIES = 20;
 var HEALTH_INTERVAL_MS = 2e3;
 var cachedModels = null;
@@ -4239,9 +4868,20 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
             log: (msg) => console.log(msg),
             onDeployUrl: (url) => {
               wrappedCallback({ type: "deploy_url", url });
+            },
+            getMpDeployCredentials: async (appId) => {
+              const app8 = await getDb().miniprogramApps.findByAppIdAndUserId(appId, userContext.userId);
+              if (!app8) return null;
+              return { appId: app8.appId, privateKey: decrypt(app8.privateKey) };
             }
           });
-          console.log(`[Agent] Sandbox ready: ${sandboxInstance.functionName}`);
+          console.log("[Agent] Sandbox ready");
+          try {
+            await getDb().tasks.update(conversationId, {
+              sandboxId: sandboxInstance.functionName
+            });
+          } catch {
+          }
         }
       } catch (err) {
         console.error("[Agent] Sandbox creation failed:", err.message);
@@ -5338,19 +5978,33 @@ function createTaskLogger(taskId) {
 
 // src/routes/tasks.ts
 import { Octokit as Octokit2 } from "@octokit/rest";
-import { Sandbox } from "@vercel/sandbox";
-var PROJECT_DIR = "/vercel/sandbox/project";
+
+// src/sandbox/tool-override.ts
+var TOOL_NAME_MAPPING = {
+  Read: "read",
+  Write: "write",
+  Edit: "edit",
+  Glob: "glob",
+  Grep: "grep"
+};
+var SANDBOX_REQUIRED_TOOLS = [
+  ...Object.keys(TOOL_NAME_MAPPING),
+  "MultiEdit",
+  "Bash",
+  "BashOutput",
+  "TaskOutput",
+  "TaskStop",
+  "KillShell"
+];
+var ansiRegex = (function() {
+  const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
+  const osc = `(?:\\u001B\\][\\s\\S]*?${ST})`;
+  const csi = "[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
+  return new RegExp(`${osc}|${csi}`, "g");
+})();
+
+// src/routes/tasks.ts
 var MAX_SANDBOX_DURATION = parseInt(process.env.MAX_SANDBOX_DURATION || "300", 10);
-var activeSandboxes = /* @__PURE__ */ new Map();
-function registerSandbox(taskId, sandbox) {
-  activeSandboxes.set(taskId, sandbox);
-}
-function unregisterSandbox(taskId) {
-  activeSandboxes.delete(taskId);
-}
-function getSandbox(taskId) {
-  return activeSandboxes.get(taskId);
-}
 async function getUserGitHubToken(userId) {
   try {
     const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
@@ -5378,53 +6032,69 @@ function parseGitHubUrl(repoUrl) {
   }
   return null;
 }
-async function runCommandInSandbox(sandbox, command, args = []) {
+async function runCommandInScfSandbox(sandbox, command, timeout = 3e4) {
   try {
-    const result = await sandbox.runCommand(command, args);
-    let stdout = "";
-    let stderr = "";
-    try {
-      stdout = await result.stdout();
-    } catch {
+    const response = await sandbox.request("/api/tools/bash", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command, timeout })
+    });
+    const data = await response.json();
+    if (!data.success) {
+      return { success: false, error: data.error || "Command failed" };
     }
-    try {
-      stderr = await result.stderr();
-    } catch {
-    }
-    return { success: result.exitCode === 0, exitCode: result.exitCode, output: stdout, error: stderr };
+    return {
+      success: data.result?.exitCode === 0,
+      exitCode: data.result?.exitCode,
+      output: data.result?.output || ""
+    };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : "Command failed" };
   }
 }
-async function runInProject(sandbox, command, args = []) {
-  const escapeArg = (arg) => `'${arg.replace(/'/g, "'\\''")}'`;
-  const fullCommand = args.length > 0 ? `${command} ${args.map(escapeArg).join(" ")}` : command;
-  return runCommandInSandbox(sandbox, "sh", ["-c", `cd ${PROJECT_DIR} && ${fullCommand}`]);
-}
-async function reconnectSandbox(task) {
-  const sandboxToken = process.env.SANDBOX_VERCEL_TOKEN;
-  const teamId = process.env.SANDBOX_VERCEL_TEAM_ID;
-  const projectId = process.env.SANDBOX_VERCEL_PROJECT_ID;
-  if (!sandboxToken || !teamId || !projectId || !task.sandboxId) return null;
+async function getScfSandbox(task, envId) {
+  if (!task.sandboxId) return null;
   try {
-    return await Sandbox.get({ sandboxId: task.sandboxId, teamId, projectId, token: sandboxToken });
+    return await scfSandboxManager.getExisting(task.sandboxId, envId) ?? null;
   } catch {
     return null;
   }
 }
-async function getOrReconnectSandbox(taskId, task) {
-  let sandbox = getSandbox(taskId);
-  if (!sandbox) {
-    sandbox = await reconnectSandbox(task);
-  }
-  return sandbox || null;
-}
 async function detectPackageManager(sandbox) {
-  const pnpmCheck = await runInProject(sandbox, "test", ["-f", "pnpm-lock.yaml"]);
-  if (pnpmCheck.success) return "pnpm";
-  const yarnCheck = await runInProject(sandbox, "test", ["-f", "yarn.lock"]);
-  if (yarnCheck.success) return "yarn";
+  const pnpmCheck = await runCommandInScfSandbox(sandbox, 'test -f pnpm-lock.yaml && echo "yes" || echo "no"');
+  if (pnpmCheck.output?.trim() === "yes") return "pnpm";
+  const yarnCheck = await runCommandInScfSandbox(sandbox, 'test -f yarn.lock && echo "yes" || echo "no"');
+  if (yarnCheck.output?.trim() === "yes") return "yarn";
   return "npm";
+}
+async function readFileFromSandbox(sandbox, filePath) {
+  try {
+    const response = await sandbox.request("/api/tools/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: filePath })
+    });
+    const data = await response.json();
+    if (data.success && data.result?.content !== void 0) {
+      return { content: data.result.content, found: true };
+    }
+    return { content: "", found: false };
+  } catch {
+    return { content: "", found: false };
+  }
+}
+async function writeFileToSandbox(sandbox, filePath, content) {
+  try {
+    const response = await sandbox.request("/api/tools/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: filePath, content })
+    });
+    const data = await response.json();
+    return data.success;
+  } catch {
+    return false;
+  }
 }
 function getLanguageFromFilename(filename) {
   const ext = filename.split(".").pop()?.toLowerCase();
@@ -5522,23 +6192,6 @@ async function getFileContentFromGitHub(octokit, owner, repo, path5, ref, isImag
     throw error;
   }
 }
-var SANDBOX_VITE_CONFIG = `import { defineConfig, mergeConfig } from 'vite'
-
-let userConfig = {}
-try {
-  const importedConfig = await import('./vite.config.js')
-  userConfig = importedConfig.default || {}
-} catch {
-  // No user config or import failed
-}
-
-export default mergeConfig(userConfig, defineConfig({
-  server: {
-    host: '0.0.0.0',
-    strictPort: false,
-    allowedHosts: undefined,
-  }
-}))`;
 var tasksRouter = new Hono5();
 tasksRouter.get("/", async (c) => {
   const authErr = requireAuth(c);
@@ -5635,14 +6288,23 @@ tasksRouter.patch("/:taskId", async (c) => {
   }
   return c.json({ error: "Invalid action" }, 400);
 });
-tasksRouter.delete("/:taskId", async (c) => {
-  const authErr = requireAuth(c);
-  if (authErr) return authErr;
+tasksRouter.delete("/:taskId", requireUserEnv, async (c) => {
   const session = c.get("session");
+  const { envId } = c.get("userEnv");
   const { taskId } = c.req.param();
   const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id);
   if (!existing || existing.deletedAt) return c.json({ error: "Task not found" }, 404);
   await getDb().tasks.softDelete(taskId);
+  (async () => {
+    try {
+      const sandbox = await scfSandboxManager.getExisting(taskId, envId).catch(() => null);
+      if (sandbox) {
+        await deleteConversationViaSandbox(sandbox, envId, taskId);
+      }
+    } catch (e) {
+      console.log("clean conversation workspace error");
+    }
+  })();
   return c.json({ message: "Task deleted" });
 });
 tasksRouter.get("/:taskId/messages", requireUserEnv, async (c) => {
@@ -5731,11 +6393,10 @@ function addToFileTree(tree, filename, fileObj) {
     }
   }
 }
-tasksRouter.get("/:taskId/files", async (c) => {
+tasksRouter.get("/:taskId/files", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const mode = c.req.query("mode") || "remote";
     const task = await findActiveTask(taskId, session.user.id);
@@ -5752,8 +6413,7 @@ tasksRouter.get("/:taskId/files", async (c) => {
     if (mode === "local") {
       if (!task.sandboxId) return c.json({ success: false, error: "Sandbox is not running" }, 410);
       try {
-        let sandbox = getSandbox(taskId);
-        if (!sandbox) sandbox = await reconnectSandbox(task);
+        const sandbox = await getScfSandbox(task, envId);
         if (!sandbox)
           return c.json({
             success: true,
@@ -5762,8 +6422,8 @@ tasksRouter.get("/:taskId/files", async (c) => {
             branchName: task.branchName,
             message: "Sandbox not found"
           });
-        const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
-        if (statusResult.exitCode !== 0)
+        const statusResult = await runCommandInScfSandbox(sandbox, "git status --porcelain");
+        if (!statusResult.success)
           return c.json({
             success: true,
             files: [],
@@ -5771,23 +6431,18 @@ tasksRouter.get("/:taskId/files", async (c) => {
             branchName: task.branchName,
             message: "Failed to get local changes"
           });
-        const statusOutput = await statusResult.stdout();
+        const statusOutput = statusResult.output || "";
         const statusLines = statusOutput.trim().split("\n").filter((line) => line.trim());
-        const checkRemoteResult = await sandbox.runCommand({
-          cmd: "git",
-          args: ["rev-parse", "--verify", `origin/${task.branchName}`],
-          cwd: PROJECT_DIR
-        });
-        const remoteBranchExists = checkRemoteResult.exitCode === 0;
+        const checkRemoteResult = await runCommandInScfSandbox(
+          sandbox,
+          `git rev-parse --verify origin/${task.branchName}`
+        );
+        const remoteBranchExists = checkRemoteResult.success;
         const compareRef = remoteBranchExists ? `origin/${task.branchName}` : "HEAD";
-        const numstatResult = await sandbox.runCommand({
-          cmd: "git",
-          args: ["diff", "--numstat", compareRef],
-          cwd: PROJECT_DIR
-        });
+        const numstatResult = await runCommandInScfSandbox(sandbox, `git diff --numstat ${compareRef}`);
         const diffStats = {};
-        if (numstatResult.exitCode === 0) {
-          const numstatOutput = await numstatResult.stdout();
+        if (numstatResult.success) {
+          const numstatOutput = numstatResult.output || "";
           for (const line of numstatOutput.trim().split("\n").filter((l) => l.trim())) {
             const parts = line.split("	");
             if (parts.length >= 3)
@@ -5809,10 +6464,9 @@ tasksRouter.get("/:taskId/files", async (c) => {
           else if (indexStatus === "D" || worktreeStatus === "D") status = "deleted";
           let stats = diffStats[filename] || { additions: 0, deletions: 0 };
           if (indexStatus === "?" && worktreeStatus === "?" || indexStatus === "A" && !stats.additions && !stats.deletions) {
-            const wcResult = await sandbox.runCommand({ cmd: "wc", args: ["-l", filename], cwd: PROJECT_DIR });
-            if (wcResult.exitCode === 0) {
-              const wcOutput = await wcResult.stdout();
-              stats = { additions: parseInt(wcOutput.trim().split(/\s+/)[0]) || 0, deletions: 0 };
+            const wcResult = await runCommandInScfSandbox(sandbox, `wc -l '${filename.replace(/'/g, "'\\''")}'`);
+            if (wcResult.success) {
+              stats = { additions: parseInt((wcResult.output || "").trim().split(/\s+/)[0]) || 0, deletions: 0 };
             }
           }
           return {
@@ -5824,20 +6478,13 @@ tasksRouter.get("/:taskId/files", async (c) => {
           };
         });
         files = await Promise.all(filePromises);
-      } catch (error) {
-        const is410 = error && typeof error === "object" && ("status" in error && error.status === 410 || "response" in error && typeof error.response === "object" && error.response?.status === 410);
-        if (is410) {
-          await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null });
-          unregisterSandbox(taskId);
-          return c.json({ success: false, error: "Sandbox is not running" }, 410);
-        }
+      } catch {
         return c.json({ success: false, error: "Failed to fetch local changes" }, 500);
       }
     } else if (mode === "all-local") {
       if (!task.sandboxId) return c.json({ success: false, error: "Sandbox is not running" }, 410);
       try {
-        let sandbox = getSandbox(taskId);
-        if (!sandbox) sandbox = await reconnectSandbox(task);
+        const sandbox = await getScfSandbox(task, envId);
         if (!sandbox)
           return c.json({
             success: true,
@@ -5846,34 +6493,11 @@ tasksRouter.get("/:taskId/files", async (c) => {
             branchName: task.branchName,
             message: "Sandbox not found"
           });
-        const findResult = await sandbox.runCommand({
-          cmd: "find",
-          args: [
-            ".",
-            "-type",
-            "f",
-            "-not",
-            "-path",
-            "*/.git/*",
-            "-not",
-            "-path",
-            "*/node_modules/*",
-            "-not",
-            "-path",
-            "*/.next/*",
-            "-not",
-            "-path",
-            "*/dist/*",
-            "-not",
-            "-path",
-            "*/build/*",
-            "-not",
-            "-path",
-            "*/.vercel/*"
-          ],
-          cwd: PROJECT_DIR
-        });
-        if (findResult.exitCode !== 0)
+        const findResult = await runCommandInScfSandbox(
+          sandbox,
+          "find . -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/.next/*' -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/.vercel/*'"
+        );
+        if (!findResult.success)
           return c.json({
             success: true,
             files: [],
@@ -5881,12 +6505,12 @@ tasksRouter.get("/:taskId/files", async (c) => {
             branchName: task.branchName,
             message: "Failed to list files"
           });
-        const findOutput = await findResult.stdout();
+        const findOutput = findResult.output || "";
         const fileLines = findOutput.trim().split("\n").filter((line) => line.trim() && line !== ".").map((line) => line.replace(/^\.\//, ""));
-        const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
+        const statusResult = await runCommandInScfSandbox(sandbox, "git status --porcelain");
         const changedFilesMap = {};
-        if (statusResult.exitCode === 0) {
-          const statusOutput = await statusResult.stdout();
+        if (statusResult.success) {
+          const statusOutput = statusResult.output || "";
           for (const line of statusOutput.trim().split("\n").filter((l) => l.trim())) {
             const indexStatus = line.charAt(0);
             const worktreeStatus = line.charAt(1);
@@ -5908,13 +6532,7 @@ tasksRouter.get("/:taskId/files", async (c) => {
           const status = changedFilesMap[trimmed] || "renamed";
           return { filename: trimmed, status, additions: 0, deletions: 0, changes: 0 };
         });
-      } catch (error) {
-        const is410 = error && typeof error === "object" && ("status" in error && error.status === 410 || "response" in error && typeof error.response === "object" && error.response?.status === 410);
-        if (is410) {
-          await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null });
-          unregisterSandbox(taskId);
-          return c.json({ success: false, error: "Sandbox is not running" }, 410);
-        }
+      } catch {
         return c.json({ success: false, error: "Failed to fetch local files" }, 500);
       }
     } else if (mode === "all") {
@@ -6012,11 +6630,10 @@ tasksRouter.get("/:taskId/files", async (c) => {
     return c.json({ success: false, error: "Failed to fetch task files" }, 500);
   }
 });
-tasksRouter.get("/:taskId/file-content", async (c) => {
+tasksRouter.get("/:taskId/file-content", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const rawFilename = c.req.query("filename");
     const mode = c.req.query("mode") || "remote";
@@ -6051,12 +6668,12 @@ tasksRouter.get("/:taskId/file-content", async (c) => {
       }
       if (task.sandboxId) {
         try {
-          const sandbox = await getOrReconnectSandbox(taskId, task);
+          const sandbox = await getScfSandbox(task, envId);
           if (sandbox) {
             const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
-            const catResult = await sandbox.runCommand({ cmd: "cat", args: [normalizedPath], cwd: PROJECT_DIR });
-            if (catResult.exitCode === 0) {
-              newContent = await catResult.stdout();
+            const result = await readFileFromSandbox(sandbox, normalizedPath);
+            if (result.found) {
+              newContent = result.content;
               fileFound = true;
             }
           }
@@ -6069,12 +6686,12 @@ tasksRouter.get("/:taskId/file-content", async (c) => {
       let content = "";
       if (isNodeModulesFile && task.sandboxId) {
         try {
-          const sandbox = await getOrReconnectSandbox(taskId, task);
+          const sandbox = await getScfSandbox(task, envId);
           if (sandbox) {
             const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
-            const catResult = await sandbox.runCommand("cat", [normalizedPath]);
-            if (catResult.exitCode === 0) {
-              content = await catResult.stdout();
+            const result = await readFileFromSandbox(sandbox, normalizedPath);
+            if (result.found) {
+              content = result.content;
               fileFound = true;
             }
           }
@@ -6089,12 +6706,12 @@ tasksRouter.get("/:taskId/file-content", async (c) => {
       }
       if (!fileFound && !isImage && !isNodeModulesFile && task.sandboxId) {
         try {
-          const sandbox = await getOrReconnectSandbox(taskId, task);
+          const sandbox = await getScfSandbox(task, envId);
           if (sandbox) {
             const normalizedPath = filename.startsWith("/") ? filename.substring(1) : filename;
-            const catResult = await sandbox.runCommand("cat", [normalizedPath]);
-            if (catResult.exitCode === 0) {
-              content = await catResult.stdout();
+            const result = await readFileFromSandbox(sandbox, normalizedPath);
+            if (result.found) {
+              content = result.content;
               fileFound = true;
             }
           }
@@ -6120,14 +6737,13 @@ tasksRouter.get("/:taskId/file-content", async (c) => {
     });
   } catch (error) {
     console.error("Error in file-content API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
-tasksRouter.post("/:taskId/save-file", async (c) => {
+tasksRouter.post("/:taskId/save-file", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { filename, content } = body;
@@ -6135,24 +6751,20 @@ tasksRouter.post("/:taskId/save-file", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
-    const escapedFilename = "'" + filename.replace(/'/g, "'\\''") + "'";
-    const encodedContent = Buffer.from(content).toString("base64");
-    const writeCommand = `echo '${encodedContent}' | base64 -d > ${escapedFilename}`;
-    const result = await sandbox.runCommand({ cmd: "sh", args: ["-c", writeCommand], cwd: PROJECT_DIR });
-    if (result.exitCode !== 0) return c.json({ error: "Failed to write file to sandbox" }, 500);
+    const success = await writeFileToSandbox(sandbox, filename, content);
+    if (!success) return c.json({ error: "Failed to write file to sandbox" }, 500);
     return c.json({ success: true, message: "File saved successfully" });
   } catch (error) {
     console.error("Error in save-file API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
-tasksRouter.post("/:taskId/create-file", async (c) => {
+tasksRouter.post("/:taskId/create-file", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { filename } = body;
@@ -6160,29 +6772,25 @@ tasksRouter.post("/:taskId/create-file", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
     const pathParts = filename.split("/");
     if (pathParts.length > 1) {
       const dirPath = pathParts.slice(0, -1).join("/");
-      const mkdirResult = await sandbox.runCommand({ cmd: "mkdir", args: ["-p", dirPath], cwd: PROJECT_DIR });
-      if (mkdirResult.exitCode !== 0)
-        return c.json({ success: false, error: "Failed to create parent directories" }, 500);
+      const mkdirResult = await runCommandInScfSandbox(sandbox, `mkdir -p '${dirPath.replace(/'/g, "'\\''")}'`);
+      if (!mkdirResult.success) return c.json({ success: false, error: "Failed to create parent directories" }, 500);
     }
-    const touchResult = await sandbox.runCommand({ cmd: "touch", args: [filename], cwd: PROJECT_DIR });
-    if (touchResult.exitCode !== 0) return c.json({ success: false, error: "Failed to create file" }, 500);
+    const touchResult = await runCommandInScfSandbox(sandbox, `touch '${filename.replace(/'/g, "'\\''")}'`);
+    if (!touchResult.success) return c.json({ success: false, error: "Failed to create file" }, 500);
     return c.json({ success: true, message: "File created successfully", filename });
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 410)
-      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+  } catch {
     return c.json({ success: false, error: "An error occurred while creating the file" }, 500);
   }
 });
-tasksRouter.post("/:taskId/create-folder", async (c) => {
+tasksRouter.post("/:taskId/create-folder", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { foldername } = body;
@@ -6191,22 +6799,19 @@ tasksRouter.post("/:taskId/create-folder", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
-    const mkdirResult = await sandbox.runCommand({ cmd: "mkdir", args: ["-p", foldername], cwd: PROJECT_DIR });
-    if (mkdirResult.exitCode !== 0) return c.json({ success: false, error: "Failed to create folder" }, 500);
+    const mkdirResult = await runCommandInScfSandbox(sandbox, `mkdir -p '${foldername.replace(/'/g, "'\\''")}'`);
+    if (!mkdirResult.success) return c.json({ success: false, error: "Failed to create folder" }, 500);
     return c.json({ success: true, message: "Folder created successfully", foldername });
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 410)
-      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+  } catch {
     return c.json({ success: false, error: "An error occurred while creating the folder" }, 500);
   }
 });
-tasksRouter.delete("/:taskId/delete-file", async (c) => {
+tasksRouter.delete("/:taskId/delete-file", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { filename } = body;
@@ -6214,22 +6819,19 @@ tasksRouter.delete("/:taskId/delete-file", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
-    const rmResult = await sandbox.runCommand({ cmd: "rm", args: [filename], cwd: PROJECT_DIR });
-    if (rmResult.exitCode !== 0) return c.json({ success: false, error: "Failed to delete file" }, 500);
+    const rmResult = await runCommandInScfSandbox(sandbox, `rm '${filename.replace(/'/g, "'\\''")}'`);
+    if (!rmResult.success) return c.json({ success: false, error: "Failed to delete file" }, 500);
     return c.json({ success: true, message: "File deleted successfully", filename });
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 410)
-      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+  } catch {
     return c.json({ success: false, error: "An error occurred while deleting the file" }, 500);
   }
 });
-tasksRouter.post("/:taskId/discard-file-changes", async (c) => {
+tasksRouter.post("/:taskId/discard-file-changes", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { filename } = body;
@@ -6237,36 +6839,30 @@ tasksRouter.post("/:taskId/discard-file-changes", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
-    const lsFilesResult = await sandbox.runCommand({ cmd: "git", args: ["ls-files", filename], cwd: PROJECT_DIR });
-    const isTracked = (await lsFilesResult.stdout()).trim().length > 0;
+    const escapedFilename = filename.replace(/'/g, "'\\''");
+    const lsFilesResult = await runCommandInScfSandbox(sandbox, `git ls-files '${escapedFilename}'`);
+    const isTracked = (lsFilesResult.output || "").trim().length > 0;
     if (isTracked) {
-      const checkoutResult = await sandbox.runCommand({
-        cmd: "git",
-        args: ["checkout", "HEAD", "--", filename],
-        cwd: PROJECT_DIR
-      });
-      if (checkoutResult.exitCode !== 0) return c.json({ success: false, error: "Failed to discard changes" }, 500);
+      const checkoutResult = await runCommandInScfSandbox(sandbox, `git checkout HEAD -- '${escapedFilename}'`);
+      if (!checkoutResult.success) return c.json({ success: false, error: "Failed to discard changes" }, 500);
     } else {
-      const rmResult = await sandbox.runCommand({ cmd: "rm", args: [filename], cwd: PROJECT_DIR });
-      if (rmResult.exitCode !== 0) return c.json({ success: false, error: "Failed to delete file" }, 500);
+      const rmResult = await runCommandInScfSandbox(sandbox, `rm '${escapedFilename}'`);
+      if (!rmResult.success) return c.json({ success: false, error: "Failed to delete file" }, 500);
     }
     return c.json({
       success: true,
       message: isTracked ? "Changes discarded successfully" : "New file deleted successfully"
     });
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 410)
-      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+  } catch {
     return c.json({ success: false, error: "An error occurred while discarding changes" }, 500);
   }
 });
-tasksRouter.get("/:taskId/diff", async (c) => {
+tasksRouter.get("/:taskId/diff", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const filename = c.req.query("filename");
     const mode = c.req.query("mode");
@@ -6278,24 +6874,19 @@ tasksRouter.get("/:taskId/diff", async (c) => {
     if (mode === "local") {
       if (!task.sandboxId) return c.json({ error: "Sandbox not available" }, 400);
       try {
-        const sandbox = await getOrReconnectSandbox(taskId, task);
+        const sandbox = await getScfSandbox(task, envId);
         if (!sandbox) return c.json({ error: "Sandbox not found or inactive" }, 400);
-        await sandbox.runCommand({ cmd: "git", args: ["fetch", "origin", task.branchName], cwd: PROJECT_DIR });
-        const checkRemoteResult = await sandbox.runCommand({
-          cmd: "git",
-          args: ["rev-parse", "--verify", `origin/${task.branchName}`],
-          cwd: PROJECT_DIR
-        });
-        const remoteBranchExists = checkRemoteResult.exitCode === 0;
+        await runCommandInScfSandbox(sandbox, `git fetch origin ${task.branchName}`);
+        const checkRemoteResult = await runCommandInScfSandbox(
+          sandbox,
+          `git rev-parse --verify origin/${task.branchName}`
+        );
+        const remoteBranchExists = checkRemoteResult.success;
         if (!remoteBranchExists) {
-          const oldContentResult2 = await sandbox.runCommand({
-            cmd: "git",
-            args: ["show", `HEAD:${filename}`],
-            cwd: PROJECT_DIR
-          });
-          const oldContent3 = oldContentResult2.exitCode === 0 ? await oldContentResult2.stdout() : "";
-          const newContentResult2 = await sandbox.runCommand({ cmd: "cat", args: [filename], cwd: PROJECT_DIR });
-          const newContent3 = newContentResult2.exitCode === 0 ? await newContentResult2.stdout() : "";
+          const oldContentResult2 = await runCommandInScfSandbox(sandbox, `git show HEAD:${filename}`);
+          const oldContent3 = oldContentResult2.success ? oldContentResult2.output || "" : "";
+          const newContentFile2 = await readFileFromSandbox(sandbox, filename);
+          const newContent3 = newContentFile2.found ? newContentFile2.content : "";
           return c.json({
             success: true,
             data: {
@@ -6309,14 +6900,10 @@ tasksRouter.get("/:taskId/diff", async (c) => {
           });
         }
         const remoteBranchRef = `origin/${task.branchName}`;
-        const oldContentResult = await sandbox.runCommand({
-          cmd: "git",
-          args: ["show", `${remoteBranchRef}:${filename}`],
-          cwd: PROJECT_DIR
-        });
-        const oldContent2 = oldContentResult.exitCode === 0 ? await oldContentResult.stdout() : "";
-        const newContentResult = await sandbox.runCommand({ cmd: "cat", args: [filename], cwd: PROJECT_DIR });
-        const newContent2 = newContentResult.exitCode === 0 ? await newContentResult.stdout() : "";
+        const oldContentResult = await runCommandInScfSandbox(sandbox, `git show ${remoteBranchRef}:${filename}`);
+        const oldContent2 = oldContentResult.success ? oldContentResult.output || "" : "";
+        const newContentFile = await readFileFromSandbox(sandbox, filename);
+        const newContent2 = newContentFile.found ? newContentFile.content : "";
         return c.json({
           success: true,
           data: {
@@ -6328,9 +6915,7 @@ tasksRouter.get("/:taskId/diff", async (c) => {
             isImage: false
           }
         });
-      } catch (error) {
-        if (error && typeof error === "object" && "status" in error && error.status === 410)
-          return c.json({ error: "Sandbox is not running" }, 410);
+      } catch {
         return c.json({ error: "Failed to get local diff" }, 500);
       }
     }
@@ -6400,7 +6985,7 @@ tasksRouter.get("/:taskId/diff", async (c) => {
     });
   } catch (error) {
     console.error("Error in diff API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 tasksRouter.post("/:taskId/pr", async (c) => {
@@ -6446,11 +7031,10 @@ tasksRouter.post("/:taskId/pr", async (c) => {
     return c.json({ error: "Failed to create pull request" }, 500);
   }
 });
-tasksRouter.post("/:taskId/sync-changes", async (c) => {
+tasksRouter.post("/:taskId/sync-changes", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json().catch(() => ({}));
     const { commitMessage } = body;
@@ -6458,28 +7042,23 @@ tasksRouter.post("/:taskId/sync-changes", async (c) => {
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
     if (!task.branchName) return c.json({ success: false, error: "Branch not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found or inactive" }, 400);
-    const addResult = await sandbox.runCommand({ cmd: "git", args: ["add", "."], cwd: PROJECT_DIR });
-    if (addResult.exitCode !== 0) return c.json({ success: false, error: "Failed to add changes" }, 500);
-    const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: PROJECT_DIR });
-    if (statusResult.exitCode !== 0) return c.json({ success: false, error: "Failed to check status" }, 500);
-    const statusOutput = await statusResult.stdout();
+    const addResult = await runCommandInScfSandbox(sandbox, "git add .");
+    if (!addResult.success) return c.json({ success: false, error: "Failed to add changes" }, 500);
+    const statusResult = await runCommandInScfSandbox(sandbox, "git status --porcelain");
+    if (!statusResult.success) return c.json({ success: false, error: "Failed to check status" }, 500);
+    const statusOutput = statusResult.output || "";
     if (!statusOutput.trim())
       return c.json({ success: true, message: "No changes to sync", committed: false, pushed: false });
     const message = commitMessage || "Sync local changes";
-    const commitResult = await sandbox.runCommand({ cmd: "git", args: ["commit", "-m", message], cwd: PROJECT_DIR });
-    if (commitResult.exitCode !== 0) return c.json({ success: false, error: "Failed to commit changes" }, 500);
-    const pushResult = await sandbox.runCommand({
-      cmd: "git",
-      args: ["push", "origin", task.branchName],
-      cwd: PROJECT_DIR
-    });
-    if (pushResult.exitCode !== 0) return c.json({ success: false, error: "Failed to push changes" }, 500);
+    const escapedMessage = message.replace(/'/g, "'\\''");
+    const commitResult = await runCommandInScfSandbox(sandbox, `git commit -m '${escapedMessage}'`);
+    if (!commitResult.success) return c.json({ success: false, error: "Failed to commit changes" }, 500);
+    const pushResult = await runCommandInScfSandbox(sandbox, `git push origin ${task.branchName}`);
+    if (!pushResult.success) return c.json({ success: false, error: "Failed to push changes" }, 500);
     return c.json({ success: true, message: "Changes synced successfully", committed: true, pushed: true });
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 410)
-      return c.json({ success: false, error: "Sandbox is not running" }, 410);
+  } catch {
     return c.json({ success: false, error: "An error occurred while syncing changes" }, 500);
   }
 });
@@ -6542,20 +7121,6 @@ tasksRouter.post("/:taskId/merge-pr", async (c) => {
       commit_message: commitMessage,
       merge_method: mergeMethod
     });
-    if (task.sandboxId) {
-      try {
-        const sandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
-          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-          token: process.env.SANDBOX_VERCEL_TOKEN
-        });
-        await sandbox.stop();
-        unregisterSandbox(taskId);
-      } catch (sandboxError) {
-        console.error("Error stopping sandbox after merge:", sandboxError);
-      }
-    }
     await getDb().tasks.update(taskId, {
       prStatus: "merged",
       prMergeCommitSha: response.data.sha || null,
@@ -6601,7 +7166,7 @@ tasksRouter.post("/:taskId/close-pr", async (c) => {
     }
   } catch (error) {
     console.error("Error in close PR API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 tasksRouter.post("/:taskId/reopen-pr", async (c) => {
@@ -6632,36 +7197,34 @@ tasksRouter.post("/:taskId/reopen-pr", async (c) => {
     }
   } catch (error) {
     console.error("Error in reopen PR API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
-tasksRouter.get("/:taskId/project-files", async (c) => {
+tasksRouter.get("/:taskId/project-files", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
     return c.json({ success: true, files: [] });
   } catch (error) {
     console.error("Error in project-files API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
-tasksRouter.post("/:taskId/lsp", async (c) => {
+tasksRouter.post("/:taskId/lsp", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const task = await getDb().tasks.findById(taskId);
     if (!task || task.userId !== session.user.id) return c.json({ error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ error: "Task does not have an active sandbox" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
     const body = await c.req.json();
     const { method, filename, position } = body;
@@ -6705,25 +7268,13 @@ if (definitions && definitions.length > 0) {
   console.log(JSON.stringify({ definitions: results }));
 } else { console.log(JSON.stringify({ definitions: [] })); }
 `;
-        const writeCommand = `cat > '${scriptPath}' << 'EOF'
-${helperScript}
-EOF`;
-        await sandbox.runCommand("sh", ["-c", writeCommand]);
-        const result = await sandbox.runCommand("node", [scriptPath]);
-        let stdout = "";
-        let stderr = "";
+        const writeSuccess = await writeFileToSandbox(sandbox, scriptPath, helperScript);
+        if (!writeSuccess) return c.json({ definitions: [], error: "Failed to write helper script" });
+        const result = await runCommandInScfSandbox(sandbox, `node ${scriptPath}`);
+        await runCommandInScfSandbox(sandbox, `rm ${scriptPath}`);
+        if (!result.success) return c.json({ definitions: [], error: "Script execution failed" });
         try {
-          stdout = await result.stdout();
-        } catch {
-        }
-        try {
-          stderr = await result.stderr();
-        } catch {
-        }
-        await sandbox.runCommand("rm", [scriptPath]);
-        if (result.exitCode !== 0) return c.json({ definitions: [], error: stderr || "Script execution failed" });
-        try {
-          return c.json(JSON.parse(stdout.trim()));
+          return c.json(JSON.parse((result.output || "").trim()));
         } catch {
           return c.json({ definitions: [], error: "Failed to parse TypeScript response" });
         }
@@ -6740,61 +7291,54 @@ EOF`;
     return c.json({ error: "Failed to process LSP request" }, 500);
   }
 });
-tasksRouter.post("/:taskId/terminal", async (c) => {
+tasksRouter.post("/:taskId/terminal", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const { command } = await c.req.json();
     if (!command || typeof command !== "string") return c.json({ success: false, error: "Command is required" }, 400);
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "No sandbox found for this task" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not available" }, 400);
     try {
-      const result = await sandbox.runCommand({ cmd: "sh", args: ["-c", command], cwd: PROJECT_DIR });
-      let stdout = "";
-      let stderr = "";
-      try {
-        stdout = await result.stdout();
-      } catch {
-      }
-      try {
-        stderr = await result.stderr();
-      } catch {
-      }
-      return c.json({ success: true, data: { exitCode: result.exitCode, stdout, stderr } });
+      const result = await runCommandInScfSandbox(sandbox, command);
+      return c.json({
+        success: true,
+        data: {
+          exitCode: result.exitCode ?? (result.success ? 0 : 1),
+          stdout: result.output || "",
+          stderr: result.error || ""
+        }
+      });
     } catch (error) {
       console.error("Error executing command:", error);
-      return c.json({ success: false, error: error instanceof Error ? error.message : "Command execution failed" }, 500);
+      return c.json({ success: false, error: "Command execution failed" }, 500);
     }
   } catch (error) {
     console.error("Error in terminal endpoint:", error);
-    return c.json({ success: false, error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
-tasksRouter.post("/:taskId/autocomplete", async (c) => {
+tasksRouter.post("/:taskId/autocomplete", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const { partial, cwd } = await c.req.json();
     if (typeof partial !== "string") return c.json({ success: false, error: "Partial text is required" }, 400);
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "No sandbox found for this task" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not available" }, 400);
     try {
-      const pwdResult = await sandbox.runCommand("sh", ["-c", "pwd"]);
-      let actualCwd = cwd || "/home/vercel-sandbox";
-      try {
-        const pwdOutput = await pwdResult.stdout();
-        if (pwdOutput && pwdOutput.trim()) actualCwd = pwdOutput.trim();
-      } catch {
+      const pwdResult = await runCommandInScfSandbox(sandbox, "pwd");
+      let actualCwd = cwd || "/home/user";
+      if (pwdResult.success && pwdResult.output && pwdResult.output.trim()) {
+        actualCwd = pwdResult.output.trim();
       }
       const parts = partial.split(/\s+/);
       const lastPart = parts[parts.length - 1] || "";
@@ -6805,32 +7349,25 @@ tasksRouter.post("/:taskId/autocomplete", async (c) => {
         const pathPart = lastPart.substring(0, lastSlash + 1);
         prefix = lastPart.substring(lastSlash + 1);
         if (pathPart.startsWith("/")) dir = pathPart;
-        else if (pathPart.startsWith("~/")) dir = "/home/vercel-sandbox/" + pathPart.substring(2);
+        else if (pathPart.startsWith("~/")) dir = "/home/user/" + pathPart.substring(2);
         else dir = `${actualCwd}/${pathPart}`;
       } else {
         prefix = lastPart;
       }
       const escapedDir = "'" + dir.replace(/'/g, "'\\''") + "'";
       const lsCommand = `cd ${escapedDir} 2>/dev/null && ls -1ap 2>/dev/null || echo ""`;
-      const result = await sandbox.runCommand("sh", ["-c", lsCommand]);
-      let stdout = "";
-      try {
-        stdout = await result.stdout();
-      } catch {
-      }
+      const result = await runCommandInScfSandbox(sandbox, lsCommand);
+      const stdout = result.output || "";
       if (!stdout) return c.json({ success: true, data: { completions: [] } });
-      const files = stdout.trim().split("\n").filter((f) => f && f.toLowerCase().startsWith(prefix.toLowerCase())).map((f) => ({ name: f, isDirectory: f.endsWith("/") }));
-      return c.json({ success: true, data: { completions: files, prefix } });
+      const completionFiles = stdout.trim().split("\n").filter((f) => f && f.toLowerCase().startsWith(prefix.toLowerCase())).map((f) => ({ name: f, isDirectory: f.endsWith("/") }));
+      return c.json({ success: true, data: { completions: completionFiles, prefix } });
     } catch (error) {
       console.error("Error getting completions:", error);
-      return c.json(
-        { success: false, error: error instanceof Error ? error.message : "Failed to get completions" },
-        500
-      );
+      return c.json({ success: false, error: "Failed to get completions" }, 500);
     }
   } catch (error) {
     console.error("Error in autocomplete endpoint:", error);
-    return c.json({ success: false, error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ success: false, error: "Internal server error" }, 500);
   }
 });
 tasksRouter.get("/:taskId/check-runs", async (c) => {
@@ -7024,7 +7561,7 @@ tasksRouter.get("/:taskId/deployment", async (c) => {
           console.error("Error checking commit statuses:", statusError);
         }
       }
-      return c.json({ success: true, data: { hasDeployment: false, message: "No successful Vercel deployment found" } });
+      return c.json({ success: true, data: { hasDeployment: false, message: "No successful deployment found" } });
     } catch (error) {
       console.error("Error fetching deployment status:", error);
       if (error && typeof error === "object" && "status" in error && error.status === 404)
@@ -7033,7 +7570,7 @@ tasksRouter.get("/:taskId/deployment", async (c) => {
     }
   } catch (error) {
     console.error("Error in deployment API:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Internal server error" }, 500);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 tasksRouter.get("/:taskId/deployments", async (c) => {
@@ -7133,216 +7670,54 @@ tasksRouter.delete("/:taskId/deployments/:deploymentId", async (c) => {
     return c.json({ error: "Failed to delete deployment" }, 500);
   }
 });
-tasksRouter.get("/:taskId/sandbox-health", async (c) => {
+tasksRouter.get("/:taskId/sandbox-health", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ status: "not_found" });
-    if (!task.sandboxId || !task.sandboxUrl)
-      return c.json({ status: "not_available", message: "Sandbox not created yet" });
-    try {
-      const sandbox = await Sandbox.get({
-        teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-        projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-        token: process.env.SANDBOX_VERCEL_TOKEN,
-        sandboxId: task.sandboxId
-      });
-      if (!sandbox) return c.json({ status: "stopped", message: "Sandbox has stopped or expired" });
-      try {
-        const response = await fetch(task.sandboxUrl, { method: "GET", signal: AbortSignal.timeout(5e3) });
-        const contentLength = response.headers.get("content-length");
-        const body = await response.text();
-        if (response.status === 200 && (contentLength === "0" || body.length === 0))
-          return c.json({ status: "starting", message: "Dev server is starting up" });
-        if (response.ok && body.length > 0)
-          return c.json({ status: "running", message: "Sandbox and dev server are running" });
-        else if (response.status === 410 || response.status === 502)
-          return c.json({ status: "stopped", message: "Sandbox has stopped or expired" });
-        else if (response.status >= 500)
-          return c.json({ status: "error", message: "Dev server returned an error", statusCode: response.status });
-        else if (response.status === 404 || response.status === 503)
-          return c.json({ status: "starting", message: "Dev server is starting up" });
-        else return c.json({ status: "starting", message: "Dev server is initializing" });
-      } catch (fetchError) {
-        if (fetchError instanceof Error) {
-          if (fetchError.name === "TimeoutError" || fetchError.message.includes("timeout"))
-            return c.json({ status: "starting", message: "Dev server is starting or not responding" });
-          return c.json({ status: "stopped", message: "Cannot connect to sandbox" });
-        }
-        return c.json({ status: "starting", message: "Checking dev server status..." });
-      }
-    } catch (sandboxError) {
-      console.error("Sandbox.get() error:", sandboxError);
-      return c.json({ status: "stopped", message: "Sandbox no longer exists" });
-    }
+    if (!task.sandboxId) return c.json({ status: "not_available", message: "Sandbox not created yet" });
+    const sandbox = await getScfSandbox(task, envId);
+    if (!sandbox) return c.json({ status: "stopped", message: "Sandbox not available" });
+    const result = await runCommandInScfSandbox(sandbox, "echo ok");
+    if (result.success) return c.json({ status: "running", message: "Sandbox is running" });
+    return c.json({ status: "error", message: "Sandbox is not responding" });
   } catch (error) {
     console.error("Error checking sandbox health:", error);
     return c.json({ status: "error", message: "Failed to check sandbox health" });
   }
 });
-tasksRouter.post("/:taskId/start-sandbox", async (c) => {
+tasksRouter.post("/:taskId/start-sandbox", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const task = await getDb().tasks.findById(taskId);
     if (!task) return c.json({ error: "Task not found" }, 404);
     if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
     if (!task.keepAlive) return c.json({ error: "Keep-alive is not enabled for this task" }, 400);
     const logger = createTaskLogger(taskId);
-    if (task.sandboxId && task.sandboxUrl) {
+    if (task.sandboxId) {
       try {
-        const existingSandbox = await Sandbox.get({
-          sandboxId: task.sandboxId,
-          teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-          projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-          token: process.env.SANDBOX_VERCEL_TOKEN
-        });
-        const testResult = await runCommandInSandbox(existingSandbox, "echo", ["test"]);
-        if (testResult.success) return c.json({ error: "Sandbox is already running" }, 400);
+        const existingSandbox = await getScfSandbox(task, envId);
+        if (existingSandbox) {
+          const testResult = await runCommandInScfSandbox(existingSandbox, "echo test");
+          if (testResult.success) return c.json({ error: "Sandbox is already running" }, 400);
+        }
       } catch {
-        await logger.info("Existing sandbox not accessible, clearing and creating new one");
-        unregisterSandbox(taskId);
+        await logger.info("Existing sandbox not accessible, creating new one");
         await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null, updatedAt: Date.now() });
       }
     }
     await logger.info("Starting sandbox");
-    const githubToken = await getUserGitHubToken(session.user.id);
-    let gitName = "Coding Agent";
-    let gitEmail = "agent@example.com";
-    if (githubToken) {
-      try {
-        const octokit = new Octokit2({ auth: githubToken });
-        const { data } = await octokit.rest.users.getAuthenticated();
-        gitName = data.name || data.login || gitName;
-        gitEmail = `${data.login}@users.noreply.github.com`;
-      } catch {
-      }
-    }
-    const maxDurationMinutes = task.maxDuration || MAX_SANDBOX_DURATION;
-    let port = 3e3;
-    if (task.repoUrl && githubToken) {
-      const urlMatch = task.repoUrl.match(/github\.com[/:]([\w-]+)\/([\w-]+?)(\.git)?$/);
-      if (urlMatch) {
-        try {
-          const octokit = new Octokit2({ auth: githubToken });
-          const { data } = await octokit.repos.getContent({
-            owner: urlMatch[1],
-            repo: urlMatch[2],
-            path: "package.json"
-          });
-          if ("content" in data && data.type === "file") {
-            const pkgJson = JSON.parse(Buffer.from(data.content, "base64").toString("utf-8"));
-            if (pkgJson.dependencies?.vite || pkgJson.devDependencies?.vite) port = 5173;
-          }
-        } catch {
-        }
-      }
-    }
-    const sandbox = await Sandbox.create({
-      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-      token: process.env.SANDBOX_VERCEL_TOKEN,
-      source: task.repoUrl && task.branchName ? { type: "git", url: task.repoUrl, revision: task.branchName, depth: 1 } : void 0,
-      timeout: maxDurationMinutes * 60 * 1e3,
-      ports: [port],
-      runtime: "node22",
-      resources: { vcpus: 4 }
-    });
-    const sandboxId = sandbox?.sandboxId;
-    await logger.info("Sandbox created");
-    registerSandbox(taskId, sandbox);
-    await logger.info("Configuring Git");
-    await runInProject(sandbox, "git", ["config", "user.name", gitName]);
-    await runInProject(sandbox, "git", ["config", "user.email", gitEmail]);
-    const packageJsonCheck = await runInProject(sandbox, "test", ["-f", "package.json"]);
-    const requirementsTxtCheck = await runInProject(sandbox, "test", ["-f", "requirements.txt"]);
-    if (packageJsonCheck.success) {
-      await logger.info("Installing Node.js dependencies");
-      const packageManager = await detectPackageManager(sandbox);
-      const installCmd = packageManager === "pnpm" ? ["pnpm", "install", "--frozen-lockfile"] : packageManager === "yarn" ? ["yarn", "install", "--frozen-lockfile"] : ["npm", "install", "--no-audit", "--no-fund"];
-      await logger.info("Installing dependencies");
-      const installResult = await runInProject(sandbox, installCmd[0], installCmd.slice(1));
-      if (!installResult.success && packageManager !== "npm")
-        await runInProject(sandbox, "npm", ["install", "--no-audit", "--no-fund"]);
-    } else if (requirementsTxtCheck.success) {
-      await logger.info("Installing Python dependencies");
-      await runInProject(sandbox, "python3", ["-m", "pip", "install", "-r", "requirements.txt"]);
-    }
-    let sandboxUrl;
-    if (packageJsonCheck.success) {
-      const packageJsonRead = await runInProject(sandbox, "cat", ["package.json"]);
-      if (packageJsonRead.success && packageJsonRead.output) {
-        const packageJson = JSON.parse(packageJsonRead.output);
-        const hasDevScript = packageJson?.scripts?.dev;
-        if (hasDevScript) {
-          await logger.info("Starting development server");
-          const packageManager = await detectPackageManager(sandbox);
-          const devCommand = packageManager === "npm" ? "npm" : packageManager;
-          let devArgs = packageManager === "npm" ? ["run", "dev"] : ["dev"];
-          const hasVite = packageJson?.dependencies?.vite || packageJson?.devDependencies?.vite;
-          let devPort = 3e3;
-          if (hasVite) {
-            devPort = 5173;
-            await logger.info("Vite project detected, using port 5173");
-            await runInProject(sandbox, "sh", [
-              "-c",
-              `cat > vite.sandbox.config.js << 'VITEEOF'
-${SANDBOX_VITE_CONFIG}
-VITEEOF`
-            ]);
-            if (packageManager === "npm")
-              devArgs = ["run", "dev", "--", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
-            else devArgs = ["dev", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
-          }
-          const nextVersion = packageJson?.dependencies?.next || packageJson?.devDependencies?.next || "";
-          const isNext16 = nextVersion.startsWith("16.") || nextVersion.startsWith("^16.") || nextVersion.startsWith("~16.");
-          if (isNext16) {
-            await logger.info("Next.js 16 detected, adding --webpack flag");
-            devArgs = packageManager === "npm" ? ["run", "dev", "--", "--webpack"] : ["dev", "--webpack"];
-          }
-          const fullDevCommand = devArgs.length > 0 ? `${devCommand} ${devArgs.join(" ")}` : devCommand;
-          const { Writable } = await import("stream");
-          const captureStdout = new Writable({
-            write(chunk, _enc, cb) {
-              chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
-              }));
-              cb();
-            }
-          });
-          const captureStderr = new Writable({
-            write(chunk, _enc, cb) {
-              chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
-              }));
-              cb();
-            }
-          });
-          await sandbox.runCommand({
-            cmd: "sh",
-            args: ["-c", `cd ${PROJECT_DIR} && ${fullDevCommand}`],
-            detached: true,
-            stdout: captureStdout,
-            stderr: captureStderr
-          });
-          await logger.info("Development server started");
-          await new Promise((resolve2) => setTimeout(resolve2, 3e3));
-          sandboxUrl = sandbox.domain(devPort);
-        }
-      }
-    }
-    await getDb().tasks.update(taskId, { sandboxId, sandboxUrl: sandboxUrl || void 0, updatedAt: Date.now() });
+    const sandbox = await scfSandboxManager.getOrCreate(taskId, envId);
+    await getDb().tasks.update(taskId, { sandboxId: sandbox.functionName, updatedAt: Date.now() });
     await logger.info("Sandbox started successfully");
-    return c.json({ success: true, message: "Sandbox started successfully", sandboxId, sandboxUrl });
+    return c.json({ success: true, message: "Sandbox started successfully", sandboxId: sandbox.functionName });
   } catch (error) {
     console.error("Error starting sandbox:", error);
-    return c.json(
-      { error: "Failed to start sandbox", details: error instanceof Error ? error.message : "Unknown error" },
-      500
-    );
+    return c.json({ error: "Failed to start sandbox" }, 500);
   }
 });
 tasksRouter.post("/:taskId/stop-sandbox", async (c) => {
@@ -7355,97 +7730,43 @@ tasksRouter.post("/:taskId/stop-sandbox", async (c) => {
     if (!task) return c.json({ error: "Task not found" }, 404);
     if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
     if (!task.sandboxId) return c.json({ error: "Sandbox is not active" }, 400);
-    const sandbox = await Sandbox.get({
-      sandboxId: task.sandboxId,
-      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-      token: process.env.SANDBOX_VERCEL_TOKEN
-    });
-    await sandbox.stop();
-    unregisterSandbox(taskId);
     await getDb().tasks.update(taskId, { sandboxId: null, sandboxUrl: null, updatedAt: Date.now() });
     return c.json({ success: true, message: "Sandbox stopped successfully" });
   } catch (error) {
     console.error("Error stopping sandbox:", error);
-    return c.json(
-      { error: "Failed to stop sandbox", details: error instanceof Error ? error.message : "Unknown error" },
-      500
-    );
+    return c.json({ error: "Failed to stop sandbox" }, 500);
   }
 });
-tasksRouter.post("/:taskId/restart-dev", async (c) => {
+tasksRouter.post("/:taskId/restart-dev", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const task = await getDb().tasks.findById(taskId);
     if (!task) return c.json({ error: "Task not found" }, 404);
     if (task.userId !== session.user.id) return c.json({ error: "Unauthorized" }, 403);
     if (!task.sandboxId) return c.json({ error: "Sandbox is not active" }, 400);
-    const sandbox = await Sandbox.get({
-      sandboxId: task.sandboxId,
-      teamId: process.env.SANDBOX_VERCEL_TEAM_ID,
-      projectId: process.env.SANDBOX_VERCEL_PROJECT_ID,
-      token: process.env.SANDBOX_VERCEL_TOKEN
-    });
-    const logger = createTaskLogger(taskId);
-    const packageJsonCheck = await runInProject(sandbox, "test", ["-f", "package.json"]);
-    if (!packageJsonCheck.success) return c.json({ error: "No package.json found in sandbox" }, 400);
-    const packageJsonRead = await runCommandInSandbox(sandbox, "sh", ["-c", `cd ${PROJECT_DIR} && cat package.json`]);
-    if (!packageJsonRead.success || !packageJsonRead.output)
-      return c.json({ error: "Could not read package.json" }, 500);
-    const packageJson = JSON.parse(packageJsonRead.output);
+    const sandbox = await getScfSandbox(task, envId);
+    if (!sandbox) return c.json({ error: "Sandbox not available" }, 400);
+    const packageJsonFile = await readFileFromSandbox(sandbox, "package.json");
+    if (!packageJsonFile.found) return c.json({ error: "No package.json found in sandbox" }, 400);
+    let packageJson;
+    try {
+      packageJson = JSON.parse(packageJsonFile.content);
+    } catch {
+      return c.json({ error: "Could not parse package.json" }, 500);
+    }
     if (!packageJson?.scripts?.dev) return c.json({ error: "No dev script found in package.json" }, 400);
     const hasVite = packageJson?.dependencies?.vite || packageJson?.devDependencies?.vite;
     const devPort = hasVite ? 5173 : 3e3;
-    await runCommandInSandbox(sandbox, "sh", ["-c", `lsof -ti:${devPort} | xargs -r kill -9 2>/dev/null || true`]);
-    await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+    await runCommandInScfSandbox(sandbox, `lsof -ti:${devPort} | xargs -r kill -9 2>/dev/null || true`);
     const packageManager = await detectPackageManager(sandbox);
-    const devCommand = packageManager === "npm" ? "npm" : packageManager;
-    let devArgs = packageManager === "npm" ? ["run", "dev"] : ["dev"];
-    if (hasVite) {
-      await runInProject(sandbox, "sh", [
-        "-c",
-        `cat > vite.sandbox.config.js << 'VITEEOF'
-${SANDBOX_VITE_CONFIG}
-VITEEOF`
-      ]);
-      devArgs = packageManager === "npm" ? ["run", "dev", "--", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"] : ["dev", "--config", "vite.sandbox.config.js", "--host", "0.0.0.0"];
-    }
-    const nextVersion = packageJson?.dependencies?.next || packageJson?.devDependencies?.next || "";
-    const isNext16 = nextVersion.startsWith("16.") || nextVersion.startsWith("^16.") || nextVersion.startsWith("~16.");
-    if (isNext16) devArgs = packageManager === "npm" ? ["run", "dev", "--", "--webpack"] : ["dev", "--webpack"];
-    const fullDevCommand = devArgs.length > 0 ? `${devCommand} ${devArgs.join(" ")}` : devCommand;
-    const { Writable } = await import("stream");
-    const captureStdout = new Writable({
-      write(chunk, _enc, cb) {
-        chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
-        }));
-        cb();
-      }
-    });
-    const captureStderr = new Writable({
-      write(chunk, _enc, cb) {
-        chunk.toString().split("\n").filter((l) => l.trim()).forEach((line) => logger.info(`[SERVER] ${line}`).catch(() => {
-        }));
-        cb();
-      }
-    });
-    await sandbox.runCommand({
-      cmd: "sh",
-      args: ["-c", `cd ${PROJECT_DIR} && ${fullDevCommand}`],
-      detached: true,
-      stdout: captureStdout,
-      stderr: captureStderr
-    });
+    const devCommand = packageManager === "npm" ? "npm run dev" : `${packageManager} dev`;
+    await runCommandInScfSandbox(sandbox, `nohup ${devCommand} > /dev/null 2>&1 &`);
     return c.json({ success: true, message: "Dev server restarted successfully" });
   } catch (error) {
     console.error("Error restarting dev server:", error);
-    return c.json(
-      { error: "Failed to restart dev server", details: error instanceof Error ? error.message : "Unknown error" },
-      500
-    );
+    return c.json({ error: "Failed to restart dev server" }, 500);
   }
 });
 tasksRouter.post("/:taskId/clear-logs", async (c) => {
@@ -7460,7 +7781,7 @@ tasksRouter.post("/:taskId/clear-logs", async (c) => {
     return c.json({ success: true, message: "Logs cleared successfully" });
   } catch (error) {
     console.error("Error clearing logs:", error);
-    return c.json({ success: false, error: error instanceof Error ? error.message : "Failed to clear logs" }, 500);
+    return c.json({ success: false, error: "Failed to clear logs" }, 500);
   }
 });
 tasksRouter.get("/:taskId/pr-comments", async (c) => {
@@ -7504,11 +7825,10 @@ tasksRouter.get("/:taskId/pr-comments", async (c) => {
     return c.json({ success: false, error: "Failed to fetch PR comments" }, 500);
   }
 });
-tasksRouter.post("/:taskId/file-operation", async (c) => {
+tasksRouter.post("/:taskId/file-operation", requireUserEnv, async (c) => {
   try {
-    const authErr = requireAuth(c);
-    if (authErr) return authErr;
     const session = c.get("session");
+    const { envId } = c.get("userEnv");
     const { taskId } = c.req.param();
     const body = await c.req.json();
     const { operation, sourceFile, targetPath } = body;
@@ -7516,17 +7836,19 @@ tasksRouter.post("/:taskId/file-operation", async (c) => {
     const task = await findActiveTask(taskId, session.user.id);
     if (!task) return c.json({ success: false, error: "Task not found" }, 404);
     if (!task.sandboxId) return c.json({ success: false, error: "Sandbox not available" }, 400);
-    const sandbox = await getOrReconnectSandbox(taskId, task);
+    const sandbox = await getScfSandbox(task, envId);
     if (!sandbox) return c.json({ success: false, error: "Sandbox not found" }, 404);
     const sourceBasename = sourceFile.split("/").pop();
     const targetFile = targetPath ? `${targetPath}/${sourceBasename}` : sourceBasename;
+    const escapedSource = sourceFile.replace(/'/g, "'\\''");
+    const escapedTarget = targetFile.replace(/'/g, "'\\''");
     if (operation === "copy") {
-      const copyResult = await sandbox.runCommand({ cmd: "cp", args: ["-r", sourceFile, targetFile], cwd: PROJECT_DIR });
-      if (copyResult.exitCode !== 0) return c.json({ success: false, error: "Failed to copy file" }, 500);
+      const copyResult = await runCommandInScfSandbox(sandbox, `cp -r '${escapedSource}' '${escapedTarget}'`);
+      if (!copyResult.success) return c.json({ success: false, error: "Failed to copy file" }, 500);
       return c.json({ success: true, message: "File copied successfully" });
     } else if (operation === "cut") {
-      const mvResult = await sandbox.runCommand({ cmd: "mv", args: [sourceFile, targetFile], cwd: PROJECT_DIR });
-      if (mvResult.exitCode !== 0) return c.json({ success: false, error: "Failed to move file" }, 500);
+      const mvResult = await runCommandInScfSandbox(sandbox, `mv '${escapedSource}' '${escapedTarget}'`);
+      if (!mvResult.success) return c.json({ success: false, error: "Failed to move file" }, 500);
       return c.json({ success: true, message: "File moved successfully" });
     } else return c.json({ success: false, error: "Invalid operation" }, 400);
   } catch (error) {
@@ -7724,9 +8046,91 @@ app2.patch("/:id/status", async (c) => {
 });
 var connectors_default = app2;
 
-// src/routes/api-keys.ts
+// src/routes/miniprogram.ts
 import { Hono as Hono7 } from "hono";
 import { nanoid as nanoid8 } from "nanoid";
+var app3 = new Hono7();
+app3.get("/", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const apps = await getDb().miniprogramApps.findByUserId(userId);
+  const masked = apps.map((app8) => ({
+    ...app8,
+    privateKey: "***"
+  }));
+  return c.json({ success: true, data: masked });
+});
+app3.post("/", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const body = await c.req.json();
+  const { name, appId, privateKey, description } = body;
+  if (!name || !appId || !privateKey) {
+    return c.json({ error: "name, appId, and privateKey are required" }, 400);
+  }
+  const app8 = await getDb().miniprogramApps.create({
+    id: nanoid8(),
+    userId,
+    name,
+    appId,
+    privateKey: encrypt(privateKey),
+    description: description || null
+  });
+  return c.json({ success: true, data: { ...app8, privateKey: "***" } }, 201);
+});
+app3.patch("/:id", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const { id } = c.req.param();
+  const body = await c.req.json();
+  const existing = await getDb().miniprogramApps.findByIdAndUserId(id, userId);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  const update = {};
+  if (body.name !== void 0) update.name = body.name;
+  if (body.appId !== void 0) update.appId = body.appId;
+  if (body.privateKey !== void 0) update.privateKey = encrypt(body.privateKey);
+  if (body.description !== void 0) update.description = body.description;
+  const updated = await getDb().miniprogramApps.update(id, userId, update);
+  return c.json({ success: true, data: updated ? { ...updated, privateKey: "***" } : null });
+});
+app3.delete("/:id", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const { id } = c.req.param();
+  const existing = await getDb().miniprogramApps.findByIdAndUserId(id, userId);
+  if (!existing) return c.json({ error: "Not found" }, 404);
+  await getDb().miniprogramApps.delete(id, userId);
+  return c.json({ success: true, message: "Deleted" });
+});
+app3.get("/by-appid/:appId", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const userId = session.user.id;
+  const { appId } = c.req.param();
+  const record = await getDb().miniprogramApps.findByAppIdAndUserId(appId, userId);
+  if (!record) return c.json({ error: "Not found" }, 404);
+  return c.json({
+    success: true,
+    data: {
+      ...record,
+      privateKey: decrypt(record.privateKey)
+    }
+  });
+});
+var miniprogram_default = app3;
+
+// src/routes/api-keys.ts
+import { Hono as Hono8 } from "hono";
+import { nanoid as nanoid9 } from "nanoid";
 var VALID_PROVIDERS = ["openai", "gemini", "cursor", "anthropic", "aigateway"];
 var AGENT_PROVIDER_MAP = {
   claude: "aigateway",
@@ -7778,8 +8182,8 @@ async function getUserApiKey(userId, provider) {
   }
   return systemKeys[provider];
 }
-var app3 = new Hono7();
-app3.get("/", async (c) => {
+var app4 = new Hono8();
+app4.get("/", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -7795,7 +8199,7 @@ app3.get("/", async (c) => {
     return c.json({ error: "Failed to fetch API keys" }, 500);
   }
 });
-app3.post("/", async (c) => {
+app4.post("/", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -7811,7 +8215,7 @@ app3.post("/", async (c) => {
     }
     const encryptedKey = encrypt(apiKey);
     await getDb().keys.upsert({
-      id: nanoid8(),
+      id: nanoid9(),
       userId,
       provider,
       value: encryptedKey
@@ -7822,7 +8226,7 @@ app3.post("/", async (c) => {
     return c.json({ error: "Failed to save API key" }, 500);
   }
 });
-app3.delete("/", async (c) => {
+app4.delete("/", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -7839,7 +8243,7 @@ app3.delete("/", async (c) => {
     return c.json({ error: "Failed to delete API key" }, 500);
   }
 });
-app3.get("/check", async (c) => {
+app4.get("/check", async (c) => {
   try {
     const agent = c.req.query("agent");
     const model = c.req.query("model");
@@ -7885,16 +8289,16 @@ app3.get("/check", async (c) => {
     return c.json({ error: "Failed to check API key" }, 500);
   }
 });
-var api_keys_default = app3;
+var api_keys_default = app4;
 
 // src/routes/misc.ts
-import { Hono as Hono8 } from "hono";
+import { Hono as Hono9 } from "hono";
 var GITHUB_REPO = "vercel-labs/coding-agent-template";
 var CACHE_DURATION_MS = 5 * 60 * 1e3;
 var cachedStars = null;
 var lastFetch = 0;
-var app4 = new Hono8();
-app4.get("/github-stars", async (c) => {
+var app5 = new Hono9();
+app5.get("/github-stars", async (c) => {
   try {
     const now4 = Date.now();
     if (cachedStars !== null && now4 - lastFetch < CACHE_DURATION_MS) {
@@ -7918,7 +8322,7 @@ app4.get("/github-stars", async (c) => {
     return c.json({ stars: cachedStars || 1200 });
   }
 });
-app4.get("/sandboxes", async (c) => {
+app5.get("/sandboxes", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -7944,15 +8348,15 @@ app4.get("/sandboxes", async (c) => {
     return c.json({ error: "Failed to fetch sandboxes" }, 500);
   }
 });
-app4.get("/vercel/teams", (c) => {
+app5.get("/vercel/teams", (c) => {
   return c.json({ scopes: [] });
 });
-var misc_default = app4;
+var misc_default = app5;
 
 // src/routes/repos.ts
-import { Hono as Hono9 } from "hono";
+import { Hono as Hono10 } from "hono";
 import { Octokit as Octokit3 } from "@octokit/rest";
-var app5 = new Hono9();
+var app6 = new Hono10();
 async function getGitHubToken2(userId) {
   try {
     const account = await getDb().accounts.findByUserIdAndProvider(userId, "github");
@@ -7968,7 +8372,7 @@ async function getGitHubToken2(userId) {
     return null;
   }
 }
-app5.get("/:owner/:repo/commits", async (c) => {
+app6.get("/:owner/:repo/commits", async (c) => {
   try {
     const owner = c.req.param("owner");
     const repo = c.req.param("repo");
@@ -7989,7 +8393,7 @@ app5.get("/:owner/:repo/commits", async (c) => {
     return c.json({ error: "Failed to fetch commits" }, 500);
   }
 });
-app5.get("/:owner/:repo/issues", async (c) => {
+app6.get("/:owner/:repo/issues", async (c) => {
   try {
     const owner = c.req.param("owner");
     const repo = c.req.param("repo");
@@ -8012,7 +8416,7 @@ app5.get("/:owner/:repo/issues", async (c) => {
     return c.json({ error: "Failed to fetch issues" }, 500);
   }
 });
-app5.get("/:owner/:repo/pull-requests", async (c) => {
+app6.get("/:owner/:repo/pull-requests", async (c) => {
   try {
     const owner = c.req.param("owner");
     const repo = c.req.param("repo");
@@ -8036,7 +8440,7 @@ app5.get("/:owner/:repo/pull-requests", async (c) => {
     return c.json({ error: "Failed to fetch pull requests" }, 500);
   }
 });
-app5.get("/:owner/:repo/pull-requests/:pr_number/check-task", async (c) => {
+app6.get("/:owner/:repo/pull-requests/:pr_number/check-task", async (c) => {
   try {
     const authErr = requireAuth(c);
     if (authErr) return authErr;
@@ -8060,7 +8464,7 @@ app5.get("/:owner/:repo/pull-requests/:pr_number/check-task", async (c) => {
     return c.json({ error: "Failed to check for existing task" }, 500);
   }
 });
-app5.patch("/:owner/:repo/pull-requests/:pr_number/close", async (c) => {
+app6.patch("/:owner/:repo/pull-requests/:pr_number/close", async (c) => {
   try {
     const owner = c.req.param("owner");
     const repo = c.req.param("repo");
@@ -8087,10 +8491,10 @@ app5.patch("/:owner/:repo/pull-requests/:pr_number/close", async (c) => {
     return c.json({ error: "Failed to close pull request" }, 500);
   }
 });
-var repos_default = app5;
+var repos_default = app6;
 
 // src/routes/database.ts
-import { Hono as Hono10 } from "hono";
+import { Hono as Hono11 } from "hono";
 
 // src/cloudbase/database.ts
 import CloudBase4 from "@cloudbase/manager-node";
@@ -8230,7 +8634,7 @@ async function waitForCollectionReady(manager, name, timeoutMs = 1e4, intervalMs
 }
 
 // src/routes/database.ts
-var router = new Hono10();
+var router = new Hono11();
 function getCreds(c) {
   const { envId, credentials } = c.get("userEnv");
   return {
@@ -8316,7 +8720,7 @@ router.delete("/collections/:name/documents/:id", requireUserEnv, async (c) => {
 var database_default = router;
 
 // src/routes/storage.ts
-import { Hono as Hono11 } from "hono";
+import { Hono as Hono12 } from "hono";
 
 // src/cloudbase/storage.ts
 async function getBuckets(creds) {
@@ -8452,7 +8856,7 @@ async function deleteHostingFile(creds, cloudPath) {
 }
 
 // src/routes/storage.ts
-var router2 = new Hono11();
+var router2 = new Hono12();
 function getCreds2(c) {
   const { envId, credentials } = c.get("userEnv");
   return {
@@ -8508,8 +8912,8 @@ router2.delete("/files", requireUserEnv, async (c) => {
 var storage_default = router2;
 
 // src/routes/functions.ts
-import { Hono as Hono12 } from "hono";
-var router3 = new Hono12();
+import { Hono as Hono13 } from "hono";
+var router3 = new Hono13();
 function getCreds3(c) {
   const { envId, credentials } = c.get("userEnv");
   return {
@@ -8554,17 +8958,17 @@ router3.post("/:name/invoke", requireUserEnv, async (c) => {
 var functions_default = router3;
 
 // src/routes/sql.ts
-import { Hono as Hono13 } from "hono";
-var router4 = new Hono13();
+import { Hono as Hono14 } from "hono";
+var router4 = new Hono14();
 router4.post("/query", async (c) => {
   return c.json({ error: "\u8BF7\u5148\u914D\u7F6E SQL \u6570\u636E\u5E93\u8FDE\u63A5\uFF08MySQL/PostgreSQL\uFF09" }, 501);
 });
 var sql_default = router4;
 
 // src/routes/capi.ts
-import { Hono as Hono14 } from "hono";
+import { Hono as Hono15 } from "hono";
 import CloudBase5 from "@cloudbase/manager-node";
-var router5 = new Hono14();
+var router5 = new Hono15();
 router5.post("/", requireUserEnv, async (c) => {
   const { envId, credentials } = c.get("userEnv");
   let body;
@@ -8578,13 +8982,13 @@ router5.post("/", requireUserEnv, async (c) => {
     return c.json({ error: "\u7F3A\u5C11 service / action \u53C2\u6570" }, 400);
   }
   try {
-    const app7 = new CloudBase5({
+    const app8 = new CloudBase5({
       secretId: credentials.secretId,
       secretKey: credentials.secretKey,
       token: credentials.sessionToken || "",
       envId
     });
-    const result = await app7.commonService(service).call({
+    const result = await app8.commonService(service).call({
       Action: action,
       Param: params
     });
@@ -8595,43 +8999,731 @@ router5.post("/", requireUserEnv, async (c) => {
 });
 var capi_default = router5;
 
+// src/routes/admin.ts
+import { Hono as Hono16 } from "hono";
+
+// src/middleware/admin.ts
+import { deleteCookie as deleteCookie3 } from "hono/cookie";
+async function requireAdmin(c, next) {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const db = getDb();
+  const user = await db.users.findById(session.user.id);
+  if (!user || user.role !== "admin") {
+    return c.json({ error: "Admin access required" }, 403);
+  }
+  if (user.status === "disabled") {
+    return c.json({ error: "Account is disabled" }, 403);
+  }
+  c.set("adminUser", user);
+  await next();
+}
+
+// src/routes/admin.ts
+import { nanoid as nanoid10 } from "nanoid";
+import bcrypt2 from "bcryptjs";
+import CloudBase6 from "@cloudbase/manager-node";
+var admin = new Hono16();
+admin.use("/*", requireAdmin);
+var proxyCredentialCache = /* @__PURE__ */ new Map();
+async function getProxyCreds(envId) {
+  const cached = proxyCredentialCache.get(envId);
+  if (cached && cached.expireTime > Date.now() / 1e3 + 300) {
+    return cached.credentials;
+  }
+  const tempCreds = await issueTempCredentials(envId, `admin-proxy-${envId.slice(0, 8)}`);
+  if (!tempCreds) throw new Error("Failed to issue proxy credentials");
+  const creds = {
+    envId,
+    secretId: tempCreds.secretId,
+    secretKey: tempCreds.secretKey,
+    sessionToken: tempCreds.sessionToken
+  };
+  proxyCredentialCache.set(envId, { credentials: creds, expireTime: Date.now() / 1e3 + 6900 });
+  return creds;
+}
+admin.get("/users", async (c) => {
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const offset = (page - 1) * limit;
+  const db = getDb();
+  const users2 = await db.users.findAll(limit, offset);
+  const total = await db.users.count();
+  const resourceMap = /* @__PURE__ */ new Map();
+  await Promise.all(
+    users2.map(async (u) => {
+      const resource = await db.userResources.findByUserId(u.id);
+      if (resource) {
+        resourceMap.set(u.id, {
+          envId: resource.envId,
+          status: resource.status,
+          camSecretId: resource.camSecretId,
+          camSecretKey: resource.camSecretKey
+        });
+      }
+    })
+  );
+  return c.json({
+    users: users2.map((u) => {
+      const res = resourceMap.get(u.id);
+      return {
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        provider: u.provider,
+        createdAt: u.createdAt,
+        lastLoginAt: u.lastLoginAt,
+        disabledReason: u.disabledReason,
+        disabledAt: u.disabledAt,
+        envId: res?.envId || null,
+        envStatus: res?.status || null,
+        credentialType: res?.camSecretId && res?.camSecretKey ? "permanent" : res?.envId ? "temp" : null
+      };
+    }),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit)
+    }
+  });
+});
+admin.get("/users/:userId", async (c) => {
+  const userId = c.req.param("userId");
+  const db = getDb();
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  const resource = await db.userResources.findByUserId(userId);
+  const tasks2 = await db.tasks.findByUserId(userId);
+  return c.json({
+    user: {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      provider: user.provider,
+      createdAt: user.createdAt,
+      lastLoginAt: user.lastLoginAt
+    },
+    resource: resource ? {
+      status: resource.status,
+      envId: resource.envId,
+      camUsername: resource.camUsername,
+      failReason: resource.failReason,
+      credentialType: resource.camSecretId && resource.camSecretKey ? "permanent" : "temp"
+    } : null,
+    taskStats: {
+      total: tasks2.length,
+      completed: tasks2.filter((t) => t.status === "completed").length,
+      failed: tasks2.filter((t) => t.status === "error").length,
+      pending: tasks2.filter((t) => t.status === "pending").length
+    }
+  });
+});
+admin.post("/users/:userId/disable", async (c) => {
+  const userId = c.req.param("userId");
+  const adminUser = c.get("adminUser");
+  const { reason } = await c.req.json();
+  const db = getDb();
+  if (userId === adminUser.id) {
+    return c.json({ error: "Cannot disable yourself" }, 400);
+  }
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  if (user.role === "admin") {
+    return c.json({ error: "Cannot disable admin users" }, 403);
+  }
+  await db.users.disable(userId, reason || "No reason provided", adminUser.id);
+  await db.adminLogs.create({
+    id: nanoid10(),
+    adminUserId: adminUser.id,
+    action: "user_disable",
+    targetUserId: userId,
+    details: JSON.stringify({ reason }),
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  return c.json({ success: true });
+});
+admin.post("/users/:userId/enable", async (c) => {
+  const userId = c.req.param("userId");
+  const adminUser = c.get("adminUser");
+  const db = getDb();
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  await db.users.enable(userId);
+  await db.adminLogs.create({
+    id: nanoid10(),
+    adminUserId: adminUser.id,
+    action: "user_enable",
+    targetUserId: userId,
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  return c.json({ success: true });
+});
+admin.post("/users/:userId/set-role", async (c) => {
+  const userId = c.req.param("userId");
+  const adminUser = c.get("adminUser");
+  const { role } = await c.req.json();
+  if (!["user", "admin"].includes(role)) {
+    return c.json({ error: "Invalid role" }, 400);
+  }
+  const db = getDb();
+  if (userId === adminUser.id) {
+    return c.json({ error: "Cannot change your own role" }, 400);
+  }
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  const oldRole = user.role;
+  await db.users.updateRole(userId, role);
+  await db.adminLogs.create({
+    id: nanoid10(),
+    adminUserId: adminUser.id,
+    action: "user_role_change",
+    targetUserId: userId,
+    details: JSON.stringify({ oldRole, newRole: role }),
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  return c.json({ success: true });
+});
+admin.post("/users/:userId/reset-password", async (c) => {
+  const userId = c.req.param("userId");
+  const adminUser = c.get("adminUser");
+  const { newPassword } = await c.req.json();
+  if (!newPassword || newPassword.length < 6) {
+    return c.json({ error: "Password must be at least 6 characters" }, 400);
+  }
+  const db = getDb();
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  if (user.provider !== "local") {
+    return c.json({ error: "Can only reset password for local users" }, 400);
+  }
+  const passwordHash = await bcrypt2.hash(newPassword, 12);
+  await db.localCredentials.update(userId, { passwordHash, updatedAt: Date.now() });
+  await db.adminLogs.create({
+    id: nanoid10(),
+    adminUserId: adminUser.id,
+    action: "password_reset",
+    targetUserId: userId,
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  return c.json({ success: true });
+});
+admin.post("/users/create", async (c) => {
+  const adminUser = c.get("adminUser");
+  const { username, password, email, role = "user" } = await c.req.json();
+  if (!username || !password) {
+    return c.json({ error: "Username and password are required" }, 400);
+  }
+  if (password.length < 6) {
+    return c.json({ error: "Password must be at least 6 characters" }, 400);
+  }
+  if (!["user", "admin"].includes(role)) {
+    return c.json({ error: "Invalid role" }, 400);
+  }
+  const db = getDb();
+  const existingUser = await db.users.findByProviderAndExternalId("local", username);
+  if (existingUser) {
+    return c.json({ error: "User already exists" }, 400);
+  }
+  const userId = nanoid10();
+  const now4 = Date.now();
+  await db.users.create({
+    id: userId,
+    provider: "local",
+    externalId: username,
+    accessToken: "",
+    username,
+    email: email || null,
+    name: username,
+    role,
+    status: "active",
+    createdAt: now4,
+    updatedAt: now4,
+    lastLoginAt: now4
+  });
+  const passwordHash = await bcrypt2.hash(password, 12);
+  await db.localCredentials.create({
+    userId,
+    passwordHash,
+    createdAt: now4,
+    updatedAt: now4
+  });
+  const provisionMode = process.env.TCB_PROVISION_MODE || "shared";
+  if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
+    const resourceId = nanoid10();
+    if (provisionMode === "isolated") {
+      await db.userResources.create({
+        id: resourceId,
+        userId,
+        status: "processing",
+        envId: null,
+        camUsername: null,
+        camSecretId: null,
+        camSecretKey: null,
+        policyId: null,
+        failStep: null,
+        failReason: null,
+        createdAt: now4,
+        updatedAt: now4
+      });
+      provisionUserResources(userId, username).then(async (result) => {
+        await getDb().userResources.update(resourceId, {
+          status: "success",
+          envId: result.envId,
+          camUsername: result.camUsername,
+          camSecretId: result.camSecretId,
+          camSecretKey: result.camSecretKey || null,
+          policyId: result.policyId,
+          updatedAt: Date.now()
+        });
+        console.log(`[admin-provision] User ${username} env ready: ${result.envId}`);
+      }).catch(async (err) => {
+        await getDb().userResources.update(resourceId, {
+          status: "failed",
+          failReason: err.message,
+          updatedAt: Date.now()
+        });
+        console.error(`[admin-provision] User ${username} failed:`, err.message);
+      });
+    } else {
+      await db.userResources.create({
+        id: resourceId,
+        userId,
+        status: "success",
+        envId: process.env.TCB_ENV_ID || null,
+        camUsername: null,
+        camSecretId: process.env.TCB_SECRET_ID || null,
+        camSecretKey: process.env.TCB_SECRET_KEY || null,
+        policyId: null,
+        failStep: null,
+        failReason: null,
+        createdAt: now4,
+        updatedAt: now4
+      });
+      console.log(`[admin-provision] User ${username} shared env: ${process.env.TCB_ENV_ID}`);
+    }
+  }
+  await db.adminLogs.create({
+    id: nanoid10(),
+    adminUserId: adminUser.id,
+    action: "user_create",
+    targetUserId: userId,
+    details: JSON.stringify({ username, email, role }),
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  return c.json({
+    success: true,
+    user: {
+      id: userId,
+      username,
+      email: email || null,
+      role,
+      status: "active",
+      provider: "local",
+      createdAt: now4
+    }
+  });
+});
+admin.get("/environments", async (c) => {
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const db = getDb();
+  return c.json({
+    resources: [],
+    pagination: {
+      page,
+      limit,
+      total: 0,
+      totalPages: 0
+    }
+  });
+});
+admin.get("/tasks", async (c) => {
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "20");
+  const userId = c.req.query("userId");
+  const status = c.req.query("status");
+  const db = getDb();
+  const filters = {};
+  if (userId) filters.userId = userId;
+  if (status) filters.status = status;
+  const offset = (page - 1) * limit;
+  const tasks2 = await db.tasks.findAll(limit, offset, filters);
+  const total = await db.tasks.count(filters);
+  const userIds = [...new Set(tasks2.map((t) => t.userId))];
+  const userMap = /* @__PURE__ */ new Map();
+  await Promise.all(
+    userIds.map(async (id) => {
+      const user = await db.users.findById(id);
+      if (user) userMap.set(id, user.username);
+    })
+  );
+  return c.json({
+    tasks: tasks2.map((t) => ({
+      id: t.id,
+      userId: t.userId,
+      username: userMap.get(t.userId) || t.userId,
+      title: t.title,
+      prompt: t.prompt,
+      status: t.status,
+      selectedAgent: t.selectedAgent,
+      repoUrl: t.repoUrl,
+      branchName: t.branchName,
+      sandboxUrl: t.sandboxUrl,
+      previewUrl: t.previewUrl,
+      error: t.error,
+      createdAt: t.createdAt,
+      completedAt: t.completedAt
+    })),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit)
+    }
+  });
+});
+admin.get("/tasks/:taskId", async (c) => {
+  const taskId = c.req.param("taskId");
+  const db = getDb();
+  const task = await db.tasks.findById(taskId);
+  if (!task || task.deletedAt) {
+    return c.json({ error: "Task not found" }, 404);
+  }
+  const user = await db.users.findById(task.userId);
+  return c.json({
+    task: {
+      id: task.id,
+      userId: task.userId,
+      username: user?.username || task.userId,
+      title: task.title,
+      prompt: task.prompt,
+      status: task.status,
+      progress: task.progress,
+      selectedAgent: task.selectedAgent,
+      selectedModel: task.selectedModel,
+      installDependencies: task.installDependencies,
+      maxDuration: task.maxDuration,
+      keepAlive: task.keepAlive,
+      enableBrowser: task.enableBrowser,
+      repoUrl: task.repoUrl,
+      branchName: task.branchName,
+      sandboxId: task.sandboxId,
+      agentSessionId: task.agentSessionId,
+      sandboxUrl: task.sandboxUrl,
+      previewUrl: task.previewUrl,
+      prUrl: task.prUrl,
+      prNumber: task.prNumber,
+      prStatus: task.prStatus,
+      prMergeCommitSha: task.prMergeCommitSha,
+      mcpServerIds: task.mcpServerIds,
+      error: task.error,
+      logs: task.logs,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      completedAt: task.completedAt,
+      deletedAt: task.deletedAt
+    }
+  });
+});
+admin.get("/tasks/:taskId/messages", async (c) => {
+  const taskId = c.req.param("taskId");
+  const db = getDb();
+  const task = await db.tasks.findById(taskId);
+  if (!task || task.deletedAt) {
+    return c.json({ error: "Task not found" }, 404);
+  }
+  const userResources2 = await db.userResources.findByUserId(task.userId);
+  if (!userResources2?.envId) {
+    return c.json({ messages: [] });
+  }
+  try {
+    const cloudbaseRecords = await persistenceService.loadDBMessages(taskId, userResources2.envId, task.userId, 200);
+    const messages = cloudbaseRecords.map((record) => {
+      const parts = (record.parts || []).map((p) => {
+        if (p.contentType === "text") return { type: "text", text: p.content || "" };
+        else if (p.contentType === "reasoning") return { type: "thinking", text: p.content || "" };
+        else if (p.contentType === "tool_call")
+          return {
+            type: "tool_call",
+            toolCallId: p.toolCallId || p.partId,
+            toolName: p.metadata?.toolCallName || p.metadata?.toolName || "tool",
+            input: p.content || p.metadata?.input,
+            status: p.metadata?.status || void 0
+          };
+        else if (p.contentType === "tool_result")
+          return {
+            type: "tool_result",
+            toolCallId: p.toolCallId || p.partId,
+            toolName: p.metadata?.toolName || void 0,
+            content: p.content || "",
+            isError: p.metadata?.isError,
+            status: p.metadata?.status || void 0
+          };
+        return { type: "text", text: p.content || "" };
+      });
+      const textContent = parts.filter((p) => p.type === "text").map((p) => p.text).join("");
+      return {
+        id: record.recordId,
+        taskId,
+        role: record.role === "user" ? "user" : "agent",
+        content: textContent,
+        parts,
+        status: record.status,
+        createdAt: record.createTime || Date.now()
+      };
+    });
+    return c.json({ messages });
+  } catch {
+    return c.json({ messages: [] });
+  }
+});
+admin.get("/logs", async (c) => {
+  const page = parseInt(c.req.query("page") || "1");
+  const limit = parseInt(c.req.query("limit") || "50");
+  const db = getDb();
+  const logs = await db.adminLogs.findAll(limit, (page - 1) * limit);
+  return c.json({ logs });
+});
+admin.get("/proxy/:envId/database/collections", async (c) => {
+  try {
+    const creds = await getProxyCreds(c.req.param("envId"));
+    const result = await listCollections(creds);
+    return c.json(result.collections);
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.post("/proxy/:envId/database/collections", async (c) => {
+  try {
+    const { name } = await c.req.json();
+    await createCollection(await getProxyCreds(c.req.param("envId")), name);
+    return c.json({ success: true });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.delete("/proxy/:envId/database/collections/:name", async (c) => {
+  try {
+    await deleteCollection(await getProxyCreds(c.req.param("envId")), c.req.param("name"));
+    return c.json({ success: true });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.get("/proxy/:envId/database/collections/:name/documents", async (c) => {
+  try {
+    const name = c.req.param("name");
+    const page = Number(c.req.query("page") || "1");
+    const pageSize = Number(c.req.query("pageSize") || "50");
+    const search = c.req.query("search")?.trim();
+    let where;
+    if (search) {
+      if (search.includes(":")) {
+        const [field, ...rest] = search.split(":");
+        const val = rest.join(":");
+        where = { [field.trim()]: val.trim() };
+      } else {
+        where = { _id: search };
+      }
+    }
+    const result = await queryDocuments(await getProxyCreds(c.req.param("envId")), name, page, pageSize, where);
+    return c.json(result);
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.post("/proxy/:envId/database/collections/:name/documents", async (c) => {
+  try {
+    const data = await c.req.json();
+    const id = await insertDocument(await getProxyCreds(c.req.param("envId")), c.req.param("name"), data);
+    return c.json({ _id: id });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.put("/proxy/:envId/database/collections/:name/documents/:id", async (c) => {
+  try {
+    const data = await c.req.json();
+    await updateDocument(await getProxyCreds(c.req.param("envId")), c.req.param("name"), c.req.param("id"), data);
+    return c.json({ success: true });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.delete("/proxy/:envId/database/collections/:name/documents/:id", async (c) => {
+  try {
+    await deleteDocument(await getProxyCreds(c.req.param("envId")), c.req.param("name"), c.req.param("id"));
+    return c.json({ success: true });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.get("/proxy/:envId/storage/buckets", async (c) => {
+  try {
+    return c.json(await getBuckets(await getProxyCreds(c.req.param("envId"))));
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.get("/proxy/:envId/storage/files", async (c) => {
+  try {
+    const prefix = c.req.query("prefix") || "";
+    const bucketType = c.req.query("bucketType") || "storage";
+    const cdnDomain = c.req.query("cdnDomain") || "";
+    const creds = await getProxyCreds(c.req.param("envId"));
+    const files = bucketType === "static" ? await listHostingFiles(creds, prefix, cdnDomain) : await listStorageFiles(creds, prefix);
+    return c.json(files);
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.get("/proxy/:envId/storage/url", async (c) => {
+  try {
+    const path5 = c.req.query("path") || "";
+    if (!path5) return c.json({ error: "\u7F3A\u5C11 path \u53C2\u6570" }, 400);
+    return c.json({ url: await getDownloadUrl(await getProxyCreds(c.req.param("envId")), path5) });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.delete("/proxy/:envId/storage/files", async (c) => {
+  try {
+    const { path: path5, bucketType } = await c.req.json();
+    if (!path5) return c.json({ error: "\u7F3A\u5C11 path \u53C2\u6570" }, 400);
+    const creds = await getProxyCreds(c.req.param("envId"));
+    if (bucketType === "static") {
+      await deleteHostingFile(creds, path5);
+    } else {
+      await deleteFile(creds, path5);
+    }
+    return c.json({ success: true });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.post("/proxy/:envId/capi", async (c) => {
+  const envId = c.req.param("envId");
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "\u65E0\u6548\u7684\u8BF7\u6C42\u4F53" }, 400);
+  }
+  const { service, action, params = {} } = body;
+  if (!service || !action) {
+    return c.json({ error: "\u7F3A\u5C11 service / action \u53C2\u6570" }, 400);
+  }
+  try {
+    const creds = await getProxyCreds(envId);
+    const app8 = new CloudBase6({
+      secretId: creds.secretId,
+      secretKey: creds.secretKey,
+      token: creds.sessionToken || "",
+      envId
+    });
+    const result = await app8.commonService(service).call({
+      Action: action,
+      Param: params
+    });
+    return c.json({ result });
+  } catch (e) {
+    return c.json({ error: e.message, code: e.code }, 500);
+  }
+});
+admin.get("/proxy/:envId/functions", async (c) => {
+  try {
+    const manager = createManager(await getProxyCreds(c.req.param("envId")));
+    const result = await manager.functions.getFunctionList(100, 0);
+    const functions = (result.Functions || []).map((f) => ({
+      name: f.FunctionName,
+      runtime: f.Runtime,
+      status: f.Status,
+      codeSize: f.CodeSize,
+      description: f.Description,
+      addTime: f.AddTime,
+      modTime: f.ModTime,
+      memSize: f.MemorySize,
+      timeout: f.Timeout,
+      type: f.Type
+    }));
+    return c.json(functions);
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+admin.post("/proxy/:envId/functions/:name/invoke", async (c) => {
+  try {
+    const manager = createManager(await getProxyCreds(c.req.param("envId")));
+    const name = c.req.param("name");
+    const body = await c.req.json();
+    const result = await manager.functions.invokeFunction(name, body);
+    return c.json({ result: result.RetMsg });
+  } catch (e) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+var admin_default = admin;
+
 // src/index.ts
 var __filename = fileURLToPath2(import.meta.url);
 var __dirname = dirname2(__filename);
 process.on("unhandledRejection", (err) => {
   console.error("[Server] Unhandled rejection:", err);
 });
-var app6 = new Hono15();
-app6.use(
+var app7 = new Hono17();
+app7.use(
   "*",
   cors({
     origin: (origin) => origin || "*",
     credentials: true
   })
 );
-app6.use("*", authMiddleware);
-app6.get("/health", (c) => c.json({ status: "ok" }));
-app6.route("/api/auth", auth_default);
-app6.route("/api/auth/github", github_auth_default);
-app6.route("/api/github", github_default);
-app6.route("/api/agent", acp_default);
-app6.route("/api/tasks", tasks_default);
-app6.route("/api/connectors", connectors_default);
-app6.route("/api/api-keys", api_keys_default);
-app6.route("/api", misc_default);
-app6.route("/api/repos", repos_default);
-app6.route("/api/database", database_default);
-app6.route("/api/storage", storage_default);
-app6.route("/api/functions", functions_default);
-app6.route("/api/sql", sql_default);
-app6.route("/api/capi", capi_default);
+app7.use("*", authMiddleware);
+app7.get("/health", (c) => c.json({ status: "ok" }));
+app7.route("/api/auth", auth_default);
+app7.route("/api/auth/github", github_auth_default);
+app7.route("/api/github", github_default);
+app7.route("/api/agent", acp_default);
+app7.route("/api/tasks", tasks_default);
+app7.route("/api/connectors", connectors_default);
+app7.route("/api/miniprogram", miniprogram_default);
+app7.route("/api/api-keys", api_keys_default);
+app7.route("/api", misc_default);
+app7.route("/api/repos", repos_default);
+app7.route("/api/database", database_default);
+app7.route("/api/storage", storage_default);
+app7.route("/api/functions", functions_default);
+app7.route("/api/sql", sql_default);
+app7.route("/api/capi", capi_default);
+app7.route("/api/admin", admin_default);
 var webDistPath = resolve(__dirname, "../web/dist");
 var serveStaticFiles = existsSync2(webDistPath);
 if (serveStaticFiles) {
   console.log(`[Server] Serving static files from: ${webDistPath}`);
-  app6.use("/assets/*", serveStatic({ root: webDistPath }));
-  app6.use("/*", serveStatic({ root: webDistPath }));
-  app6.get("*", async (c, next) => {
+  app7.use("/assets/*", serveStatic({ root: webDistPath }));
+  app7.use("/*", serveStatic({ root: webDistPath }));
+  app7.get("*", async (c, next) => {
     const path5 = c.req.path;
     if (path5.startsWith("/api")) {
       return next();
@@ -8657,7 +9749,7 @@ if (serveStaticFiles) {
   console.log("[Server] For full-stack mode, build the web package first: pnpm build:web");
 }
 var PORT = Number(process.env.PORT) || 3001;
-serve({ fetch: app6.fetch, port: PORT }, () => {
+serve({ fetch: app7.fetch, port: PORT }, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   if (serveStaticFiles) {
     console.log(`Open http://localhost:${PORT} in your browser`);
@@ -8666,7 +9758,7 @@ serve({ fetch: app6.fetch, port: PORT }, () => {
     console.log(`For development, run: pnpm dev:web`);
   }
 });
-var index_default = app6;
+var index_default = app7;
 export {
   index_default as default
 };

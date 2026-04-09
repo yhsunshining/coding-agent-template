@@ -569,7 +569,16 @@ export class CloudbaseAgentService {
             },
           })
 
-          console.log(`[Agent] Sandbox ready: ${sandboxInstance.functionName}`)
+          console.log('[Agent] Sandbox ready')
+
+          // Persist sandboxId to task record so frontend can access file browser
+          try {
+            await getDb().tasks.update(conversationId, {
+              sandboxId: sandboxInstance.functionName,
+            })
+          } catch {
+            // Non-critical: file browser won't show but agent continues
+          }
         }
       } catch (err) {
         console.error('[Agent] Sandbox creation failed:', (err as Error).message)

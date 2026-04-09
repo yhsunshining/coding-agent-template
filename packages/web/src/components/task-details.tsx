@@ -1753,8 +1753,8 @@ export function TaskDetails({
         </div>
       </div>
 
-      {/* Changes Section - Only show when a branch exists */}
-      {task.branchName && task.branchName.trim().length > 0 ? (
+      {/* Changes Section - Show when a branch or sandbox exists */}
+      {(task.branchName && task.branchName.trim().length > 0) || task.sandboxId ? (
         <>
           {/* Desktop Layout */}
           <div ref={containerRef} className="hidden md:flex flex-1 min-h-0 overflow-hidden">
@@ -1767,6 +1767,7 @@ export function TaskDetails({
                 taskId={task.id}
                 branchName={task.branchName}
                 repoUrl={task.repoUrl}
+                sandboxId={task.sandboxId}
                 onFileSelect={openFileInTab}
                 onFilesLoaded={fetchAllDiffs}
                 selectedFile={selectedFile}
@@ -2507,6 +2508,7 @@ export function TaskDetails({
                     taskId={task.id}
                     branchName={task.branchName}
                     repoUrl={task.repoUrl}
+                    sandboxId={task.sandboxId}
                     onFileSelect={(file, isFolder) => {
                       openFileInTab(file, isFolder)
                       if (!isFolder) {
@@ -2526,7 +2528,7 @@ export function TaskDetails({
           </div>
         </>
       ) : (
-        /* No branch yet - show chat panel only */
+        /* No branch or sandbox yet - show chat panel only */
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <div className="flex-1 min-h-0 min-w-0">
             <TaskChat

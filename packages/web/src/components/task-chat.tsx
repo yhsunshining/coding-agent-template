@@ -42,7 +42,15 @@ import { taskChatInputAtomFamily } from '@/lib/atoms/task'
 import { sessionAtom } from '@/lib/atoms/session'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
-export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInitialPromptConsumed }: TaskChatProps) {
+export function TaskChat({
+  taskId,
+  task,
+  onStreamComplete,
+  initialPrompt,
+  onInitialPromptConsumed,
+  readOnly = false,
+  messagesApiBase = '',
+}: TaskChatProps) {
   const { resolvedTheme } = useTheme()
   const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
   const session = useAtomValue(sessionAtom)
@@ -137,7 +145,10 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
       setError(null)
 
       try {
-        const response = await fetch(`/api/tasks/${taskId}/messages`)
+        const messagesPath = messagesApiBase
+          ? `${messagesApiBase}/tasks/${taskId}/messages`
+          : `/api/tasks/${taskId}/messages`
+        const response = await fetch(messagesPath)
         const data = await response.json()
         // Re-check after async
         if (!canFetchMessages()) return
@@ -152,7 +163,7 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
         if (showLoading) setIsLoading(false)
       }
     },
-    [canFetchMessages, setMessages, taskId],
+    [canFetchMessages, setMessages, taskId, messagesApiBase],
   )
 
   const fetchPRComments = useCallback(async () => {
@@ -304,11 +315,11 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
 
   const initialTriggered = useRef(false)
   useEffect(() => {
-    if (!initialPrompt || initialTriggered.current) return
+    if (readOnly || !initialPrompt || initialTriggered.current) return
     initialTriggered.current = true
     onInitialPromptConsumed?.()
     sendInitialPrompt(initialPrompt)
-  }, [initialPrompt, onInitialPromptConsumed, sendInitialPrompt])
+  }, [initialPrompt, onInitialPromptConsumed, sendInitialPrompt, readOnly])
 
   // ─── Handlers ──────────────────────────────────────────────────────
 
@@ -874,13 +885,15 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
                     )}
                   </div>
                   <div className="flex items-center gap-0.5 justify-end">
-                    <button
-                      onClick={() => handleRetryMessage(group.userMessage.content)}
-                      disabled={isSending}
-                      className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center disabled:opacity-20"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                    </button>
+                    {!readOnly && (
+                      <button
+                        onClick={() => handleRetryMessage(group.userMessage.content)}
+                        disabled={isSending}
+                        className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center disabled:opacity-20"
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                      </button>
+                    )}
                     <button
                       onClick={() => handleCopyMessage(group.userMessage.id, group.userMessage.content)}
                       className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
@@ -960,19 +973,23 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
                                       isError={resultPart?.type === 'tool_result' ? resultPart.isError : false}
                                       isPending={isPending}
                                     />
-                                    {resolvedAskData && isLatestGroup && isLatestMessage && isLatestToolCallPart && (
-                                      <AskUserForm
-                                        askData={resolvedAskData}
-                                        agentMessageId={resolvedAskData.assistantMessageId}
-                                        toolCallId={part.toolCallId || ''}
-                                        questionAnswers={questionAnswersByTool[part.toolCallId || ''] || {}}
-                                        manualInputs={manualInputsByTool[part.toolCallId || ''] || {}}
-                                        isSending={isSending}
-                                        onAnswerSelect={handleAnswerSelect}
-                                        onManualInput={handleManualInput}
-                                        onSubmit={handleAnswerQuestion}
-                                      />
-                                    )}
+                                    {resolvedAskData &&
+                                      !readOnly &&
+                                      isLatestGroup &&
+                                      isLatestMessage &&
+                                      isLatestToolCallPart && (
+                                        <AskUserForm
+                                          askData={resolvedAskData}
+                                          agentMessageId={resolvedAskData.assistantMessageId}
+                                          toolCallId={part.toolCallId || ''}
+                                          questionAnswers={questionAnswersByTool[part.toolCallId || ''] || {}}
+                                          manualInputs={manualInputsByTool[part.toolCallId || ''] || {}}
+                                          isSending={isSending}
+                                          onAnswerSelect={handleAnswerSelect}
+                                          onManualInput={handleManualInput}
+                                          onSubmit={handleAnswerQuestion}
+                                        />
+                                      )}
                                     {isAskUserQuestion &&
                                       resultPart?.type === 'tool_result' &&
                                       resultPart.status !== 'incomplete' && (
@@ -1151,12 +1168,14 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
           >
             Deployments
           </button>
-          <button
-            onClick={() => setActiveTab('cloud')}
-            className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'cloud' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-          >
-            Cloud
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => setActiveTab('cloud')}
+              className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'cloud' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              Cloud
+            </button>
+          )}
         </div>
         <Button variant="ghost" size="sm" onClick={handleRefresh} className="h-6 w-6 p-0 flex-shrink-0" title="Refresh">
           <RefreshCw className="h-4 w-4" />
@@ -1167,14 +1186,14 @@ export function TaskChat({ taskId, task, onStreamComplete, initialPrompt, onInit
       <div className="flex-1 min-h-0 px-3 pt-3 flex flex-col overflow-hidden">{renderTabContent()}</div>
 
       {/* ToolConfirm Dialog */}
-      {activeTab === 'chat' && toolConfirm && (
+      {!readOnly && activeTab === 'chat' && toolConfirm && (
         <div className="flex-shrink-0 px-3 pb-2">
           <ToolConfirmDialog data={toolConfirm} isSending={isSending} onConfirm={handleConfirmTool} />
         </div>
       )}
 
       {/* Input Area */}
-      {activeTab === 'chat' && (
+      {!readOnly && activeTab === 'chat' && (
         <div className="flex-shrink-0 px-3 pb-3">
           <div className="relative">
             <Textarea

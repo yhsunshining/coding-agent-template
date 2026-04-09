@@ -1,7 +1,7 @@
 import type { Task } from '@coder/shared'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, Plus, Trash2, GitBranch, Loader2, Search, X, MoreVertical } from 'lucide-react'
+import { AlertCircle, Plus, Trash2, GitBranch, Loader2, Search, X, MoreVertical, Smartphone } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Link, useLocation } from 'react-router'
 import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
@@ -404,7 +404,7 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
                     : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
                 )}
               >
-                Tasks
+                任务列表
               </button>
               {/* <button
                 onClick={() => setActiveTab('repos')}
@@ -459,7 +459,7 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
 
   return (
     <div
-      className="h-full border-r bg-muted px-2 md:px-3 pt-3 md:pt-5.5 pb-3 md:pb-4 overflow-y-auto"
+      className="h-full border-r bg-muted px-2 md:px-3 pt-3 md:pt-5.5 pb-3 md:pb-4 overflow-y-auto flex flex-col"
       style={{ width: `${width}px` }}
     >
       <div className="mb-3 md:mb-4">
@@ -475,7 +475,7 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
               )}
             >
-              Tasks
+              任务列表
             </button>
             {/* <button
               onClick={() => setActiveTab('repos')}
@@ -507,6 +507,20 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
             </Link>
           </div>
         </div>
+      </div>
+
+      {/* Mini Programs Link */}
+      <div className="mb-2">
+        <Link to="/miniprogram">
+          <Button
+            variant={pathname === '/miniprogram' ? 'secondary' : 'ghost'}
+            size="sm"
+            className="w-full justify-start h-8 px-2 text-xs"
+          >
+            <Smartphone className="h-3.5 w-3.5 mr-2" />
+            小程序管理
+          </Button>
+        </Link>
       </div>
 
       {/* Tasks Tab Content */}
