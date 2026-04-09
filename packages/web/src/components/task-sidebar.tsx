@@ -391,67 +391,33 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
         className="h-full border-r bg-muted px-2 md:px-3 pt-3 md:pt-5.5 pb-3 md:pb-4 overflow-y-auto flex flex-col"
         style={{ width: `${width}px` }}
       >
-        <div className="mb-3 md:mb-4">
-          <div className="flex items-center justify-between mb-2">
-            {/* Tabs */}
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setActiveTab('tasks')}
-                className={cn(
-                  'text-xs font-medium tracking-wide transition-colors px-2 py-1 rounded',
-                  activeTab === 'tasks'
-                    ? 'text-foreground bg-accent'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-                )}
-              >
-                任务列表
-              </button>
-              {/* <button
-                onClick={() => setActiveTab('repos')}
-                className={cn(
-                  'text-xs font-medium tracking-wide transition-colors px-2 py-1 rounded',
-                  activeTab === 'repos'
-                    ? 'text-foreground bg-accent'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-                )}
-              >
-                Repos
-              </button> */}
-            </div>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0"
-                onClick={() => setShowDeleteDialog(true)}
-                disabled={tasks.length === 0}
-                title="Delete Tasks"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-              <Link to="/" onClick={handleLinkClick}>
-                <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="New Task">
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </Link>
-            </div>
-          </div>
+        <div className="mb-2">
+          <Link to="/miniprogram">
+            <Button
+              variant={pathname === '/miniprogram' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="w-full justify-start h-8 px-2 text-xs"
+            >
+              <Smartphone className="h-3.5 w-3.5 mr-2" />
+              小程序管理
+            </Button>
+          </Link>
+        </div>
+        <div className="border-t mb-2" />
+        <div className="mb-2">
+          <Link to="/" onClick={handleLinkClick}>
+            <Button variant="outline" size="sm" className="w-full h-8 text-xs">
+              <Plus className="h-3.5 w-3.5 mr-2" />
+              新建任务
+            </Button>
+          </Link>
         </div>
         <div className="space-y-1">
-          {activeTab === 'tasks' && (
-            <Card>
-              <CardContent className="p-3 text-center text-xs text-muted-foreground">
-                Sign in to view and create tasks
-              </CardContent>
-            </Card>
-          )}
-          {activeTab === 'repos' && (
-            <Card>
-              <CardContent className="p-3 text-center text-xs text-muted-foreground">
-                Sign in to view repositories
-              </CardContent>
-            </Card>
-          )}
+          <Card>
+            <CardContent className="p-3 text-center text-xs text-muted-foreground">
+              登录后查看和创建任务
+            </CardContent>
+          </Card>
         </div>
       </div>
     )
@@ -462,53 +428,6 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
       className="h-full border-r bg-muted px-2 md:px-3 pt-3 md:pt-5.5 pb-3 md:pb-4 overflow-y-auto flex flex-col"
       style={{ width: `${width}px` }}
     >
-      <div className="mb-3 md:mb-4">
-        <div className="flex items-center justify-between mb-2">
-          {/* Tabs */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setActiveTab('tasks')}
-              className={cn(
-                'text-xs font-medium tracking-wide transition-colors px-2 py-1 rounded',
-                activeTab === 'tasks'
-                  ? 'text-foreground bg-accent'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-              )}
-            >
-              任务列表
-            </button>
-            {/* <button
-              onClick={() => setActiveTab('repos')}
-              className={cn(
-                'text-xs font-medium tracking-wide transition-colors px-2 py-1 rounded',
-                activeTab === 'repos'
-                  ? 'text-foreground bg-accent'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-              )}
-            >
-              Repos
-            </button> */}
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0"
-              onClick={() => setShowDeleteDialog(true)}
-              disabled={isDeleting || tasks.length === 0}
-              title="Delete Tasks"
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-            <Link to="/" onClick={handleLinkClick}>
-              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="New Task">
-                <Plus className="h-4 w-4" />
-              </Button>
-            </Link>
-          </div>
-        </div>
-      </div>
-
       {/* Mini Programs Link */}
       <div className="mb-2">
         <Link to="/miniprogram">
@@ -521,6 +440,35 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
             小程序管理
           </Button>
         </Link>
+      </div>
+
+      <div className="border-t mb-2" />
+
+      {/* New Task Button */}
+      <div className="mb-2">
+        <Link to="/" onClick={handleLinkClick}>
+          <Button variant="outline" size="sm" className="w-full h-8 text-xs">
+            <Plus className="h-3.5 w-3.5 mr-2" />
+            新建任务
+          </Button>
+        </Link>
+      </div>
+
+      {/* Tasks header with delete */}
+      <div className="mb-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground px-1">任务列表</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 p-0"
+            onClick={() => setShowDeleteDialog(true)}
+            disabled={isDeleting || tasks.length === 0}
+            title="删除任务"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Tasks Tab Content */}
