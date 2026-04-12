@@ -1,10 +1,17 @@
 import cron from 'node-cron'
 import { nanoid } from 'nanoid'
+import { hostname } from 'os'
 import { getDb } from '../db/index.js'
 import type { CronTask } from '../db/types.js'
 
 // Map of cronTaskId -> ScheduledTask
 const scheduledJobs = new Map<string, cron.ScheduledTask>()
+
+// Unique pod identifier for distributed locking
+const POD_ID = `${hostname()}-${process.pid}`
+
+// Lock expires after 5 minutes (safety net if pod crashes mid-execution)
+const LOCK_TTL_MS = 5 * 60 * 1000
 
 /**
  * Called on server startup: load all enabled cron tasks and schedule them.
@@ -52,8 +59,8 @@ export function unscheduleTask(cronTaskId: string): void {
 }
 
 /**
- * Execute a cron task: create a new task record and update lastRunAt.
- * Agent execution is left to the normal task processing flow.
+ * Execute a cron task with distributed locking.
+ * Only the pod that acquires the lock will create the task.
  */
 async function executeCronTask(cronTaskId: string, userId: string): Promise<void> {
   // Re-read from DB to get latest state
@@ -63,46 +70,60 @@ async function executeCronTask(cronTaskId: string, userId: string): Promise<void
     return
   }
 
-  const ts = Date.now()
-  const taskId = nanoid(12)
+  // Try to acquire distributed lock (atomic CAS)
+  const locked = await getDb().cronTasks.tryLock(cronTaskId, POD_ID, LOCK_TTL_MS)
+  if (!locked) {
+    // Another pod already acquired the lock, skip
+    return
+  }
 
-  // Create a new agent task record (same as POST /api/tasks)
-  await getDb().tasks.create({
-    id: taskId,
-    userId: task.userId,
-    prompt: task.prompt,
-    title: null,
-    repoUrl: task.repoUrl || null,
-    selectedAgent: task.selectedAgent || 'codebuddy',
-    selectedModel: task.selectedModel || 'gml-5.0',
-    installDependencies: false,
-    maxDuration: 300,
-    keepAlive: false,
-    enableBrowser: false,
-    status: 'pending',
-    progress: 0,
-    logs: '[]',
-    error: null,
-    branchName: null,
-    sandboxId: null,
-    agentSessionId: null,
-    sandboxUrl: null,
-    previewUrl: null,
-    prUrl: null,
-    prNumber: null,
-    prStatus: null,
-    prMergeCommitSha: null,
-    mcpServerIds: null,
-    createdAt: ts,
-    updatedAt: ts,
-  })
+  try {
+    const ts = Date.now()
+    const taskId = nanoid(12)
 
-  // Update lastRunAt
-  await getDb().cronTasks.update(task.id, task.userId, {
-    lastRunAt: ts,
-  })
+    // Create a new agent task record
+    await getDb().tasks.create({
+      id: taskId,
+      userId: task.userId,
+      prompt: task.prompt,
+      title: null,
+      repoUrl: task.repoUrl || null,
+      selectedAgent: task.selectedAgent || 'codebuddy',
+      selectedModel: task.selectedModel || null,
+      installDependencies: false,
+      maxDuration: 300,
+      keepAlive: false,
+      enableBrowser: false,
+      status: 'pending',
+      progress: 0,
+      logs: '[]',
+      error: null,
+      branchName: null,
+      sandboxId: null,
+      agentSessionId: null,
+      sandboxUrl: null,
+      previewUrl: null,
+      prUrl: null,
+      prNumber: null,
+      prStatus: null,
+      prMergeCommitSha: null,
+      mcpServerIds: null,
+      createdAt: ts,
+      updatedAt: ts,
+    })
 
-  console.log('Cron task created new task')
+    // Update lastRunAt
+    await getDb().cronTasks.update(task.id, task.userId, {
+      lastRunAt: ts,
+    })
+
+    console.log('Cron task created new task')
+  } finally {
+    // Always release the lock
+    await getDb()
+      .cronTasks.releaseLock(cronTaskId, POD_ID)
+      .catch(() => {})
+  }
 }
 
 /**

@@ -13,6 +13,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { SandboxInstance } from './scf-sandbox-manager.js'
 import { tool as sdkTool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { nanoid } from 'nanoid'
+import cron from 'node-cron'
+import { getDb } from '../db/index.js'
+import { scheduleTask, unscheduleTask } from '../services/cron-scheduler.js'
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -42,6 +46,10 @@ export interface SandboxMcpDeps {
   onDeployUrl?: (url: string) => void
   /** 根据 appId 查询小程序部署凭证 */
   getMpDeployCredentials?: (appId: string) => Promise<{ appId: string; privateKey: string } | null>
+  /** 当前用户 ID，用于 cronTask 等工具 */
+  userId?: string
+  /** 当前使用的模型 ID */
+  currentModel?: string
 }
 
 // ─── Auth Error ──────────────────────────────────────────────────
@@ -145,6 +153,8 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
     log = (msg: string) => console.log(msg),
     onDeployUrl,
     getMpDeployCredentials,
+    userId: depsUserId,
+    currentModel: depsCurrentModel,
   } = deps
 
   // ── HTTP helpers ────────────────────────────────────────────────
@@ -685,6 +695,200 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
       },
     ),
   )
+
+  // ── cronTask tool (CRUD) ──────────────────────────────────────
+  if (depsUserId) {
+    sdkTools.push(
+      sdkTool(
+        'cronTask',
+        '定时任务管理工具。支持创建、查询、更新、删除定时任务。定时任务到达设定时间后会自动创建 Agent 会话执行指定操作。当用户提到定时、定期、每天/每周/每小时执行时使用此工具。',
+        {
+          action: z.enum(['create', 'list', 'update', 'delete']).describe('操作类型'),
+          id: z.string().optional().describe('任务 ID（update/delete 时必填）'),
+          name: z.string().optional().describe('任务名称（create 时必填）'),
+          prompt: z.string().optional().describe('Agent 要执行的内容（create 时必填）'),
+          cronExpression: z.string().optional().describe('Cron 表达式，如 "0 20 * * *"（create 时必填）'),
+          enabled: z.boolean().optional().describe('是否启用，默认 true'),
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const action = args.action as string
+            const userId = depsUserId
+
+            if (action === 'list') {
+              const tasks = await getDb().cronTasks.findByUserId(userId)
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      success: true,
+                      data: tasks.map((t) => ({
+                        id: t.id,
+                        name: t.name,
+                        prompt: t.prompt,
+                        cronExpression: t.cronExpression,
+                        enabled: t.enabled,
+                        lastRunAt: t.lastRunAt,
+                      })),
+                    }),
+                  },
+                ],
+              }
+            }
+
+            if (action === 'create') {
+              const name = args.name as string
+              const prompt = args.prompt as string
+              const cronExpression = args.cronExpression as string
+              const enabled = (args.enabled as boolean) ?? true
+
+              if (!name || !prompt || !cronExpression) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: JSON.stringify({ error: true, message: 'create 需要 name、prompt、cronExpression' }),
+                    },
+                  ],
+                  isError: true,
+                }
+              }
+
+              if (!cron.validate(cronExpression)) {
+                return {
+                  content: [
+                    { type: 'text' as const, text: JSON.stringify({ error: true, message: 'Cron 表达式无效' }) },
+                  ],
+                  isError: true,
+                }
+              }
+
+              const newTask = await getDb().cronTasks.create({
+                id: nanoid(),
+                userId,
+                name,
+                prompt,
+                cronExpression,
+                enabled,
+                repoUrl: null,
+                selectedAgent: 'codebuddy',
+                selectedModel: depsCurrentModel || 'gml-5.0',
+                lastRunAt: null,
+                nextRunAt: null,
+                lockedBy: null,
+                lockedAt: null,
+              })
+
+              if (newTask.enabled) {
+                scheduleTask(newTask)
+              }
+
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      success: true,
+                      id: newTask.id,
+                      name: newTask.name,
+                      cronExpression: newTask.cronExpression,
+                      enabled: newTask.enabled,
+                    }),
+                  },
+                ],
+              }
+            }
+
+            if (action === 'update') {
+              const id = args.id as string
+              if (!id) {
+                return {
+                  content: [
+                    { type: 'text' as const, text: JSON.stringify({ error: true, message: 'update 需要 id' }) },
+                  ],
+                  isError: true,
+                }
+              }
+              if (args.cronExpression && !cron.validate(args.cronExpression as string)) {
+                return {
+                  content: [
+                    { type: 'text' as const, text: JSON.stringify({ error: true, message: 'Cron 表达式无效' }) },
+                  ],
+                  isError: true,
+                }
+              }
+              const updateData: Record<string, unknown> = {}
+              if (args.name !== undefined) updateData.name = args.name
+              if (args.prompt !== undefined) updateData.prompt = args.prompt
+              if (args.cronExpression !== undefined) updateData.cronExpression = args.cronExpression
+              if (args.enabled !== undefined) updateData.enabled = args.enabled
+
+              const updated = await getDb().cronTasks.update(id, userId, updateData)
+              if (!updated) {
+                return {
+                  content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: '任务不存在' }) }],
+                  isError: true,
+                }
+              }
+              if (updated.enabled) {
+                scheduleTask(updated)
+              } else {
+                unscheduleTask(updated.id)
+              }
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: JSON.stringify({
+                      success: true,
+                      id: updated.id,
+                      name: updated.name,
+                      enabled: updated.enabled,
+                    }),
+                  },
+                ],
+              }
+            }
+
+            if (action === 'delete') {
+              const id = args.id as string
+              if (!id) {
+                return {
+                  content: [
+                    { type: 'text' as const, text: JSON.stringify({ error: true, message: 'delete 需要 id' }) },
+                  ],
+                  isError: true,
+                }
+              }
+              const existing = await getDb().cronTasks.findByIdAndUserId(id, userId)
+              if (!existing) {
+                return {
+                  content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: '任务不存在' }) }],
+                  isError: true,
+                }
+              }
+              unscheduleTask(id)
+              await getDb().cronTasks.delete(id, userId)
+              return {
+                content: [{ type: 'text' as const, text: JSON.stringify({ success: true, message: '已删除' }) }],
+              }
+            }
+
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: '未知操作' }) }],
+              isError: true,
+            }
+          } catch (e: any) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ error: true, message: e.message }) }],
+              isError: true,
+            }
+          }
+        },
+      ),
+    )
+  }
 
   const sdkServer = createSdkMcpServer({
     name: 'cloudbase',

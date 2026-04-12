@@ -27,6 +27,9 @@ export const users = sqliteTable(
     disabledAt: integer('disabled_at'),
     disabledBy: text('disabled_by'), // Admin user ID who disabled this user
 
+    // Server API Key for programmatic access
+    apiKey: text('api_key'), // Encrypted, plaintext has prefix sak_
+
     createdAt: integer('created_at').notNull().$defaultFn(now),
     updatedAt: integer('updated_at').notNull().$defaultFn(now),
     lastLoginAt: integer('last_login_at').notNull().$defaultFn(now),
@@ -134,6 +137,8 @@ export const cronTasks = sqliteTable('cron_tasks', {
   selectedModel: text('selected_model'),
   lastRunAt: integer('last_run_at'),
   nextRunAt: integer('next_run_at'),
+  lockedBy: text('locked_by'),
+  lockedAt: integer('locked_at'),
   createdAt: integer('created_at').notNull().$defaultFn(now),
   updatedAt: integer('updated_at').notNull().$defaultFn(now),
 })

@@ -44,7 +44,7 @@ app.post('/', async (c) => {
     enabled,
     repoUrl: repoUrl || null,
     selectedAgent: selectedAgent || 'codebuddy',
-    selectedModel: selectedModel || 'gml-5.0',
+    selectedModel: selectedModel || null,
     lastRunAt: null,
     nextRunAt: null,
   })

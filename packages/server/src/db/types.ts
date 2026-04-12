@@ -16,6 +16,7 @@ export interface User {
   disabledReason: string | null
   disabledAt: number | null
   disabledBy: string | null
+  apiKey: string | null // Encrypted server API key
   createdAt: number
   updatedAt: number
   lastLoginAt: number
@@ -99,6 +100,8 @@ export interface CronTask {
   selectedModel: string | null
   lastRunAt: number | null
   nextRunAt: number | null
+  lockedBy: string | null
+  lockedAt: number | null
   createdAt: number
   updatedAt: number
 }
@@ -247,6 +250,7 @@ export type NewAdminLog = Omit<AdminLog, 'createdAt'> & {
 export interface UserRepository {
   findById(id: string): Promise<User | null>
   findByProviderAndExternalId(provider: string, externalId: string): Promise<User | null>
+  findByApiKey(encryptedApiKey: string): Promise<User | null>
   create(user: NewUser): Promise<User>
   update(id: string, data: Partial<Omit<User, 'id'>>): Promise<User | null>
   deleteById(id: string): Promise<void>
@@ -308,6 +312,8 @@ export interface CronTaskRepository {
   update(id: string, userId: string, data: Partial<Omit<CronTask, 'id' | 'userId'>>): Promise<CronTask | null>
   delete(id: string, userId: string): Promise<void>
   updateUserId(fromUserId: string, toUserId: string): Promise<void>
+  tryLock(id: string, lockerId: string, maxLockMs: number): Promise<boolean>
+  releaseLock(id: string, lockerId: string): Promise<void>
 }
 
 export interface AccountRepository {

@@ -74,6 +74,11 @@ class DrizzleUserRepository implements UserRepository {
     return (row as User) ?? null
   }
 
+  async findByApiKey(encryptedApiKey: string): Promise<User | null> {
+    const [row] = await drizzleDb.select().from(users).where(eq(users.apiKey, encryptedApiKey)).limit(1)
+    return (row as User) ?? null
+  }
+
   async create(user: NewUser): Promise<User> {
     const ts = now()
     const values = {
@@ -420,6 +425,23 @@ class DrizzleCronTaskRepository implements CronTaskRepository {
   async updateUserId(fromUserId: string, toUserId: string): Promise<void> {
     await drizzleDb.update(cronTasks).set({ userId: toUserId }).where(eq(cronTasks.userId, fromUserId))
   }
+
+  async tryLock(id: string, lockerId: string, maxLockMs: number): Promise<boolean> {
+    const cutoff = Date.now() - maxLockMs
+    // Atomic CAS: only acquire if unlocked or lock expired
+    const result = await drizzleDb
+      .update(cronTasks)
+      .set({ lockedBy: lockerId, lockedAt: Date.now() })
+      .where(and(eq(cronTasks.id, id), sql`(${cronTasks.lockedBy} IS NULL OR ${cronTasks.lockedAt} < ${cutoff})`))
+    return (result as any).changes > 0
+  }
+
+  async releaseLock(id: string, lockerId: string): Promise<void> {
+    await drizzleDb
+      .update(cronTasks)
+      .set({ lockedBy: null, lockedAt: null })
+      .where(and(eq(cronTasks.id, id), eq(cronTasks.lockedBy, lockerId)))
+  }
 }
 
 // ─── Account Repository ─────────────────────────────────────────────────────
@@ -685,6 +707,40 @@ class DrizzleAdminLogRepository implements AdminLogRepository {
   }
 }
 
+// ─── Server API Key Repository ──────────────────────────────────────────────
+
+class DrizzleServerApiKeyRepository implements ServerApiKeyRepository {
+  async findByKey(encryptedKey: string): Promise<ServerApiKey | null> {
+    const rows = await drizzleDb.select().from(serverApiKeys).where(eq(serverApiKeys.key, encryptedKey)).limit(1)
+    return (rows[0] as ServerApiKey) || null
+  }
+
+  async findByUserId(userId: string): Promise<ServerApiKey[]> {
+    const rows = await drizzleDb.select().from(serverApiKeys).where(eq(serverApiKeys.userId, userId))
+    return rows as ServerApiKey[]
+  }
+
+  async findAll(): Promise<ServerApiKey[]> {
+    const rows = await drizzleDb.select().from(serverApiKeys).orderBy(desc(serverApiKeys.createdAt))
+    return rows as ServerApiKey[]
+  }
+
+  async create(key: NewServerApiKey): Promise<ServerApiKey> {
+    const now = Date.now()
+    const record = { ...key, lastUsedAt: null, createdAt: now }
+    await drizzleDb.insert(serverApiKeys).values(record)
+    return record as ServerApiKey
+  }
+
+  async delete(id: string): Promise<void> {
+    await drizzleDb.delete(serverApiKeys).where(eq(serverApiKeys.id, id))
+  }
+
+  async updateLastUsed(id: string): Promise<void> {
+    await drizzleDb.update(serverApiKeys).set({ lastUsedAt: Date.now() }).where(eq(serverApiKeys.id, id))
+  }
+}
+
 // ─── Provider Factory ───────────────────────────────────────────────────────
 
 export function createDrizzleProvider(): DatabaseProvider {
@@ -701,5 +757,6 @@ export function createDrizzleProvider(): DatabaseProvider {
     settings: new DrizzleSettingRepository(),
     deployments: new DrizzleDeploymentRepository(),
     adminLogs: new DrizzleAdminLogRepository(),
+    serverApiKeys: new DrizzleServerApiKeyRepository(),
   }
 }

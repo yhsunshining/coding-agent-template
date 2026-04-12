@@ -11,6 +11,7 @@ import { scfSandboxManager, type SandboxInstance } from '../sandbox/scf-sandbox-
 import { createSandboxMcpClient } from '../sandbox/sandbox-mcp-proxy.js'
 import { archiveToGit } from '../sandbox/git-archive.js'
 import { getDb } from '../db/index.js'
+import { nanoid } from 'nanoid'
 import { decrypt } from '../lib/crypto.js'
 import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage, ExtendedSessionUpdate } from '@coder/shared'
 import { registerAgent, getAgentRun, completeAgent, removeAgent, isAgentRunning } from './agent-registry.js'
@@ -303,7 +304,15 @@ ${
 2. 获取到 appId 后，在生成 project.config.json 时使用该 appId
 3. 在调用 publishMiniprogram 部署前，确保已获取到有效的 appId`
     : ''
-}`
+}
+
+定时任务规则：
+当用户提到定时执行、定期运行、每天/每周/每小时执行某操作等需求时，必须使用 cronTask 工具来管理定时任务。
+- 创建：action="create"，需要 name、prompt、cronExpression
+- 查询：action="list"，查看当前所有定时任务
+- 更新：action="update"，通过 id 修改已有任务（可改 prompt、cronExpression、enabled 等）
+- 删除：action="delete"，通过 id 删除任务
+Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20:00。`
 
   if (sandboxCwd) {
     return `${base}
@@ -636,7 +645,14 @@ export class CloudbaseAgentService {
         eventBuffer.push(acpEvent)
       }
 
-      // 2. Forward to live SSE callback if present (ignore errors on disconnect)
+      // 2. Persist deployment records to SQLite (side-effect, fire-and-forget)
+      if (msg.type === 'deploy_url') {
+        this.persistDeployment(conversationId, msg).catch((err) => {
+          console.error('Failed to persist deployment:', err)
+        })
+      }
+
+      // 3. Forward to live SSE callback if present (ignore errors on disconnect)
       if (liveCallback) {
         try {
           liveCallback(enrichedMsg)
@@ -704,6 +720,8 @@ export class CloudbaseAgentService {
               if (!app) return null
               return { appId: app.appId, privateKey: decrypt(app.privateKey) }
             },
+            userId: userContext.userId,
+            currentModel: modelId,
           })
 
           console.log('[Agent] Sandbox ready')
@@ -1099,6 +1117,88 @@ export class CloudbaseAgentService {
 
       if (syncError) {
         throw syncError
+      }
+    }
+  }
+
+  // ─── Deployment Persistence ────────────────────────────────────────
+
+  private async persistDeployment(taskId: string, msg: AgentCallbackMessage): Promise<void> {
+    const deploymentType = msg.deploymentType || 'web'
+    const now = Date.now()
+
+    if (deploymentType === 'miniprogram') {
+      const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, 'miniprogram', null)
+
+      if (existing) {
+        await getDb().deployments.update(existing.id, {
+          qrCodeUrl: msg.qrCodeUrl || existing.qrCodeUrl,
+          pagePath: msg.pagePath || existing.pagePath,
+          appId: msg.appId || existing.appId,
+          label: msg.label || existing.label,
+          metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+          updatedAt: now,
+        })
+      } else {
+        await getDb().deployments.create({
+          id: nanoid(12),
+          taskId,
+          type: 'miniprogram',
+          url: null,
+          path: null,
+          qrCodeUrl: msg.qrCodeUrl || null,
+          pagePath: msg.pagePath || null,
+          appId: msg.appId || null,
+          label: msg.label || null,
+          metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+          createdAt: now,
+          updatedAt: now,
+        })
+      }
+    } else if (msg.url) {
+      let urlPath: string | null = null
+      try {
+        const urlObj = new URL(msg.url)
+        urlPath = urlObj.pathname
+      } catch {
+        /* ignore */
+      }
+
+      if (urlPath) {
+        const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, 'web', urlPath)
+
+        if (existing) {
+          await getDb().deployments.update(existing.id, {
+            url: msg.url,
+            label: msg.label || existing.label,
+            metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+            updatedAt: now,
+          })
+        } else {
+          await getDb().deployments.create({
+            id: nanoid(12),
+            taskId,
+            type: 'web',
+            url: msg.url,
+            path: urlPath,
+            qrCodeUrl: null,
+            pagePath: null,
+            appId: null,
+            label: msg.label || null,
+            metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+      }
+    }
+
+    // Also update legacy previewUrl for backward compatibility
+    if (msg.url) {
+      try {
+        await getDb().tasks.update(taskId, { previewUrl: msg.url })
+      } catch {
+        // Non-critical
       }
     }
   }
