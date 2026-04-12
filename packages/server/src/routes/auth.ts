@@ -4,6 +4,7 @@ import { getDb } from '../db/index.js'
 import bcrypt from 'bcryptjs'
 import { nanoid } from 'nanoid'
 import { encryptJWE } from '../lib/session'
+import { encrypt } from '../lib/crypto'
 import type { AppEnv, AppSession } from '../middleware/auth'
 import { provisionUserResources } from '../cloudbase/provision.js'
 
@@ -52,6 +53,7 @@ auth.post('/register', async (c) => {
       email: null,
       name: null,
       avatarUrl: null,
+      apiKey: encrypt(`sak_${nanoid(40)}`),
       createdAt: now,
       updatedAt: now,
       lastLoginAt: now,
@@ -250,11 +252,13 @@ auth.get('/me', async (c) => {
     return c.json({ user: undefined })
   }
 
-  // Get user's envId
+  // Get user's envId and provision status
   let envId: string | undefined
+  let provisionStatus: string = 'not_started'
   try {
     const resource = await getDb().userResources.findByUserId(session.user.id)
     envId = resource?.envId || undefined
+    provisionStatus = resource?.status || 'not_started'
   } catch {
     // ignore
   }
@@ -266,6 +270,7 @@ auth.get('/me', async (c) => {
     },
     authProvider: session.authProvider,
     envId,
+    provisionStatus,
   })
 })
 
@@ -289,6 +294,51 @@ auth.get('/provision-status', async (c) => {
   })
 })
 
+// Retry failed provision
+auth.post('/provision-retry', async (c) => {
+  const session = c.get('session')
+  if (!session?.user?.id) return c.json({ error: 'Unauthorized' }, 401)
+
+  const resource = await getDb().userResources.findByUserId(session.user.id)
+  if (!resource) return c.json({ error: 'No resource record found' }, 404)
+  if (resource.status !== 'failed') return c.json({ error: 'Can only retry failed provisions' }, 400)
+
+  // Reset to processing and retry
+  await getDb().userResources.update(resource.id, {
+    status: 'processing',
+    failReason: null,
+    failStep: null,
+    updatedAt: Date.now(),
+  })
+
+  const user = await getDb().users.findById(session.user.id)
+  const username = user?.username || session.user.username || 'unknown'
+
+  provisionUserResources(session.user.id, username)
+    .then(async (result) => {
+      await getDb().userResources.update(resource.id, {
+        status: 'success',
+        envId: result.envId,
+        camUsername: result.camUsername,
+        camSecretId: result.camSecretId,
+        camSecretKey: result.camSecretKey || null,
+        policyId: result.policyId,
+        updatedAt: Date.now(),
+      })
+      console.log('[provision-retry] User env ready')
+    })
+    .catch(async (err) => {
+      await getDb().userResources.update(resource.id, {
+        status: 'failed',
+        failReason: err.message,
+        updatedAt: Date.now(),
+      })
+      console.error('[provision-retry] Failed:', err.message)
+    })
+
+  return c.json({ status: 'processing' })
+})
+
 // Rate limit info
 auth.get('/rate-limit', async (c) => {
   const session = c.get('session')
@@ -310,6 +360,42 @@ auth.get('/auth-config', (c) => {
   const githubMode = process.env.AUTH_GITHUB_MODE || 'direct' // 'direct' | 'cloudbase'
   const tcbEnvId = process.env.TCB_ENV_ID || ''
   return c.json({ providers, githubMode, tcbEnvId })
+})
+
+// ─── API Key (view / reset) ────────────────────────────────────────────────
+
+// Get current user's API key
+auth.get('/api-key', async (c) => {
+  const authErr = requireAuth(c)
+  if (authErr) return authErr
+  const session = c.get('session')!
+  const user = await getDb().users.findById(session.user.id)
+  if (!user) return c.json({ error: 'User not found' }, 404)
+
+  if (!user.apiKey) {
+    return c.json({ apiKey: null })
+  }
+
+  try {
+    const { decrypt } = await import('../lib/crypto.js')
+    return c.json({ apiKey: decrypt(user.apiKey) })
+  } catch {
+    return c.json({ apiKey: null })
+  }
+})
+
+// Reset (regenerate) current user's API key
+auth.post('/api-key/reset', async (c) => {
+  const authErr = requireAuth(c)
+  if (authErr) return authErr
+  const session = c.get('session')!
+
+  const plainKey = `sak_${nanoid(40)}`
+  const encryptedKey = encrypt(plainKey)
+
+  await getDb().users.update(session.user.id, { apiKey: encryptedKey })
+
+  return c.json({ apiKey: plainKey })
 })
 
 export default auth

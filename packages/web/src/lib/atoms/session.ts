@@ -13,6 +13,7 @@ export interface SessionUserInfo {
   user?: SessionUser
   authProvider?: 'github' | 'vercel' | 'local' | 'cloudbase'
   envId?: string
+  provisionStatus?: 'processing' | 'success' | 'failed' | 'not_started'
 }
 
 export const sessionAtom = atom<SessionUserInfo>({ user: undefined })

@@ -270,6 +270,7 @@ githubAuth.get('/callback', async (c) => {
           email: email || null,
           name: githubUser.name || githubUser.login,
           avatarUrl: githubUser.avatar_url,
+          apiKey: encrypt(`sak_${nanoid(40)}`),
           createdAt: now,
           updatedAt: now,
           lastLoginAt: now,

@@ -37,9 +37,6 @@ import type {
   SettingRepository,
   DeploymentRepository,
   AdminLogRepository,
-  ServerApiKey,
-  NewServerApiKey,
-  ServerApiKeyRepository,
   DatabaseProvider,
 } from '../types'
 
@@ -71,6 +68,17 @@ class CloudBaseUserRepository implements UserRepository {
     const collection = await getCollection('users')
     const { data } = await collection
       .where({ provider: _.eq(provider), externalId: _.eq(externalId) })
+      .limit(1)
+      .get()
+    if (!data || data.length === 0) return null
+    return stripCloudBaseId<User>(data[0] as Record<string, unknown>)
+  }
+
+  async findByApiKey(encryptedApiKey: string): Promise<User | null> {
+    const _ = getCommand()
+    const collection = await getCollection('users')
+    const { data } = await collection
+      .where({ apiKey: _.eq(encryptedApiKey) })
       .limit(1)
       .get()
     if (!data || data.length === 0) return null
@@ -831,43 +839,6 @@ class CloudBaseAdminLogRepository implements AdminLogRepository {
   }
 }
 
-// ─── Server API Key Repository ──────────────────────────────────────────────
-
-class CloudBaseServerApiKeyRepository implements ServerApiKeyRepository {
-  private col() {
-    return getCollection('server_api_keys')
-  }
-
-  async findByKey(encryptedKey: string): Promise<ServerApiKey | null> {
-    const { data } = await this.col().where({ key: encryptedKey }).limit(1).get()
-    return (data as Record<string, unknown>[])[0] ? mapDoc<ServerApiKey>((data as Record<string, unknown>[])[0]) : null
-  }
-
-  async findByUserId(userId: string): Promise<ServerApiKey[]> {
-    const { data } = await this.col().where({ userId }).get()
-    return (data as Record<string, unknown>[]).map(mapDoc<ServerApiKey>)
-  }
-
-  async findAll(): Promise<ServerApiKey[]> {
-    const { data } = await this.col().orderBy('createdAt', 'desc').get()
-    return (data as Record<string, unknown>[]).map(mapDoc<ServerApiKey>)
-  }
-
-  async create(key: NewServerApiKey): Promise<ServerApiKey> {
-    const record = { ...key, lastUsedAt: null, createdAt: now() }
-    await this.col().doc(key.id).set(record)
-    return record as ServerApiKey
-  }
-
-  async delete(id: string): Promise<void> {
-    await this.col().doc(id).remove()
-  }
-
-  async updateLastUsed(id: string): Promise<void> {
-    await this.col().doc(id).update({ lastUsedAt: now() })
-  }
-}
-
 // ─── Provider Factory ───────────────────────────────────────────────────────
 
 export function createCloudBaseProvider(): DatabaseProvider {
@@ -884,6 +855,5 @@ export function createCloudBaseProvider(): DatabaseProvider {
     settings: new CloudBaseSettingRepository(),
     deployments: new CloudBaseDeploymentRepository(),
     adminLogs: new CloudBaseAdminLogRepository(),
-    serverApiKeys: new CloudBaseServerApiKeyRepository(),
   }
 }

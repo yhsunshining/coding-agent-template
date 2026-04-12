@@ -3,6 +3,7 @@ import { setCookie } from 'hono/cookie'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
 import { encryptJWE } from '../lib/session'
+import { encrypt } from '../lib/crypto'
 import type { AppEnv, AppSession } from '../middleware/auth'
 import { provisionUserResources } from '../cloudbase/provision.js'
 
@@ -56,6 +57,7 @@ cloudbaseAuth.post('/login', async (c) => {
         email: email || null,
         name: nickName || null,
         avatarUrl: avatarUrl || null,
+        apiKey: encrypt(`sak_${nanoid(40)}`),
         createdAt: now,
         updatedAt: now,
         lastLoginAt: now,

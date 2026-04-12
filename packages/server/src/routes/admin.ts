@@ -344,6 +344,7 @@ admin.post('/users/create', async (c) => {
     name: username,
     role,
     status: 'active',
+    apiKey: encrypt(`sak_${nanoid(40)}`),
     createdAt: now,
     updatedAt: now,
     lastLoginAt: now,
@@ -854,103 +855,6 @@ admin.post('/proxy/:envId/functions/:name/invoke', async (c) => {
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
-})
-
-// ─── Server API Keys ──────────────────────────────────────────────────────────
-
-// Create a server API key for a user
-admin.post('/server-api-keys', async (c) => {
-  const body = await c.req.json()
-  const { userId, name, scopes } = body as { userId: string; name: string; scopes?: string[] }
-
-  if (!userId || !name) {
-    return c.json({ error: 'userId and name are required' }, 400)
-  }
-
-  const db = getDb()
-  const user = await db.users.findById(userId)
-  if (!user) return c.json({ error: 'User not found' }, 404)
-
-  // Generate key: sak_ + 40-char random string
-  const plainKey = `sak_${nanoid(40)}`
-  const encryptedKey = encrypt(plainKey)
-
-  const record = await db.serverApiKeys.create({
-    id: nanoid(),
-    userId,
-    key: encryptedKey,
-    name,
-    scopes: JSON.stringify(scopes || ['acp']),
-  })
-
-  // Log admin action
-  const session = c.get('session')!
-  await db.adminLogs.create({
-    id: nanoid(),
-    adminUserId: session.user.id,
-    action: 'server_api_key_create',
-    targetUserId: userId,
-    details: JSON.stringify({ keyId: record.id, name }),
-    createdAt: Date.now(),
-  })
-
-  // Return plaintext key ONCE — it cannot be retrieved later
-  return c.json({
-    id: record.id,
-    userId,
-    name,
-    key: plainKey,
-    scopes: scopes || ['acp'],
-    createdAt: record.createdAt,
-  })
-})
-
-// List all server API keys (without revealing the key value)
-admin.get('/server-api-keys', async (c) => {
-  const db = getDb()
-  const keys = await db.serverApiKeys.findAll()
-
-  // Batch resolve usernames
-  const userIds = [...new Set(keys.map((k) => k.userId))]
-  const userMap = new Map<string, string>()
-  await Promise.all(
-    userIds.map(async (id) => {
-      const user = await db.users.findById(id)
-      if (user) userMap.set(id, user.username)
-    }),
-  )
-
-  return c.json({
-    keys: keys.map((k) => ({
-      id: k.id,
-      userId: k.userId,
-      username: userMap.get(k.userId) || k.userId,
-      name: k.name,
-      scopes: JSON.parse(k.scopes),
-      lastUsedAt: k.lastUsedAt,
-      createdAt: k.createdAt,
-    })),
-  })
-})
-
-// Delete a server API key
-admin.delete('/server-api-keys/:id', async (c) => {
-  const { id } = c.req.param()
-  const db = getDb()
-
-  await db.serverApiKeys.delete(id)
-
-  const session = c.get('session')!
-  await db.adminLogs.create({
-    id: nanoid(),
-    adminUserId: session.user.id,
-    action: 'server_api_key_delete',
-    targetUserId: null,
-    details: JSON.stringify({ keyId: id }),
-    createdAt: Date.now(),
-  })
-
-  return c.json({ success: true })
 })
 
 export default admin

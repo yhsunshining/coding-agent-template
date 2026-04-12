@@ -2,6 +2,13 @@
 
 基于 [coding-agent-template](https://github.com/vercel-labs/coding-agent-template) 重构改造的 AI 编程助手平台，结合腾讯云 CloudBase 打造的 VibeCoding 体验。
 
+## 文档导航
+
+- [Setup 指南](docs/setup.md) — 详细初始化流程、关键环境变量、验证清单与排障
+- [系统架构](docs/architecture.md) — 系统分层、用户环境绑定、任务与 Sandbox 链路
+- [SCF Session 共享方案](docs/scf-session-sharing.md) — 沙箱会话共享相关设计
+- [定时任务云函数方案](docs/crontask-cloudfunction-plan.md) — crontask 的云函数演进规划
+
 ## 项目特点
 
 - **Monorepo 架构**: 使用 pnpm workspace 管理多包项目
@@ -15,19 +22,44 @@
 ## 项目结构
 
 ```
+├── docs/
+│   ├── setup.md                  # setup 详解与排障
+│   ├── architecture.md           # 系统架构文档
+│   ├── scf-session-sharing.md    # SCF Session 共享设计
+│   └── crontask-cloudfunction-plan.md
 ├── packages/
 │   ├── web/          # React + Vite 前端
 │   ├── server/       # Hono 后端服务
 │   ├── dashboard/    # CloudBase 管理面板
-│   └── shared/       # 共享类型和工具
+│   └── shared/       # 共享类型和协议
 ├── scripts/
-│   ├── init.ts       # 初始化脚本
-│   └── setup-tcr.ts  # TCR 镜像仓库配置
+│   ├── init.mjs      # 主初始化脚本
+│   └── setup-tcr.mjs # TCR 镜像仓库配置
 ├── init.sh           # 快速启动入口
 └── package.json      # Monorepo 配置
 ```
 
+## 系统架构概览
+
+- `packages/web` 提供面向用户的主交互界面，包括任务、对话、日志和仓库相关能力
+- `packages/server` 负责认证、API 路由、Agent 编排、消息持久化与 SCF Sandbox 管理
+- `packages/dashboard` 提供 CloudBase 资源管理相关界面
+- `packages/shared` 提供前后端共享类型和协议定义
+- CloudBase 负责数据库、云函数、存储和镜像基础设施，CodeBuddy / 模型层负责智能体能力
+
+更完整的分层图、用户环境绑定机制和任务执行链路见 [系统架构文档](docs/architecture.md)。
+
 ## 快速开始
+
+### 前置条件
+
+开始前请确认：
+- Node.js >= 18
+- Docker 已安装并启动
+- 已准备 CloudBase 环境和腾讯云 API 密钥
+- 已准备 CodeBuddy API Key 或 OAuth 配置
+
+详细要求与排障请先看 [Setup 指南](docs/setup.md)。
 
 ### 一键初始化
 
@@ -36,28 +68,40 @@
 git clone <repository-url>
 cd coding-agent-template
 
-# 运行初始化脚本
+# 运行初始化入口
 ./init.sh
 ```
 
-初始化脚本会自动：
-1. 检查 Node.js 版本（需要 >= 18）
-2. 检查/安装 pnpm
-3. 创建 `.env.local` 环境配置
-4. 可选：配置 TCR 容器镜像服务
-5. 安装项目依赖
+`./init.sh` 负责基础检查，并委托 `scripts/init.mjs` 完成交互式初始化。
+
+当前初始化流程会依次处理：
+1. 检查 Node.js
+2. 检查或安装 pnpm
+3. 创建 `.env.local`
+4. 检查 Docker
+5. 配置 CloudBase 与 `TCB_ENV_ID`
+6. 生成 `packages/server/.env`
+7. 安装依赖
+8. 配置 CodeBuddy 认证
+9. 配置 TCR
+10. 初始化数据库
 
 ### 手动初始化
 
-如果已有 pnpm 环境：
+如果你已经准备好环境，也可以直接执行主脚本：
 
 ```bash
-# 安装依赖
-pnpm install
-
-# 运行初始化脚本
-pnpm init
+node scripts/init.mjs
 ```
+
+### 初始化后建议检查
+
+- `packages/server/.env` 是否已生成
+- CloudBase / CodeBuddy / TCR 配置是否完整
+- `pnpm build` 是否成功
+- 启动后 `GET /health` 是否返回 `{"status":"ok"}`
+
+更完整的步骤说明、变量职责与排障方式见 [docs/setup.md](docs/setup.md)。
 
 ## 开发模式
 
@@ -246,6 +290,15 @@ pnpm setup:tcr        # 配置容器镜像服务
 | 部署 | Vercel | CloudBase / TCR |
 | 数据库 | Neon Postgres | SQLite / CloudBase DB |
 | Sandbox | Vercel Sandbox | CloudBase SCF |
+
+## 继续参考 VibeSDK 文档
+
+本项目新增的 README setup 组织方式与 architecture 图示表达，参考了 Cloudflare VibeSDK 的文档结构：
+
+- README / setup 参考：<https://github.com/cloudflare/vibesdk/blob/main/README.md>
+- architecture 参考：<https://github.com/cloudflare/vibesdk/blob/main/docs/architecture-diagrams.md>
+
+这些参考主要用于文档组织方式和图示表达方式；具体内容已经按当前项目的 CloudBase 架构、本地脚本和运行流程进行了本地化。
 
 ## 许可证
 

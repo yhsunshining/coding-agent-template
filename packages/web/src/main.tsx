@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, Component, type ReactNode } from 'react'
+import { StrictMode, useEffect, useState, useCallback, Component, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router'
 import { Provider as JotaiProvider, useAtom, useAtomValue } from 'jotai'
@@ -19,7 +19,7 @@ import { AdminEnvDashboardPage } from './pages/admin/env-dashboard-page'
 import { AdminTaskDetailPage } from './pages/admin/task-detail-page'
 import { sessionAtom, sessionLoadedAtom } from './lib/atoms/session'
 import { api } from './lib/api'
-import { Loader2 } from 'lucide-react'
+import { Loader2, AlertTriangle, RefreshCw } from 'lucide-react'
 import { ThemeProvider } from './components/theme-provider'
 import { setAuthConfig } from './lib/auth/providers'
 import type { AuthConfig } from './lib/auth/providers'
@@ -71,10 +71,15 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       .get<{
         user: { id: string; username: string; name?: string; email?: string; avatar?: string; role: 'user' | 'admin' }
         envId?: string
+        provisionStatus?: string
       }>('/api/auth/me')
       .then((data) => {
         console.log('[AuthProvider] Session data:', data)
-        setSession({ user: data.user, envId: data.envId })
+        setSession({
+          user: data.user,
+          envId: data.envId,
+          provisionStatus: (data.provisionStatus as any) || 'not_started',
+        })
         setLoaded(true)
       })
       .catch((err) => {
@@ -141,6 +146,98 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// Block routes when environment provisioning is not ready
+function ProvisionGuard({ children }: { children: React.ReactNode }) {
+  const [session, setSession] = useAtom(sessionAtom)
+  const [retrying, setRetrying] = useState(false)
+
+  const status = session.provisionStatus
+
+  // Poll provision status when processing
+  useEffect(() => {
+    if (status !== 'processing') return
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/auth/provision-status', { credentials: 'include' })
+        const data = await res.json()
+        if (data.status === 'success') {
+          setSession((prev) => ({ ...prev, envId: data.envId, provisionStatus: 'success' }))
+        } else if (data.status === 'failed') {
+          setSession((prev) => ({ ...prev, provisionStatus: 'failed' }))
+        }
+      } catch {
+        // ignore poll errors
+      }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [status, setSession])
+
+  const handleRetry = useCallback(async () => {
+    setRetrying(true)
+    try {
+      const res = await fetch('/api/auth/provision-retry', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (res.ok) {
+        setSession((prev) => ({ ...prev, provisionStatus: 'processing' }))
+      }
+    } catch {
+      // ignore
+    } finally {
+      setRetrying(false)
+    }
+  }, [setSession])
+
+  // Admin users bypass the guard
+  if (session.user?.role === 'admin') return <>{children}</>
+
+  // Not started (shared mode or no TCB) or success — pass through
+  if (!status || status === 'not_started' || status === 'success') {
+    return <>{children}</>
+  }
+
+  // Processing — show spinner
+  if (status === 'processing') {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="text-center max-w-md space-y-4">
+          <Loader2 className="h-10 w-10 animate-spin text-primary mx-auto" />
+          <h2 className="text-lg font-semibold text-foreground">{'\u6B63\u5728\u521D\u59CB\u5316\u73AF\u5883...'}</h2>
+          <p className="text-sm text-muted-foreground">
+            {
+              '\u6B63\u5728\u4E3A\u60A8\u521B\u5EFA\u4E13\u5C5E\u7684\u4E91\u5F00\u53D1\u73AF\u5883\uFF0C\u8BF7\u7A0D\u5019'
+            }
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  // Failed — show error with retry
+  return (
+    <div className="flex h-screen items-center justify-center bg-background">
+      <div className="text-center max-w-md space-y-4">
+        <AlertTriangle className="h-10 w-10 text-destructive mx-auto" />
+        <h2 className="text-lg font-semibold text-foreground">{'\u73AF\u5883\u521D\u59CB\u5316\u5931\u8D25'}</h2>
+        <p className="text-sm text-muted-foreground">
+          {
+            '\u60A8\u7684\u4E91\u5F00\u53D1\u73AF\u5883\u521B\u5EFA\u5931\u8D25\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u91CD\u8BD5\u3002\u5982\u6301\u7EED\u5931\u8D25\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u3002'
+          }
+        </p>
+        <button
+          onClick={handleRetry}
+          disabled={retrying}
+          className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+        >
+          <RefreshCw className={`h-4 w-4 ${retrying ? 'animate-spin' : ''}`} />
+          {retrying ? '\u91CD\u8BD5\u4E2D...' : '\u91CD\u8BD5'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   console.log('[App] Rendering...')
   return (
@@ -172,27 +269,33 @@ function App() {
             path="/tasks"
             element={
               <RequireAuth>
-                <AppLayout>
-                  <TasksListPage />
-                </AppLayout>
+                <ProvisionGuard>
+                  <AppLayout>
+                    <TasksListPage />
+                  </AppLayout>
+                </ProvisionGuard>
               </RequireAuth>
             }
           />
           <Route
             path="/"
             element={
-              <AppLayout>
-                <HomePage />
-              </AppLayout>
+              <ProvisionGuard>
+                <AppLayout>
+                  <HomePage />
+                </AppLayout>
+              </ProvisionGuard>
             }
           />
           <Route
             path="/tasks/:taskId"
             element={
               <RequireAuth>
-                <AppLayout>
-                  <TaskPage />
-                </AppLayout>
+                <ProvisionGuard>
+                  <AppLayout>
+                    <TaskPage />
+                  </AppLayout>
+                </ProvisionGuard>
               </RequireAuth>
             }
           />
@@ -200,9 +303,11 @@ function App() {
             path="/miniprogram"
             element={
               <RequireAuth>
-                <AppLayout>
-                  <MiniProgramPage />
-                </AppLayout>
+                <ProvisionGuard>
+                  <AppLayout>
+                    <MiniProgramPage />
+                  </AppLayout>
+                </ProvisionGuard>
               </RequireAuth>
             }
           />
@@ -210,9 +315,11 @@ function App() {
             path="/crontask"
             element={
               <RequireAuth>
-                <AppLayout>
-                  <CronTaskPage />
-                </AppLayout>
+                <ProvisionGuard>
+                  <AppLayout>
+                    <CronTaskPage />
+                  </AppLayout>
+                </ProvisionGuard>
               </RequireAuth>
             }
           />

@@ -113,6 +113,30 @@ if (serveStaticFiles) {
 }
 
 import { initCronScheduler } from './services/cron-scheduler.js'
+import { getDb } from './db/index.js'
+import { encrypt } from './lib/crypto.js'
+import { nanoid } from 'nanoid'
+
+// Backfill apiKey for existing users that don't have one
+async function backfillApiKeys() {
+  try {
+    const db = getDb()
+    const users = await db.users.findAll(1000, 0)
+    let count = 0
+    for (const user of users) {
+      if (!user.apiKey) {
+        const plainKey = `sak_${nanoid(40)}`
+        await db.users.update(user.id, { apiKey: encrypt(plainKey) })
+        count++
+      }
+    }
+    if (count > 0) {
+      console.log(`[Server] Backfilled API keys for ${count} users`)
+    }
+  } catch (err) {
+    console.error('[Server] Failed to backfill API keys:', err)
+  }
+}
 
 const PORT = Number(process.env.PORT) || 3001
 
@@ -129,6 +153,9 @@ serve({ fetch: app.fetch, port: PORT }, () => {
   initCronScheduler().catch((err) => {
     console.error('Failed to initialize cron scheduler:', err)
   })
+
+  // Backfill API keys for existing users
+  backfillApiKeys()
 })
 
 export default app
