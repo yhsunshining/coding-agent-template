@@ -229,6 +229,42 @@ admin.post('/users/:userId/enable', async (c) => {
   return c.json({ success: true })
 })
 
+// Delete user
+admin.delete('/users/:userId', async (c) => {
+  const userId = c.req.param('userId')
+  const adminUser = c.get('adminUser')
+
+  if (userId === adminUser.id) {
+    return c.json({ error: 'Cannot delete yourself' }, 400)
+  }
+
+  const db = getDb()
+
+  const user = await db.users.findById(userId)
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  if (user.role === 'admin') {
+    return c.json({ error: 'Cannot delete admin user, remove admin role first' }, 400)
+  }
+
+  // Log before delete (targetUserId will be set to null by onDelete: 'set null')
+  await db.adminLogs.create({
+    id: nanoid(),
+    adminUserId: adminUser.id,
+    action: 'user_delete',
+    targetUserId: userId,
+    details: JSON.stringify({ username: user.username, email: user.email }),
+    ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+  })
+
+  await db.users.deleteById(userId)
+
+  return c.json({ success: true })
+})
+
 // Set/unset admin role
 admin.post('/users/:userId/set-role', async (c) => {
   const userId = c.req.param('userId')

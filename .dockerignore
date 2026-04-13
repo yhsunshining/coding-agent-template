@@ -1,0 +1,30 @@
+node_modules
+.git
+.github
+.vscode
+.idea
+.DS_Store
+*.log
+*.tmp
+*.temp
+
+# env files (injected at runtime)
+.env*
+!.env.example
+
+# build artifacts (rebuilt in container)
+packages/web/dist
+packages/server/dist
+packages/dashboard/dist
+
+# dev/test
+coverage
+opensrc
+
+# runtime data
+data
+packages/server/data
+packages/server/.data
+*.db
+*.db-shm
+*.db-wal

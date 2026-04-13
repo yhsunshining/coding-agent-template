@@ -6,7 +6,7 @@ import { nanoid } from 'nanoid'
 import { encryptJWE } from '../lib/session'
 import { encrypt } from '../lib/crypto'
 import { requireAuth, type AppEnv, type AppSession } from '../middleware/auth'
-import { provisionUserResources } from '../cloudbase/provision.js'
+import { provisionUserResources, rollbackProvisionedResources } from '../cloudbase/provision.js'
 
 const SESSION_COOKIE_NAME = 'nex_session'
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year in seconds
@@ -82,7 +82,7 @@ auth.post('/register', async (c) => {
     const sessionValue = await encryptJWE(session, '1y')
 
     // CloudBase 环境配置
-    // TCB_PROVISION_MODE=isolated → 异步创建独立环境（需 CAM 权限密钥）
+    // TCB_PROVISION_MODE=isolated → 同步创建独立环境（需 CAM 权限密钥）
     // TCB_PROVISION_MODE=shared   → 复用主环境 TCB_ENV_ID（默认，即时就绪）
     const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
 
@@ -90,43 +90,55 @@ auth.post('/register', async (c) => {
       const resourceId = nanoid()
 
       if (provisionMode === 'isolated') {
-        // 异步创建独立环境，注册立即返回，前端轮询 provision-status
-        await getDb().userResources.create({
-          id: resourceId,
-          userId,
-          status: 'processing',
-          envId: null,
-          camUsername: null,
-          camSecretId: null,
-          camSecretKey: null,
-          policyId: null,
-          failStep: null,
-          failReason: null,
-          createdAt: now,
-          updatedAt: now,
-        })
+        // 同步创建独立环境，失败则回滚账号
+        try {
+          await getDb().userResources.create({
+            id: resourceId,
+            userId,
+            status: 'processing',
+            envId: null,
+            camUsername: null,
+            camSecretId: null,
+            camSecretKey: null,
+            policyId: null,
+            failStep: null,
+            failReason: null,
+            createdAt: now,
+            updatedAt: now,
+          })
 
-        provisionUserResources(userId, trimmedUsername)
-          .then(async (result) => {
-            await getDb().userResources.update(resourceId, {
-              status: 'success',
-              envId: result.envId,
-              camUsername: result.camUsername,
-              camSecretId: result.camSecretId,
-              camSecretKey: result.camSecretKey || null,
-              policyId: result.policyId,
-              updatedAt: Date.now(),
-            })
-            console.log(`[provision] User ${trimmedUsername} env ready: ${result.envId}`)
+          const result = await provisionUserResources(userId, trimmedUsername)
+          await getDb().userResources.update(resourceId, {
+            status: 'success',
+            envId: result.envId,
+            camUsername: result.camUsername,
+            camSecretId: result.camSecretId,
+            camSecretKey: result.camSecretKey || null,
+            policyId: result.policyId,
+            updatedAt: Date.now(),
           })
-          .catch(async (err) => {
-            await getDb().userResources.update(resourceId, {
-              status: 'failed',
-              failReason: err.message,
-              updatedAt: Date.now(),
-            })
-            console.error(`[provision] User ${trimmedUsername} failed:`, err.message)
-          })
+          console.log(`[provision] User env ready`)
+        } catch (err) {
+          // 环境创建失败，回滚云端资源和本地账号
+          console.error('[provision] Failed, rolling back:', (err as Error).message)
+          // 回滚已创建的腾讯云资源（CAM 子账号、策略等）
+          try {
+            const partialResult: Partial<import('../cloudbase/provision.js').ProvisionResult> = {}
+            // provisionUserResources 可能部分成功，从错误上下文中尽力提取已创建资源信息
+            // CAM username 是可预测的
+            partialResult.camUsername = `oc_${userId.substring(0, 20)}`
+            await rollbackProvisionedResources(partialResult)
+          } catch {
+            // rollback best-effort
+          }
+          // 回滚数据库账号
+          try {
+            await getDb().users.deleteById(userId)
+          } catch {
+            // rollback best-effort
+          }
+          return c.json({ error: 'Failed to create cloud environment, please try again later' }, 500)
+        }
       } else {
         // shared 模式：直接写入主环境信息，即时就绪
         await getDb().userResources.create({
@@ -143,7 +155,7 @@ auth.post('/register', async (c) => {
           createdAt: now,
           updatedAt: now,
         })
-        console.log(`[provision] User ${trimmedUsername} shared env: ${process.env.TCB_ENV_ID}`)
+        console.log(`[provision] Shared env configured`)
       }
     }
 

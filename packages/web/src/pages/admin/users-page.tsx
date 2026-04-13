@@ -16,7 +16,7 @@ import { Label } from '../../components/ui/label'
 import { Input } from '../../components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select'
 import { toast } from 'sonner'
-import { UserPlus, ShieldCheck, ShieldOff, Ban, Check, LayoutDashboard } from 'lucide-react'
+import { UserPlus, ShieldCheck, ShieldOff, Ban, Check, LayoutDashboard, Trash2 } from 'lucide-react'
 
 interface User {
   id: string
@@ -62,6 +62,7 @@ export function AdminUsersPage() {
   const [enableDialogOpen, setEnableDialogOpen] = useState(false)
   const [roleDialogOpen, setRoleDialogOpen] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
   const [disableReason, setDisableReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -136,6 +137,22 @@ export function AdminUsersPage() {
       loadUsers()
     } catch {
       toast.error('更新角色失败')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleDeleteUser() {
+    if (!selectedUser) return
+    setIsSubmitting(true)
+    try {
+      await api.delete(`/api/admin/users/${selectedUser.id}`)
+      toast.success('User deleted')
+      setDeleteDialogOpen(false)
+      setSelectedUser(null)
+      loadUsers()
+    } catch {
+      toast.error('Failed to delete user')
     } finally {
       setIsSubmitting(false)
     }
@@ -327,6 +344,20 @@ export function AdminUsersPage() {
                           取消管理员
                         </Button>
                       )}
+                      {user.role !== 'admin' && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                          onClick={() => {
+                            setSelectedUser(user)
+                            setDeleteDialogOpen(true)
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 mr-1" />
+                          删除
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -478,6 +509,27 @@ export function AdminUsersPage() {
             </Button>
             <Button size="sm" onClick={handleCreateUser} disabled={isSubmitting}>
               {isSubmitting ? '创建中...' : '创建用户'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除用户</DialogTitle>
+            <DialogDescription>
+              确定要永久删除用户 &quot;{selectedUser?.username}&quot;
+              吗？该操作不可撤销，用户的所有数据（任务、连接器、定时任务等）将被一并删除。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setDeleteDialogOpen(false)}>
+              取消
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleDeleteUser} disabled={isSubmitting}>
+              {isSubmitting ? '删除中...' : '确认删除'}
             </Button>
           </DialogFooter>
         </DialogContent>

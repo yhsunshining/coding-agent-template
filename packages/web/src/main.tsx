@@ -19,7 +19,7 @@ import { AdminEnvDashboardPage } from './pages/admin/env-dashboard-page'
 import { AdminTaskDetailPage } from './pages/admin/task-detail-page'
 import { sessionAtom, sessionLoadedAtom } from './lib/atoms/session'
 import { api } from './lib/api'
-import { Loader2, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Loader2, AlertTriangle, RefreshCw, LogOut } from 'lucide-react'
 import { ThemeProvider } from './components/theme-provider'
 import { setAuthConfig } from './lib/auth/providers'
 import type { AuthConfig } from './lib/auth/providers'
@@ -150,8 +150,17 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 function ProvisionGuard({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useAtom(sessionAtom)
   const [retrying, setRetrying] = useState(false)
+  const navigate = useNavigate()
 
   const status = session.provisionStatus
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/signout', { method: 'POST', credentials: 'include' })
+    } catch {}
+    setSession({ user: undefined })
+    navigate('/login', { replace: true })
+  }, [setSession, navigate])
 
   // Poll provision status when processing
   useEffect(() => {
@@ -209,6 +218,13 @@ function ProvisionGuard({ children }: { children: React.ReactNode }) {
               '\u6B63\u5728\u4E3A\u60A8\u521B\u5EFA\u4E13\u5C5E\u7684\u4E91\u5F00\u53D1\u73AF\u5883\uFF0C\u8BF7\u7A0D\u5019'
             }
           </p>
+          <button
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+            {'\u9000\u51FA\u767B\u5F55'}
+          </button>
         </div>
       </div>
     )
@@ -225,14 +241,23 @@ function ProvisionGuard({ children }: { children: React.ReactNode }) {
             '\u60A8\u7684\u4E91\u5F00\u53D1\u73AF\u5883\u521B\u5EFA\u5931\u8D25\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u91CD\u8BD5\u3002\u5982\u6301\u7EED\u5931\u8D25\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u3002'
           }
         </p>
-        <button
-          onClick={handleRetry}
-          disabled={retrying}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${retrying ? 'animate-spin' : ''}`} />
-          {retrying ? '\u91CD\u8BD5\u4E2D...' : '\u91CD\u8BD5'}
-        </button>
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={handleRetry}
+            disabled={retrying}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${retrying ? 'animate-spin' : ''}`} />
+            {retrying ? '\u91CD\u8BD5\u4E2D...' : '\u91CD\u8BD5'}
+          </button>
+          <button
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm border border-border rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+            {'\u9000\u51FA\u767B\u5F55'}
+          </button>
+        </div>
       </div>
     </div>
   )

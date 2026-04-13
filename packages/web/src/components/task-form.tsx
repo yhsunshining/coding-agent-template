@@ -361,7 +361,7 @@ export function TaskForm({
       <div className="text-center mb-8">
         <h1 className="text-4xl font-bold mb-4">Coding Agent Template</h1>
         <p className="text-lg text-muted-foreground mb-2">
-          Multi-agent AI coding platform powered by{' '}
+          Vibe coding platform powered by{' '}
           <a
             href="https://tcb.cloud.tencent.com"
             target="_blank"

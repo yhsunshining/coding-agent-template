@@ -756,6 +756,18 @@ export class CloudbaseAgentService {
 
     let connectTimer: ReturnType<typeof setTimeout> | undefined
     let iterationTimeoutTimer: ReturnType<typeof setTimeout> | undefined
+    let toolCallInProgress = false // Pause iteration timeout while tools are executing
+
+    function resetIterationTimeout() {
+      if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer)
+      if (toolCallInProgress) return // Don't set timeout while tool is executing
+      iterationTimeoutTimer = setTimeout(() => {
+        abortController.abort()
+        ;(currentQuery as any)?.cleanup?.()
+      }, ITERATION_TIMEOUT_MS)
+    }
+
+    let currentQuery: any = null
     try {
       const sessionOpts: Record<string, unknown> = hasHistory
         ? { resume: conversationId, sessionId: conversationId }
@@ -942,6 +954,7 @@ export class CloudbaseAgentService {
 
       console.log('[Agent] calling query(), model:', modelId, 'sessionOpts:', JSON.stringify(sessionOpts))
       const q = query(queryArgs as any)
+      currentQuery = q
       console.log('[Agent] query() returned, entering message loop...')
 
       connectTimer = setTimeout(() => {
@@ -951,22 +964,31 @@ export class CloudbaseAgentService {
       let firstMessageReceived = false
       const tracker = createToolCallTracker()
 
-      iterationTimeoutTimer = setTimeout(() => {
-        abortController.abort()
-        ;(q as any).cleanup?.()
-      }, ITERATION_TIMEOUT_MS)
+      resetIterationTimeout()
 
       try {
         console.log('[Agent] starting for-await loop...')
         messageLoop: for await (const message of q) {
           console.log('[Agent] message type:', message.type, JSON.stringify(message).slice(0, 300))
-          if (iterationTimeoutTimer) {
-            clearTimeout(iterationTimeoutTimer)
+
+          // Tool result (user message) means tool execution completed — resume timeout
+          if (message.type === 'user') {
+            toolCallInProgress = false
           }
-          iterationTimeoutTimer = setTimeout(() => {
-            abortController.abort()
-            ;(q as any).cleanup?.()
-          }, ITERATION_TIMEOUT_MS)
+
+          // Assistant message with tool_use means tool is about to execute — pause timeout
+          if (message.type === 'assistant') {
+            const content = (message as any).message?.content
+            if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_use')) {
+              toolCallInProgress = true
+              if (iterationTimeoutTimer) {
+                clearTimeout(iterationTimeoutTimer)
+                iterationTimeoutTimer = undefined
+              }
+            }
+          }
+
+          resetIterationTimeout()
 
           if (!firstMessageReceived) {
             firstMessageReceived = true
@@ -1160,7 +1182,8 @@ export class CloudbaseAgentService {
       let urlPath: string | null = null
       try {
         const urlObj = new URL(url)
-        urlPath = urlObj.pathname
+        // Normalize path: strip trailing index.html and trailing slash for dedup
+        urlPath = urlObj.pathname.replace(/\/index\.html$/, '/').replace(/\/+$/, '') || '/'
       } catch {
         /* ignore */
       }

@@ -214,16 +214,57 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
         case 'artifact':
           if (u.artifact) {
             setArtifacts((prev) => {
-              // Deduplicate by contentType + data
-              if (prev.some((a) => a.contentType === u.artifact.contentType && a.data === u.artifact.data)) return prev
+              // Deduplicate: for links, compare by origin+pathname (ignore query string and index.html)
+              if (u.artifact.contentType === 'link') {
+                try {
+                  const newUrl = new URL(u.artifact.data)
+                  const newKey = newUrl.origin + newUrl.pathname.replace(/\/index\.html$/, '/').replace(/\/+$/, '')
+                  if (
+                    prev.some((a) => {
+                      if (a.contentType !== 'link') return false
+                      try {
+                        const eu = new URL(a.data)
+                        return eu.origin + eu.pathname.replace(/\/index\.html$/, '/').replace(/\/+$/, '') === newKey
+                      } catch {
+                        return false
+                      }
+                    })
+                  )
+                    return prev
+                } catch {
+                  if (prev.some((a) => a.contentType === 'link' && a.data === u.artifact.data)) return prev
+                }
+              } else {
+                if (prev.some((a) => a.contentType === u.artifact.contentType && a.data === u.artifact.data))
+                  return prev
+              }
               return [...prev, u.artifact]
             })
             // All artifacts are deployments — update deployment notifications
             const meta = u.artifact.metadata || {}
             const isMP = meta.deploymentType === 'miniprogram' || u.artifact.contentType === 'image'
             setDeploymentNotifications((prev) => {
-              // Deduplicate: link by url, image by qrCodeUrl
-              if (u.artifact.contentType === 'link' && prev.some((d) => d.url === u.artifact.data)) return prev
+              // Deduplicate: link by normalized URL path, image by qrCodeUrl
+              if (u.artifact.contentType === 'link') {
+                try {
+                  const nu = new URL(u.artifact.data)
+                  const nk = nu.origin + nu.pathname.replace(/\/index\.html$/, '/').replace(/\/+$/, '')
+                  if (
+                    prev.some((d) => {
+                      if (!d.url) return false
+                      try {
+                        const eu = new URL(d.url)
+                        return eu.origin + eu.pathname.replace(/\/index\.html$/, '/').replace(/\/+$/, '') === nk
+                      } catch {
+                        return false
+                      }
+                    })
+                  )
+                    return prev
+                } catch {
+                  if (prev.some((d) => d.url === u.artifact.data)) return prev
+                }
+              }
               if (u.artifact.contentType === 'image' && prev.some((d) => d.qrCodeUrl === u.artifact.data)) return prev
               return [
                 ...prev,

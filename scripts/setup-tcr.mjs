@@ -526,7 +526,7 @@ function dockerLogin(domain, username, password) {
 
   try {
     // Use docker login with password-stdin for security
-    runCommand(`echo '${password}' | docker login ${domain} --username ${username} --password-stdin`, true)
+    runCommand(`echo '${password}' | docker login ${domain} --username 100046598806 --password-stdin`, true)
     log('Docker login successful', 'success')
     return true
   } catch (error) {

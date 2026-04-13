@@ -76,3 +76,4 @@ packages/server/.data/*.db-wal
 packages/dashboard/vite.config.d.ts
 packages/dashboard/vite.config.js
 dist
+cloudbaserc.json

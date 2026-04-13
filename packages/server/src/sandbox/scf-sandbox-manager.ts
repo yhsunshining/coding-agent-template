@@ -392,9 +392,9 @@ export class ScfSandboxManager {
             SessionSource: 'HEADER',
             SessionName: 'X-Cloudbase-Session-Id',
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 600,
-            MaximumIdleTimeInSeconds: 300,
-            IdleTimeoutStrategy: 'PAUSE',
+            MaximumTTLInSeconds: 1800,
+            MaximumIdleTimeInSeconds: 600,
+            IdleTimeoutStrategy: 'FATAL',
           },
         },
         Environment: {
