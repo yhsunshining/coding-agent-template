@@ -599,18 +599,17 @@ export function TaskChat({
             <div className="flex items-center justify-center h-full">
               <p className="text-destructive text-xs md:text-sm">{deploymentError}</p>
             </div>
-          ) : deployments.length === 0 && artifacts.length === 0 ? (
+          ) : deployments.length === 0 ? (
             <div className="flex items-center justify-center h-full text-center text-muted-foreground px-4">
               <div className="text-sm md:text-base">暂无部署结果</div>
             </div>
           ) : (
             <div className="space-y-2 px-2 pt-2">
-              {deployments
-                .filter((d) => d.type === 'web' && d.url)
-                .map((deployment) => (
-                  <div key={deployment.id} className="flex items-center gap-2 group">
+              {deployments.map((deployment) => (
+                <div key={deployment.id} className="flex items-center gap-2 group">
+                  {deployment.url ? (
                     <a
-                      href={deployment.url!}
+                      href={deployment.url}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors border border-border flex-1"
@@ -632,20 +631,9 @@ export function TaskChat({
                         <div className="text-xs text-muted-foreground">{`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}</div>
                       </div>
                     </a>
-                    <button
-                      onClick={() => handleDeleteDeployment(deployment.id)}
-                      className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-              {deployments
-                .filter((d) => d.type === 'miniprogram' && d.qrCodeUrl)
-                .map((deployment) => (
-                  <div key={deployment.id} className="flex items-center gap-2 group">
+                  ) : deployment.qrCodeUrl ? (
                     <div className="flex items-center gap-3 p-2 rounded-md border border-border flex-1">
-                      <img src={deployment.qrCodeUrl!} alt="QR Code" className="w-16 h-16 rounded" />
+                      <img src={deployment.qrCodeUrl} alt="QR Code" className="w-16 h-16 rounded" />
                       <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium">{deployment.label || '小程序'}</div>
                         {deployment.pagePath && (
@@ -657,56 +645,29 @@ export function TaskChat({
                         <div className="text-xs text-muted-foreground">{`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}</div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleDeleteDeployment(deployment.id)}
-                      className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-              {artifacts
-                .filter((a) => {
-                  // Link artifacts are rendered as deployment cards via deploymentNotifications, skip here
-                  if (a.contentType === 'link') return false
-                  // Skip image artifacts that are already rendered as miniprogram QR codes above
-                  if (a.contentType === 'image' && a.metadata?.deploymentType === 'miniprogram') {
-                    return !deployments.some((d) => d.qrCodeUrl === a.data)
-                  }
-                  return true
-                })
-                .map((artifact, idx) => (
-                  <div key={idx} className="border border-border rounded-md p-3 space-y-2">
-                    <div className="text-xs font-medium">{artifact.title}</div>
-                    {artifact.description && (
-                      <div className="text-xs text-muted-foreground">{artifact.description}</div>
-                    )}
-                    {artifact.contentType === 'image' && (
-                      <img src={artifact.data} alt={artifact.title} className="max-w-[200px] mx-auto block rounded" />
-                    )}
-                    {artifact.contentType === 'link' && (
-                      <a
-                        href={artifact.data}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-500 underline break-all"
-                      >
-                        {artifact.data}
-                      </a>
-                    )}
-                    {artifact.contentType === 'json' && (
-                      <pre className="text-xs bg-muted/50 rounded p-2 overflow-auto max-h-32 whitespace-pre-wrap break-all">
-                        {(() => {
-                          try {
-                            return JSON.stringify(JSON.parse(artifact.data), null, 2)
-                          } catch {
-                            return artifact.data
-                          }
-                        })()}
-                      </pre>
-                    )}
-                  </div>
-                ))}
+                  ) : (
+                    <div className="flex items-center gap-3 p-2 rounded-md border border-border flex-1">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium">{deployment.label || 'Deployment'}</div>
+                        {deployment.metadata && (
+                          <pre className="text-xs bg-muted/50 rounded p-1 mt-1 overflow-auto max-h-20 whitespace-pre-wrap break-all">
+                            {typeof deployment.metadata === 'string'
+                              ? deployment.metadata
+                              : JSON.stringify(deployment.metadata, null, 2)}
+                          </pre>
+                        )}
+                        <div className="text-xs text-muted-foreground">{`部署于 ${new Date(deployment.createdAt).toLocaleString()}`}</div>
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => handleDeleteDeployment(deployment.id)}
+                    className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>

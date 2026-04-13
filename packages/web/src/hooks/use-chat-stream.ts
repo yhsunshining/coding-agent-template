@@ -218,31 +218,32 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
               if (prev.some((a) => a.contentType === u.artifact.contentType && a.data === u.artifact.data)) return prev
               return [...prev, u.artifact]
             })
-            // For link artifacts, also update deployment notifications
-            if (u.artifact.contentType === 'link' && u.artifact.data) {
-              const meta = u.artifact.metadata || {}
-              setDeploymentNotifications((prev) => {
-                if (prev.some((d) => d.url === u.artifact.data)) return prev
-                return [
-                  ...prev,
-                  {
-                    id: `notify-${Date.now()}`,
-                    taskId,
-                    type: (meta.deploymentType as 'web' | 'miniprogram') || 'web',
-                    url: u.artifact.data,
-                    path: null,
-                    qrCodeUrl: null,
-                    pagePath: (meta.pagePath as string) || null,
-                    appId: (meta.appId as string) || null,
-                    label: u.artifact.title || null,
-                    metadata: meta,
-                    createdAt: Date.now(),
-                    updatedAt: Date.now(),
-                  },
-                ]
-              })
-              optionsRef.current.onDeploymentDetected?.()
-            }
+            // All artifacts are deployments — update deployment notifications
+            const meta = u.artifact.metadata || {}
+            const isMP = meta.deploymentType === 'miniprogram' || u.artifact.contentType === 'image'
+            setDeploymentNotifications((prev) => {
+              // Deduplicate: link by url, image by qrCodeUrl
+              if (u.artifact.contentType === 'link' && prev.some((d) => d.url === u.artifact.data)) return prev
+              if (u.artifact.contentType === 'image' && prev.some((d) => d.qrCodeUrl === u.artifact.data)) return prev
+              return [
+                ...prev,
+                {
+                  id: `notify-${Date.now()}`,
+                  taskId,
+                  type: isMP ? 'miniprogram' : 'web',
+                  url: u.artifact.contentType === 'link' ? u.artifact.data : null,
+                  path: null,
+                  qrCodeUrl: u.artifact.contentType === 'image' ? u.artifact.data : null,
+                  pagePath: (meta.pagePath as string) || null,
+                  appId: (meta.appId as string) || null,
+                  label: u.artifact.title || null,
+                  metadata: meta,
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                },
+              ]
+            })
+            optionsRef.current.onDeploymentDetected?.()
           }
           break
       }
