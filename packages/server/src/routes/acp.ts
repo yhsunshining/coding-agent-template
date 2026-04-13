@@ -488,6 +488,12 @@ async function observeStream(
       await stream.writeSSE({ data: JSON.stringify(rpcOk(rpcId, { stopReason })) })
     }
     await stream.writeSSE({ data: '[DONE]' })
+
+    // 4. Cleanup stream events — messages are already persisted to DB,
+    //    stream events are only needed for SSE replay and can be safely removed.
+    persistenceService.cleanupStreamEvents(sessionId, turnId).catch(() => {
+      // Non-critical
+    })
   })
 }
 

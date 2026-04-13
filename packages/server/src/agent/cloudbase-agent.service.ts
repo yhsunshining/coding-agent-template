@@ -1025,6 +1025,14 @@ export class CloudbaseAgentService {
       if (connectTimer) clearTimeout(connectTimer)
       if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer)
 
+      // Cleanup stream events first — messages will be synced to DB below,
+      // so stream events (used only for SSE replay) are no longer needed.
+      try {
+        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId)
+      } catch {
+        // Non-critical
+      }
+
       // Flush remaining events to DB
       try {
         await eventBuffer.close()
@@ -1078,13 +1086,6 @@ export class CloudbaseAgentService {
             // finalize failure ignored
           }
         }
-      }
-
-      // Cleanup stream events (non-critical)
-      try {
-        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId)
-      } catch {
-        // Non-critical
       }
 
       // Update task status in SQLite
