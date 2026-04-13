@@ -149,7 +149,7 @@ Agent 通过 ACP (Agent Communication Protocol) 与前端交互，基于 JSON-RP
 - `log` — 日志输出
 - `ask_user` — Agent 向用户提问
 - `tool_confirm` — 敏感工具调用需用户确认
-- `deploy_url` — 部署结果（URL / 二维码）
+- `artifact` — 结构化产物（部署 URL、小程序二维码、上传结果等）
 
 ### Memory & Persistence
 
@@ -265,25 +265,46 @@ Git Remote (GIT_ARCHIVE_REPO)
 
 ---
 
-## Deployment Module
+## Artifact & Deployment Module
 
-支持两种部署目标：
+所有 Agent 产出（部署 URL、小程序二维码、上传结果等）统一通过 `artifact` 事件传递。每个 artifact 同时创建一条 deployment 记录持久化到数据库。
+
+### Artifact 结构
+
+```typescript
+interface Artifact {
+  title: string
+  description?: string
+  contentType: 'image' | 'link' | 'json'
+  data: string
+  metadata?: Record<string, unknown>
+}
+```
 
 ### Web Deployment
 
-通过 CloudBase 静态托管发布 Web 应用：
+当 `uploadFiles` 工具检测到静态托管 URL 时，产生 `contentType: 'link'` 的 artifact：
 - Agent 将构建产物上传到 CloudBase Storage
-- 返回静态托管 URL
+- 自动提取并返回静态托管 URL
+- 创建 `type: 'web'` 的 deployment 记录
 
 ### MiniProgram Deployment
 
-通过 MCP 工具 `publishMiniprogram` 发布微信小程序：
+通过 MCP 工具 `publishMiniprogram` 发布微信小程序，产生 `contentType: 'image'` 或 `contentType: 'json'` 的 artifact：
 - 管理小程序 AppId 和私钥
 - 触发 CI 构建
-- 返回预览二维码和页面路径
+- 返回预览二维码（image artifact）和上传结果（json artifact）
 - 通过 `getDeployJobStatus` 轮询发布状态
+- 创建 `type: 'miniprogram'` 的 deployment 记录
 
-Deployment 记录持久化到数据库，包含 URL、QR Code、标签和元数据。
+### Deployment 记录
+
+所有 artifact 都会创建 deployment 记录，包含：
+- URL（link 类型）或 QR Code URL（image 类型）
+- 标签、页面路径、AppId
+- 原始 metadata
+
+前端 Deployments 标签页统一渲染所有 deployment 记录，根据字段自动选择卡片样式（链接卡片 / 二维码卡片 / 通用卡片）。
 
 ---
 
