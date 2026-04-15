@@ -10,6 +10,7 @@ import { persistenceService } from './persistence.service.js'
 import { scfSandboxManager, type SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
 import { createSandboxMcpClient } from '../sandbox/sandbox-mcp-proxy.js'
 import { archiveToGit } from '../sandbox/git-archive.js'
+import { initCodingProject, startDevServer, getCodingSystemPrompt } from './coding-mode.js'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
 import { decrypt } from '../lib/crypto.js'
@@ -475,8 +476,10 @@ export class CloudbaseAgentService {
       askAnswers,
       toolConfirmation,
       model,
+      mode,
     } = options
     const modelId = model || DEFAULT_MODEL
+    const isCodingMode = mode === 'coding'
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
 
@@ -734,6 +737,23 @@ export class CloudbaseAgentService {
       }
     }
 
+    // ── Coding mode: initialize template project and start dev server ──
+    if (isCodingMode && sandboxInstance) {
+      try {
+        wrappedCallback({ type: 'text', content: '正在初始化 Coding 项目...\n' })
+        await initCodingProject(sandboxInstance, actualCwd)
+        wrappedCallback({ type: 'text', content: '正在启动开发服务器...\n' })
+        await startDevServer(sandboxInstance, actualCwd)
+        wrappedCallback({ type: 'text', content: '开发服务器已启动，可在 Preview 标签页预览。\n\n' })
+      } catch (err) {
+        console.error('[Agent] Coding mode init failed:', (err as Error).message)
+        wrappedCallback({
+          type: 'text',
+          content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
+        })
+      }
+    }
+
     // ── MCP Server ────────────────────────────────────────────────────
     // Note: createSdkMcpServer objects contain Zod schemas with circular references
     // which cannot be serialized by SDK 0.3.68's ProcessTransport.buildArgs.
@@ -757,6 +777,7 @@ export class CloudbaseAgentService {
     let connectTimer: ReturnType<typeof setTimeout> | undefined
     let iterationTimeoutTimer: ReturnType<typeof setTimeout> | undefined
     let toolCallInProgress = false // Pause iteration timeout while tools are executing
+    const abortController = new AbortController()
 
     function resetIterationTimeout() {
       if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer)
@@ -788,7 +809,6 @@ export class CloudbaseAgentService {
       }
 
       // ── 执行 query ─────────────────────────────────────────────────
-      const abortController = new AbortController()
 
       // 用于在 canUseTool 中捕获被中断的写工具调用信息
       const pendingToolInterrupt: {
@@ -808,7 +828,9 @@ export class CloudbaseAgentService {
           ...sessionOpts,
           includePartialMessages: true,
           systemPrompt: {
-            append: buildAppendPrompt(actualCwd, conversationId, userContext.envId),
+            append: isCodingMode
+              ? getCodingSystemPrompt() + '\n\n' + buildAppendPrompt(actualCwd, conversationId, userContext.envId)
+              : buildAppendPrompt(actualCwd, conversationId, userContext.envId),
           },
           mcpServers,
           abortController,
