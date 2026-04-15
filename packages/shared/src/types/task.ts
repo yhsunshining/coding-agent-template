@@ -19,6 +19,7 @@ export const insertTaskSchema = z.object({
   repoUrl: z.string().url().optional(),
   selectedAgent: z.enum(['claude', 'codex', 'copilot', 'cursor', 'gemini', 'opencode']).default('claude'),
   selectedModel: z.string().optional(),
+  mode: z.enum(['default', 'coding']).default('default'),
   installDependencies: z.boolean().default(false),
   maxDuration: z.number().default(300),
   keepAlive: z.boolean().default(false),

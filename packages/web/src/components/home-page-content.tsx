@@ -438,6 +438,7 @@ export function HomePageContent({
     maxDuration: number
     keepAlive: boolean
     enableBrowser: boolean
+    mode: 'default' | 'coding'
   }) => {
     console.log(
       '[TaskSubmit] called, isSubmitting:',

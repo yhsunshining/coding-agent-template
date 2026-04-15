@@ -510,7 +510,8 @@ export interface AgentOptions {
   }
   /** 指定模型 */
   model?: string
-  mode?: string
+  /** 任务模式 */
+  mode?: 'default' | 'coding'
   /**
    * Plan 模式开关
    *

@@ -194,8 +194,8 @@ acp.delete('/conversation/:conversationId', async (c) => {
  * 简单的聊天端点，返回 SSE 流式响应
  */
 acp.post('/chat', async (c) => {
-  const body = await c.req.json<{ prompt: string; conversationId?: string; model?: string }>()
-  const { prompt, conversationId, model } = body
+  const body = await c.req.json<{ prompt: string; conversationId?: string; model?: string; mode?: string }>()
+  const { prompt, conversationId, model, mode } = body
 
   const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
@@ -204,6 +204,16 @@ acp.post('/chat', async (c) => {
 
   const actualConversationId = conversationId || uuidv4()
 
+  let taskMode = mode as 'default' | 'coding' | undefined
+  if (!taskMode && conversationId) {
+    try {
+      const task = await getDb().tasks.findById(conversationId)
+      if (task?.mode === 'coding') taskMode = 'coding'
+    } catch {
+      // ignore
+    }
+  }
+
   return observeStreamWithLiveCallback(c, null, actualConversationId, envId, userId, async (callback) => {
     return cloudbaseAgentService.chatStream(prompt, callback, {
       conversationId: actualConversationId,
@@ -211,6 +221,7 @@ acp.post('/chat', async (c) => {
       userId,
       userCredentials,
       model,
+      mode: taskMode,
     })
   })
 })
@@ -385,6 +396,15 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
     // write failure doesn't affect main flow
   }
 
+  // Resolve task mode
+  let taskMode: 'default' | 'coding' | undefined
+  try {
+    const task = await getDb().tasks.findById(sessionId)
+    if (task?.mode === 'coding') taskMode = 'coding'
+  } catch {
+    // ignore
+  }
+
   // Launch agent with liveCallback for real-time SSE push
   return observeStreamWithLiveCallback(c, id, sessionId, envId, userId, async (callback) => {
     return cloudbaseAgentService.chatStream(effectivePrompt, callback, {
@@ -398,6 +418,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
       // P2: 透传 Plan 模式开关。当前端在开启 Plan 模式下发起 prompt 时传 'plan'，
       // 或 ExitPlanMode 用户选择 reject_and_exit_plan 后下一轮传 'default' 恢复普通模式。
       permissionMode: params.permissionMode,
+      mode: taskMode,
     })
   })
 }
