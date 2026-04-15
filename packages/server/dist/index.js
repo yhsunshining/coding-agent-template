@@ -1,23 +1,10 @@
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc2) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc2 = __getOwnPropDesc(from, key)) || desc2.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+import {
+  __esm,
+  __export,
+  __toCommonJS,
+  decrypt,
+  encrypt
+} from "./chunk-4QAAFSBJ.js";
 
 // src/db/schema.ts
 var schema_exports = {};
@@ -30,14 +17,13 @@ __export(schema_exports, {
   keys: () => keys,
   localCredentials: () => localCredentials,
   miniprogramApps: () => miniprogramApps,
-  serverApiKeys: () => serverApiKeys,
   settings: () => settings,
   tasks: () => tasks,
   userResources: () => userResources,
   users: () => users
 });
 import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
-var now2, users, localCredentials, tasks, connectors, miniprogramApps, cronTasks, accounts, keys, userResources, settings, deployments, adminLogs, serverApiKeys;
+var now2, users, localCredentials, tasks, connectors, miniprogramApps, cronTasks, accounts, keys, userResources, settings, deployments, adminLogs;
 var init_schema = __esm({
   "src/db/schema.ts"() {
     "use strict";
@@ -65,6 +51,9 @@ var init_schema = __esm({
         disabledAt: integer("disabled_at"),
         disabledBy: text("disabled_by"),
         // Admin user ID who disabled this user
+        // Server API Key for programmatic access
+        apiKey: text("api_key"),
+        // Encrypted, plaintext has prefix sak_
         createdAt: integer("created_at").notNull().$defaultFn(now2),
         updatedAt: integer("updated_at").notNull().$defaultFn(now2),
         lastLoginAt: integer("last_login_at").notNull().$defaultFn(now2)
@@ -271,25 +260,6 @@ var init_schema = __esm({
         createdAtIdx: index("admin_logs_created_at_idx").on(table.createdAt)
       })
     );
-    serverApiKeys = sqliteTable(
-      "server_api_keys",
-      {
-        id: text("id").primaryKey(),
-        userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-        key: text("key").notNull(),
-        // Encrypted, plaintext has prefix sak_
-        name: text("name").notNull(),
-        // Description / purpose
-        scopes: text("scopes").notNull().default('["acp"]'),
-        // JSON array of allowed scopes
-        lastUsedAt: integer("last_used_at"),
-        createdAt: integer("created_at").notNull().$defaultFn(now2)
-      },
-      (table) => ({
-        userIdIdx: index("server_api_keys_user_id_idx").on(table.userId),
-        keyIdx: uniqueIndex("server_api_keys_key_idx").on(table.key)
-      })
-    );
   }
 });
 
@@ -332,11 +302,10 @@ function createDrizzleProvider() {
     userResources: new DrizzleUserResourceRepository(),
     settings: new DrizzleSettingRepository(),
     deployments: new DrizzleDeploymentRepository(),
-    adminLogs: new DrizzleAdminLogRepository(),
-    serverApiKeys: new DrizzleServerApiKeyRepository()
+    adminLogs: new DrizzleAdminLogRepository()
   };
 }
-var now3, DrizzleUserRepository, DrizzleLocalCredentialRepository, DrizzleTaskRepository, DrizzleConnectorRepository, DrizzleMiniProgramAppRepository, DrizzleCronTaskRepository, DrizzleAccountRepository, DrizzleKeyRepository, DrizzleUserResourceRepository, DrizzleSettingRepository, DrizzleDeploymentRepository, DrizzleAdminLogRepository, DrizzleServerApiKeyRepository;
+var now3, DrizzleUserRepository, DrizzleLocalCredentialRepository, DrizzleTaskRepository, DrizzleConnectorRepository, DrizzleMiniProgramAppRepository, DrizzleCronTaskRepository, DrizzleAccountRepository, DrizzleKeyRepository, DrizzleUserResourceRepository, DrizzleSettingRepository, DrizzleDeploymentRepository, DrizzleAdminLogRepository;
 var init_repositories = __esm({
   "src/db/drizzle/repositories.ts"() {
     "use strict";
@@ -350,6 +319,10 @@ var init_repositories = __esm({
       }
       async findByProviderAndExternalId(provider, externalId) {
         const [row] = await drizzleDb.select().from(users).where(and(eq(users.provider, provider), eq(users.externalId, externalId))).limit(1);
+        return row ?? null;
+      }
+      async findByApiKey(encryptedApiKey) {
+        const [row] = await drizzleDb.select().from(users).where(eq(users.apiKey, encryptedApiKey)).limit(1);
         return row ?? null;
       }
       async create(user) {
@@ -583,12 +556,7 @@ var init_repositories = __esm({
       }
       async tryLock(id, lockerId, maxLockMs) {
         const cutoff = Date.now() - maxLockMs;
-        const result = await drizzleDb.update(cronTasks).set({ lockedBy: lockerId, lockedAt: Date.now() }).where(
-          and(
-            eq(cronTasks.id, id),
-            sql`(${cronTasks.lockedBy} IS NULL OR ${cronTasks.lockedAt} < ${cutoff})`
-          )
-        );
+        const result = await drizzleDb.update(cronTasks).set({ lockedBy: lockerId, lockedAt: Date.now() }).where(and(eq(cronTasks.id, id), sql`(${cronTasks.lockedBy} IS NULL OR ${cronTasks.lockedAt} < ${cutoff})`));
         return result.changes > 0;
       }
       async releaseLock(id, lockerId) {
@@ -766,32 +734,6 @@ var init_repositories = __esm({
         return rows;
       }
     };
-    DrizzleServerApiKeyRepository = class {
-      async findByKey(encryptedKey) {
-        const rows = await drizzleDb.select().from(serverApiKeys).where(eq(serverApiKeys.key, encryptedKey)).limit(1);
-        return rows[0] || null;
-      }
-      async findByUserId(userId) {
-        const rows = await drizzleDb.select().from(serverApiKeys).where(eq(serverApiKeys.userId, userId));
-        return rows;
-      }
-      async findAll() {
-        const rows = await drizzleDb.select().from(serverApiKeys).orderBy(desc(serverApiKeys.createdAt));
-        return rows;
-      }
-      async create(key) {
-        const now4 = Date.now();
-        const record = { ...key, lastUsedAt: null, createdAt: now4 };
-        await drizzleDb.insert(serverApiKeys).values(record);
-        return record;
-      }
-      async delete(id) {
-        await drizzleDb.delete(serverApiKeys).where(eq(serverApiKeys.id, id));
-      }
-      async updateLastUsed(id) {
-        await drizzleDb.update(serverApiKeys).set({ lastUsedAt: Date.now() }).where(eq(serverApiKeys.id, id));
-      }
-    };
   }
 });
 
@@ -800,7 +742,7 @@ import { serve } from "@hono/node-server";
 import { Hono as Hono19 } from "hono";
 import { cors } from "hono/cors";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { existsSync as existsSync2 } from "fs";
+import { existsSync as existsSync2, readFileSync } from "fs";
 import { resolve, dirname as dirname2 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 
@@ -899,6 +841,13 @@ var CloudBaseUserRepository = class {
     const _ = getCommand();
     const collection = await getCollection("users");
     const { data } = await collection.where({ provider: _.eq(provider), externalId: _.eq(externalId) }).limit(1).get();
+    if (!data || data.length === 0) return null;
+    return stripCloudBaseId(data[0]);
+  }
+  async findByApiKey(encryptedApiKey) {
+    const _ = getCommand();
+    const collection = await getCollection("users");
+    const { data } = await collection.where({ apiKey: _.eq(encryptedApiKey) }).limit(1).get();
     if (!data || data.length === 0) return null;
     return stripCloudBaseId(data[0]);
   }
@@ -1464,34 +1413,6 @@ var CloudBaseAdminLogRepository = class {
     return data.map((doc) => stripCloudBaseId(doc));
   }
 };
-var CloudBaseServerApiKeyRepository = class {
-  col() {
-    return getCollection("server_api_keys");
-  }
-  async findByKey(encryptedKey) {
-    const { data } = await this.col().where({ key: encryptedKey }).limit(1).get();
-    return data[0] ? mapDoc(data[0]) : null;
-  }
-  async findByUserId(userId) {
-    const { data } = await this.col().where({ userId }).get();
-    return data.map(mapDoc);
-  }
-  async findAll() {
-    const { data } = await this.col().orderBy("createdAt", "desc").get();
-    return data.map(mapDoc);
-  }
-  async create(key) {
-    const record = { ...key, lastUsedAt: null, createdAt: now() };
-    await this.col().doc(key.id).set(record);
-    return record;
-  }
-  async delete(id) {
-    await this.col().doc(id).remove();
-  }
-  async updateLastUsed(id) {
-    await this.col().doc(id).update({ lastUsedAt: now() });
-  }
-};
 function createCloudBaseProvider() {
   return {
     users: new CloudBaseUserRepository(),
@@ -1505,8 +1426,7 @@ function createCloudBaseProvider() {
     userResources: new CloudBaseUserResourceRepository(),
     settings: new CloudBaseSettingRepository(),
     deployments: new CloudBaseDeploymentRepository(),
-    adminLogs: new CloudBaseAdminLogRepository(),
-    serverApiKeys: new CloudBaseServerApiKeyRepository()
+    adminLogs: new CloudBaseAdminLogRepository()
   };
 }
 
@@ -1524,59 +1444,6 @@ function getDb() {
   return _provider;
 }
 
-// src/lib/crypto.ts
-import crypto from "crypto";
-var ALGORITHM = "aes-256-cbc";
-var IV_LENGTH = 16;
-var getEncryptionKey = () => {
-  const key = process.env.ENCRYPTION_KEY;
-  if (!key) {
-    return null;
-  }
-  const keyBuffer = Buffer.from(key, "hex");
-  if (keyBuffer.length !== 32) {
-    throw new Error(
-      "ENCRYPTION_KEY must be a 32-byte hex string (64 characters). Generate one with: openssl rand -hex 32"
-    );
-  }
-  return keyBuffer;
-};
-var encrypt = (text2) => {
-  if (!text2) return text2;
-  const ENCRYPTION_KEY = getEncryptionKey();
-  if (!ENCRYPTION_KEY) {
-    throw new Error(
-      "ENCRYPTION_KEY environment variable is required for MCP encryption. Generate one with: openssl rand -hex 32"
-    );
-  }
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-  const encrypted = Buffer.concat([cipher.update(text2, "utf8"), cipher.final()]);
-  return `${iv.toString("hex")}:${encrypted.toString("hex")}`;
-};
-var decrypt = (encryptedText) => {
-  if (!encryptedText) return encryptedText;
-  const ENCRYPTION_KEY = getEncryptionKey();
-  if (!ENCRYPTION_KEY) {
-    throw new Error(
-      "ENCRYPTION_KEY environment variable is required for MCP decryption. Generate one with: openssl rand -hex 32"
-    );
-  }
-  if (!encryptedText.includes(":")) {
-    throw new Error("Invalid encrypted text format");
-  }
-  try {
-    const [ivHex, encryptedHex] = encryptedText.split(":");
-    const iv = Buffer.from(ivHex, "hex");
-    const encrypted = Buffer.from(encryptedHex, "hex");
-    const decipher = crypto.createDecipheriv(ALGORITHM, ENCRYPTION_KEY, iv);
-    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    return decrypted.toString("utf8");
-  } catch (error) {
-    throw new Error("Failed to decrypt: " + (error instanceof Error ? error.message : "unknown error"));
-  }
-};
-
 // src/middleware/auth.ts
 import CloudBaseManager from "@cloudbase/manager-node";
 
@@ -1588,14 +1455,71 @@ function buildUserEnvPolicyStatements(envId) {
   return [
     {
       action: [
-        "tcb:DescribeEnvs",
-        "tcb:DescribePackages",
+        "cam:CreateRole",
+        "cam:AttachRolePolicy",
+        "cam:ListAttachedRolePolicies",
+        "cam:UpdatePolicy",
+        "cam:CreateServiceLinkedRole",
+        "cam:DescribeServiceLinkedRole",
+        "cam:GetRole",
+        "cdn:TcbCheckResource",
+        "organization:DescribeCloudApplicationToMember",
+        "vpc:DescribeVpcEx",
+        "tandon:GetEnabledNpsConfigDetail",
+        "tcbr:DescribeArchitectureType",
+        "tcbr:DescribeEnvBaseInfo",
+        "tcbr:DescribeUserServiceTermsRecord",
+        "tcbr:DescribeArchitectureType",
+        "lowcode:GetUserTicket",
+        "lowcode:GetUserCertifyInfo",
+        "lowcode:DescribeUserCompositeGroupsList",
+        "lowcode:DescribeWedaWxBind",
+        "lowcode:GetProxyAddr",
+        "lowcode:GetMaxAppNum",
+        "lowcode:DescribeApps",
+        "lowcode:DescribeKnowledgeSetList",
+        "lowcode:GetUserCertifyInfo",
+        "tcb:DescribeAgentList",
+        "tcb:GetTemplateAPIsList",
+        "tcb:DescribeTenant",
         "tcb:CheckTcbService",
-        "tcb:DescribeBillingInfo",
+        "tcb:GetApisGroupAndList",
+        "tcb:DescribePackages",
         "tcb:DescribeEnvLimit",
         "tcb:GetUserKeyList",
+        "tcb:DescribeBillingInfo",
+        "tcb:DescribeExtensionsInstalled",
+        "tcb:DescribeCloudBaseRunAdvancedConfiguration",
+        "tcb:DescribeCloudBaseProjectLatestVersionList",
+        "tcb:DescribeExtensions",
+        "tcb:DescribePostPackage",
+        "tcb:DescribeICPResources",
+        "tcb:DescribeExtensionUpgrade",
         "tcb:DescribeMonitorMetric",
-        "tcb:ListTables"
+        "tcb:DescribeLowCodeUserQuotaUsage",
+        "tcb:DescribeEnvStatistics",
+        "tcb:DescribeLowCodeEnvQuotaUsage",
+        "tcb:CheckFeaturePermission",
+        "tcb:DescribeCommonBillingResources",
+        "tcb:DescribeCommonBillingPackages",
+        "tcb:DescribeEnvBacklogs",
+        "tcb:DescribeEnvRestriction",
+        "tcb:DescribeUserPromotionalActivity",
+        "tcb:DescribeFeaturePermissions",
+        "tcb:RefreshAuthDomain",
+        "tcb:DescribeActivityInfo",
+        "tcb:DescribeTcbAccountInfo",
+        "tcb:DescribeUserPromotionalActivity",
+        "tcb:DescribeAIModels",
+        "tcb:DescribeOperationAppTemplates",
+        "tcb:DescribeSolutionList",
+        "tcb:DescribeCloudBaseRunBaseImages",
+        "tcb:DescribeBuildServiceList",
+        "tcb:DescribeVmInstances",
+        "tcb:ListTables",
+        "tcb:DescribeRestoreTime",
+        "tcb:DescribeRestoreTask",
+        "tcb:DescribeExtraPackages"
       ],
       effect: "allow",
       resource: ["*"]
@@ -1604,6 +1528,16 @@ function buildUserEnvPolicyStatements(envId) {
       action: ["tcb:*"],
       effect: "allow",
       resource: [`qcs::tcb:::env/${envId}`]
+    },
+    {
+      action: ["tcbr:*"],
+      effect: "allow",
+      resource: [`qcs::tcbr:::env/${envId}`]
+    },
+    {
+      action: ["lowcode:*"],
+      effect: "allow",
+      resource: [`qcs::lowcode:::env/${envId}`]
     },
     {
       action: ["cos:*"],
@@ -1616,10 +1550,20 @@ function buildUserEnvPolicyStatements(envId) {
       resource: ["*"]
     },
     {
-      action: ["sts:GetFederationToken"],
+      action: ["cls:*"],
+      effect: "allow",
+      resource: ["*"]
+    },
+    {
+      action: ["ssl:DescribeCertificateDetail", "ssl:DescribeCertificates"],
       effect: "allow",
       resource: ["*"]
     }
+    // {
+    //   action: ['sts:GetFederationToken'],
+    //   effect: 'allow',
+    //   resource: ['*'],
+    // },
   ];
 }
 function getClients() {
@@ -1663,66 +1607,68 @@ function generatePassword(length = 16) {
 }
 async function provisionUserResources(userId, username) {
   const { camClient, tcbClient } = getClients();
-  const camUsername = `oc_${userId.substring(0, 20)}`;
+  const camUsername = `vibe_${userId.substring(0, 20)}`;
   let subAccountUin;
   let password;
+  let camSecretId = "";
+  let camSecretKey = "";
   try {
+    console.log("[provision] Checking existing CAM user");
     const getUserResp = await camClient.GetUser({ Name: camUsername });
     subAccountUin = getUserResp.Uin;
     password = generatePassword();
     try {
+      console.log("[provision] Updating CAM user password");
       await camClient.UpdateUser({
         Name: camUsername,
-        ConsoleLogin: 1,
+        ConsoleLogin: 0,
         Password: password,
-        NeedResetPassword: 0
+        NeedResetPassword: 0,
+        UseApi: 1
       });
     } catch {
       password = void 0;
     }
   } catch {
     password = generatePassword();
-    const addUserResp = await camClient.AddUser({
-      Name: camUsername,
-      Remark: `coder user: ${username}`,
-      ConsoleLogin: 1,
-      Password: password,
-      NeedResetPassword: 0,
-      UseApi: 0
-    });
-    subAccountUin = addUserResp.Uin;
+    console.log("[provision] Creating CAM user");
+    try {
+      const addUserResp = await camClient.AddUser({
+        Name: camUsername,
+        Remark: `coder user ${userId} ${username}`,
+        ConsoleLogin: 0,
+        Password: password,
+        NeedResetPassword: 0,
+        UseApi: 1
+      });
+      subAccountUin = addUserResp.Uin;
+      if (addUserResp.SecretId) {
+        camSecretId = addUserResp.SecretId;
+        camSecretKey = addUserResp.SecretKey;
+      }
+    } catch (e) {
+      console.error("[provision] CAM user creation failed:", e);
+      throw e;
+    }
   }
-  let camSecretId;
-  let camSecretKey;
-  const listKeysResp = await camClient.ListAccessKeys({ TargetUin: subAccountUin });
-  const existingKeys = listKeysResp.AccessKeys || [];
-  const activeKey = existingKeys.find((k) => k.Status === "Active");
-  if (activeKey) {
-    camSecretId = activeKey.AccessKeyId;
-  } else {
+  if (!camSecretId) {
+    console.log("[provision] Creating access key");
     const createKeyResp = await camClient.CreateAccessKey({ TargetUin: subAccountUin });
     camSecretId = createKeyResp.AccessKey.AccessKeyId;
     camSecretKey = createKeyResp.AccessKey.SecretAccessKey;
   }
-  const envAlias = `coder-${userId.substring(0, 14)}`;
   let envId;
-  try {
-    const descResp = await tcbClient.DescribeEnvs({});
-    const found = (descResp.EnvList || []).find((e) => e.Alias === envAlias);
-    if (found) envId = found.EnvId;
-  } catch {
-  }
-  if (!envId) {
-    const createEnvResp = await tcbClient.CreateEnv({
-      Alias: envAlias,
-      PackageId: "baas_personal",
-      Resources: ["flexdb", "storage", "function"]
-    });
-    envId = createEnvResp.EnvId;
-  }
+  console.log("[provision] Creating CloudBase env");
+  const createEnvResp = await tcbClient.CreateEnv({
+    Alias: "coder",
+    PackageId: "baas_personal",
+    Resources: ["flexdb", "storage", "function"]
+  });
+  envId = createEnvResp.EnvId;
   const policyName = `coder_policy_${envId}`;
   let policyId;
   try {
+    console.log("[provision] Listing policies");
     const listResp = await camClient.ListPolicies({ Keyword: policyName, Scope: "Local" });
     const found = (listResp.List || []).find((p) => p.PolicyName === policyName);
     if (found) policyId = found.PolicyId;
@@ -1733,13 +1679,15 @@ async function provisionUserResources(userId, username) {
       version: "2.0",
       statement: buildUserEnvPolicyStatements(envId)
     });
+    console.log("[provision] Creating policy");
     const createPolicyResp = await camClient.CreatePolicy({
       PolicyName: policyName,
       PolicyDocument: policyDocument,
-      Description: `Coder env ${envId} access`
+      Description: "Coder env access"
     });
     policyId = createPolicyResp.PolicyId;
   }
+  console.log("[provision] Attaching user policy");
   await camClient.AttachUserPolicy({
     AttachUin: subAccountUin,
     PolicyId: policyId
@@ -1752,6 +1700,46 @@ async function provisionUserResources(userId, username) {
     policyId
   };
 }
+async function rollbackProvisionedResources(result) {
+  const { camClient } = getClients();
+  if (result.policyId) {
+    try {
+      await camClient.DeletePolicy({ PolicyId: [result.policyId] });
+    } catch {
+    }
+  }
+  if (result.camUsername) {
+    try {
+      await camClient.DeleteUser({ Name: result.camUsername, Force: 1 });
+    } catch {
+    }
+  }
+}
+async function destroyProvisionedResources(resource) {
+  const { camClient, tcbClient } = getClients();
+  if (resource.policyId) {
+    try {
+      await camClient.DeletePolicy({ PolicyId: [resource.policyId] });
+      console.log("[provision] CAM policy deleted");
+    } catch {
+    }
+  }
+  if (resource.camUsername) {
+    try {
+      await camClient.DeleteUser({ Name: resource.camUsername, Force: 1 });
+      console.log("[provision] CAM user deleted");
+    } catch {
+    }
+  }
+  if (resource.envId && resource.envId !== process.env.TCB_ENV_ID) {
+    try {
+      await tcbClient.DestroyEnv({ EnvId: resource.envId });
+      console.log("[provision] CloudBase env destroyed");
+    } catch (e) {
+      console.log("[provision] CloudBase env destroy error:", e);
+    }
+  }
+}
 
 // src/middleware/auth.ts
 var SESSION_COOKIE_NAME = "nex_session";
@@ -1760,35 +1748,22 @@ async function authMiddleware(c, next) {
   if (authHeader?.startsWith("Bearer sak_")) {
     try {
       const plainKey = authHeader.slice(7);
+      const encryptedKey = encrypt(plainKey);
       const db = getDb();
-      const allKeys = await db.serverApiKeys.findAll();
-      let matched = null;
-      for (const k of allKeys) {
-        try {
-          if (decrypt(k.key) === plainKey) {
-            matched = k;
-            break;
+      const user = await db.users.findByApiKey(encryptedKey);
+      if (user) {
+        c.set("session", {
+          created: Date.now(),
+          authProvider: "api-key",
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email || void 0,
+            avatar: user.avatarUrl || "",
+            name: user.name || void 0
           }
-        } catch {
-        }
-      }
-      if (matched) {
-        const user = await db.users.findById(matched.userId);
-        if (user) {
-          c.set("session", {
-            created: Date.now(),
-            authProvider: "api-key",
-            user: {
-              id: user.id,
-              username: user.username,
-              email: user.email || void 0,
-              avatar: user.avatarUrl || "",
-              name: user.name || void 0
-            }
-          });
-          db.serverApiKeys.updateLastUsed(matched.id).catch(() => {
-          });
-        }
+        });
+        c.set("apiKeyScopes", ["acp"]);
       }
     } catch {
     }
@@ -1915,6 +1890,7 @@ auth.post("/register", async (c) => {
       email: null,
       name: null,
       avatarUrl: null,
+      apiKey: encrypt(`sak_${nanoid3(40)}`),
       createdAt: now4,
       updatedAt: now4,
       lastLoginAt: now4
@@ -1941,21 +1917,22 @@ auth.post("/register", async (c) => {
     if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
       const resourceId = nanoid3();
       if (provisionMode === "isolated") {
-        await getDb().userResources.create({
-          id: resourceId,
-          userId,
-          status: "processing",
-          envId: null,
-          camUsername: null,
-          camSecretId: null,
-          camSecretKey: null,
-          policyId: null,
-          failStep: null,
-          failReason: null,
-          createdAt: now4,
-          updatedAt: now4
-        });
-        provisionUserResources(userId, trimmedUsername).then(async (result) => {
+        try {
+          await getDb().userResources.create({
+            id: resourceId,
+            userId,
+            status: "processing",
+            envId: null,
+            camUsername: null,
+            camSecretId: null,
+            camSecretKey: null,
+            policyId: null,
+            failStep: null,
+            failReason: null,
+            createdAt: now4,
+            updatedAt: now4
+          });
+          const result = await provisionUserResources(userId, trimmedUsername);
           await getDb().userResources.update(resourceId, {
             status: "success",
             envId: result.envId,
@@ -1965,15 +1942,21 @@ auth.post("/register", async (c) => {
             policyId: result.policyId,
             updatedAt: Date.now()
           });
-          console.log(`[provision] User ${trimmedUsername} env ready: ${result.envId}`);
-        }).catch(async (err) => {
-          await getDb().userResources.update(resourceId, {
-            status: "failed",
-            failReason: err.message,
-            updatedAt: Date.now()
-          });
-          console.error(`[provision] User ${trimmedUsername} failed:`, err.message);
-        });
+          console.log(`[provision] User env ready`);
+        } catch (err) {
+          console.error("[provision] Failed, rolling back:", err.message);
+          try {
+            const partialResult = {};
+            partialResult.camUsername = `oc_${userId.substring(0, 20)}`;
+            await rollbackProvisionedResources(partialResult);
+          } catch {
+          }
+          try {
+            await getDb().users.deleteById(userId);
+          } catch {
+          }
+          return c.json({ error: "Failed to create cloud environment, please try again later" }, 500);
+        }
       } else {
         await getDb().userResources.create({
           id: resourceId,
@@ -1989,7 +1972,7 @@ auth.post("/register", async (c) => {
           createdAt: now4,
           updatedAt: now4
         });
-        console.log(`[provision] User ${trimmedUsername} shared env: ${process.env.TCB_ENV_ID}`);
+        console.log(`[provision] Shared env configured`);
       }
     }
     setCookie(c, SESSION_COOKIE_NAME2, sessionValue, {
@@ -2067,9 +2050,11 @@ auth.get("/me", async (c) => {
     return c.json({ user: void 0 });
   }
   let envId;
+  let provisionStatus = "not_started";
   try {
     const resource = await getDb().userResources.findByUserId(session.user.id);
     envId = resource?.envId || void 0;
+    provisionStatus = resource?.status || "not_started";
   } catch {
   }
   return c.json({
@@ -2078,7 +2063,8 @@ auth.get("/me", async (c) => {
       role: user?.role || "user"
     },
     authProvider: session.authProvider,
-    envId
+    envId,
+    provisionStatus
   });
 });
 auth.get("/provision-status", async (c) => {
@@ -2096,6 +2082,41 @@ auth.get("/provision-status", async (c) => {
     updatedAt: resource.updatedAt
   });
 });
+auth.post("/provision-retry", async (c) => {
+  const session = c.get("session");
+  if (!session?.user?.id) return c.json({ error: "Unauthorized" }, 401);
+  const resource = await getDb().userResources.findByUserId(session.user.id);
+  if (!resource) return c.json({ error: "No resource record found" }, 404);
+  if (resource.status !== "failed") return c.json({ error: "Can only retry failed provisions" }, 400);
+  await getDb().userResources.update(resource.id, {
+    status: "processing",
+    failReason: null,
+    failStep: null,
+    updatedAt: Date.now()
+  });
+  const user = await getDb().users.findById(session.user.id);
+  const username = user?.username || session.user.username || "unknown";
+  provisionUserResources(session.user.id, username).then(async (result) => {
+    await getDb().userResources.update(resource.id, {
+      status: "success",
+      envId: result.envId,
+      camUsername: result.camUsername,
+      camSecretId: result.camSecretId,
+      camSecretKey: result.camSecretKey || null,
+      policyId: result.policyId,
+      updatedAt: Date.now()
+    });
+    console.log("[provision-retry] User env ready");
+  }).catch(async (err) => {
+    await getDb().userResources.update(resource.id, {
+      status: "failed",
+      failReason: err.message,
+      updatedAt: Date.now()
+    });
+    console.error("[provision-retry] Failed:", err.message);
+  });
+  return c.json({ status: "processing" });
+});
 auth.get("/rate-limit", async (c) => {
   const session = c.get("session");
   if (!session?.user?.id) return c.json({ error: "Unauthorized" }, 401);
@@ -2108,10 +2129,35 @@ auth.get("/rate-limit", async (c) => {
   });
 });
 auth.get("/auth-config", (c) => {
-  const providers = (process.env.NEXT_PUBLIC_AUTH_PROVIDERS || "local").split(",").map((s) => s.trim());
+  const providers = "local,github".split(",").map((s) => s.trim());
   const githubMode = process.env.AUTH_GITHUB_MODE || "direct";
   const tcbEnvId = process.env.TCB_ENV_ID || "";
   return c.json({ providers, githubMode, tcbEnvId });
+});
+auth.get("/api-key", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const user = await getDb().users.findById(session.user.id);
+  if (!user) return c.json({ error: "User not found" }, 404);
+  if (!user.apiKey) {
+    return c.json({ apiKey: null });
+  }
+  try {
+    const { decrypt: decrypt2 } = await import("./crypto-ASNNTCPU.js");
+    return c.json({ apiKey: decrypt2(user.apiKey) });
+  } catch {
+    return c.json({ apiKey: null });
+  }
+});
+auth.post("/api-key/reset", async (c) => {
+  const authErr = requireAuth(c);
+  if (authErr) return authErr;
+  const session = c.get("session");
+  const plainKey = `sak_${nanoid3(40)}`;
+  const encryptedKey = encrypt(plainKey);
+  await getDb().users.update(session.user.id, { apiKey: encryptedKey });
+  return c.json({ apiKey: plainKey });
 });
 var auth_default = auth;
 
@@ -2126,7 +2172,7 @@ function generateState() {
 }
 var githubAuth = new Hono2();
 githubAuth.get("/login", async (c) => {
-  const clientId = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
+  const clientId = process.env.GITHUB_CLIENT_ID;
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/auth/github/callback`;
   const referer = c.req.header("referer");
@@ -2172,7 +2218,7 @@ githubAuth.get("/signin", async (c) => {
   if (!session?.user) {
     return c.redirect("/");
   }
-  const clientId = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
+  const clientId = process.env.GITHUB_CLIENT_ID;
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/auth/github/callback`;
   const referer = c.req.header("referer");
@@ -2230,7 +2276,7 @@ githubAuth.get("/callback", async (c) => {
       return c.text("Invalid OAuth state", 400);
     }
   }
-  const clientId = process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID;
+  const clientId = process.env.GITHUB_CLIENT_ID;
   const clientSecret = process.env.GITHUB_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     return c.text("GitHub OAuth not configured", 500);
@@ -2320,6 +2366,7 @@ githubAuth.get("/callback", async (c) => {
           email: email || null,
           name: githubUser.name || githubUser.login,
           avatarUrl: githubUser.avatar_url,
+          apiKey: encrypt(`sak_${nanoid4(40)}`),
           createdAt: now4,
           updatedAt: now4,
           lastLoginAt: now4
@@ -2557,6 +2604,7 @@ cloudbaseAuth.post("/login", async (c) => {
         email: email || null,
         name: nickName || null,
         avatarUrl: avatarUrl || null,
+        apiKey: encrypt(`sak_${nanoid5(40)}`),
         createdAt: now4,
         updatedAt: now4,
         lastLoginAt: now4
@@ -4216,9 +4264,9 @@ var ScfSandboxManager = class {
             SessionSource: "HEADER",
             SessionName: "X-Cloudbase-Session-Id",
             MaximumConcurrencySessionPerInstance: 1,
-            MaximumTTLInSeconds: 600,
-            MaximumIdleTimeInSeconds: 300,
-            IdleTimeoutStrategy: "PAUSE"
+            MaximumTTLInSeconds: 1800,
+            MaximumIdleTimeInSeconds: 600,
+            IdleTimeoutStrategy: "FATAL"
           }
         },
         Environment: {
@@ -4532,7 +4580,7 @@ async function createSandboxMcpClient(deps) {
     bashTimeoutMs = 3e4,
     workspaceFolderPaths = "",
     log = (msg) => console.log(msg),
-    onDeployUrl,
+    onArtifact,
     getMpDeployCredentials,
     userId: depsUserId,
     currentModel: depsCurrentModel
@@ -4895,13 +4943,18 @@ async function createSandboxMcpClient(deps) {
         try {
           const result = await mcporterCall(t.name, args);
           const output = result.output ?? "";
-          if (t.name === "uploadFiles" && onDeployUrl && output) {
+          if (t.name === "uploadFiles" && onArtifact && output) {
             try {
               const deployUrl = extractDeployUrl(output, isFilePath(String(args.localPath || "")));
               if (deployUrl) {
-                log(`[sandbox-mcp] deploy_url detected: ${deployUrl}
+                log(`[sandbox-mcp] deploy artifact detected
 `);
-                onDeployUrl(deployUrl);
+                onArtifact({
+                  title: "Web \u5E94\u7528\u5DF2\u90E8\u7F72",
+                  contentType: "link",
+                  data: deployUrl,
+                  metadata: { deploymentType: "web" }
+                });
               }
             } catch {
             }
@@ -5044,13 +5097,20 @@ async function createSandboxMcpClient(deps) {
               const enabled = args.enabled ?? true;
               if (!name || !prompt || !cronExpression) {
                 return {
-                  content: [{ type: "text", text: JSON.stringify({ error: true, message: "create \u9700\u8981 name\u3001prompt\u3001cronExpression" }) }],
+                  content: [
+                    {
+                      type: "text",
+                      text: JSON.stringify({ error: true, message: "create \u9700\u8981 name\u3001prompt\u3001cronExpression" })
+                    }
+                  ],
                   isError: true
                 };
               }
               if (!cron2.validate(cronExpression)) {
                 return {
-                  content: [{ type: "text", text: JSON.stringify({ error: true, message: "Cron \u8868\u8FBE\u5F0F\u65E0\u6548" }) }],
+                  content: [
+                    { type: "text", text: JSON.stringify({ error: true, message: "Cron \u8868\u8FBE\u5F0F\u65E0\u6548" }) }
+                  ],
                   isError: true
                 };
               }
@@ -5073,16 +5133,37 @@ async function createSandboxMcpClient(deps) {
                 scheduleTask(newTask);
               }
               return {
-                content: [{ type: "text", text: JSON.stringify({ success: true, id: newTask.id, name: newTask.name, cronExpression: newTask.cronExpression, enabled: newTask.enabled }) }]
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      success: true,
+                      id: newTask.id,
+                      name: newTask.name,
+                      cronExpression: newTask.cronExpression,
+                      enabled: newTask.enabled
+                    })
+                  }
+                ]
               };
             }
             if (action === "update") {
               const id = args.id;
               if (!id) {
-                return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "update \u9700\u8981 id" }) }], isError: true };
+                return {
+                  content: [
+                    { type: "text", text: JSON.stringify({ error: true, message: "update \u9700\u8981 id" }) }
+                  ],
+                  isError: true
+                };
               }
               if (args.cronExpression && !cron2.validate(args.cronExpression)) {
-                return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "Cron \u8868\u8FBE\u5F0F\u65E0\u6548" }) }], isError: true };
+                return {
+                  content: [
+                    { type: "text", text: JSON.stringify({ error: true, message: "Cron \u8868\u8FBE\u5F0F\u65E0\u6548" }) }
+                  ],
+                  isError: true
+                };
               }
               const updateData = {};
               if (args.name !== void 0) updateData.name = args.name;
@@ -5091,29 +5172,57 @@ async function createSandboxMcpClient(deps) {
               if (args.enabled !== void 0) updateData.enabled = args.enabled;
               const updated = await getDb().cronTasks.update(id, userId, updateData);
               if (!updated) {
-                return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" }) }], isError: true };
+                return {
+                  content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" }) }],
+                  isError: true
+                };
               }
               if (updated.enabled) {
                 scheduleTask(updated);
               } else {
                 unscheduleTask(updated.id);
               }
-              return { content: [{ type: "text", text: JSON.stringify({ success: true, id: updated.id, name: updated.name, enabled: updated.enabled }) }] };
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      success: true,
+                      id: updated.id,
+                      name: updated.name,
+                      enabled: updated.enabled
+                    })
+                  }
+                ]
+              };
             }
             if (action === "delete") {
               const id = args.id;
               if (!id) {
-                return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "delete \u9700\u8981 id" }) }], isError: true };
+                return {
+                  content: [
+                    { type: "text", text: JSON.stringify({ error: true, message: "delete \u9700\u8981 id" }) }
+                  ],
+                  isError: true
+                };
               }
               const existing = await getDb().cronTasks.findByIdAndUserId(id, userId);
               if (!existing) {
-                return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" }) }], isError: true };
+                return {
+                  content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u4EFB\u52A1\u4E0D\u5B58\u5728" }) }],
+                  isError: true
+                };
               }
               unscheduleTask(id);
               await getDb().cronTasks.delete(id, userId);
-              return { content: [{ type: "text", text: JSON.stringify({ success: true, message: "\u5DF2\u5220\u9664" }) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify({ success: true, message: "\u5DF2\u5220\u9664" }) }]
+              };
             }
-            return { content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u672A\u77E5\u64CD\u4F5C" }) }], isError: true };
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: true, message: "\u672A\u77E5\u64CD\u4F5C" }) }],
+              isError: true
+            };
           } catch (e) {
             return {
               content: [{ type: "text", text: JSON.stringify({ error: true, message: e.message }) }],
@@ -5251,14 +5360,7 @@ function getNextSeq(conversationId) {
 
 // src/agent/event-buffer.ts
 import { v4 as uuidv42 } from "uuid";
-var MILESTONE_SESSION_UPDATES = /* @__PURE__ */ new Set([
-  "tool_call",
-  "tool_call_update",
-  "ask_user",
-  "tool_confirm",
-  "deploy_url",
-  "artifact"
-]);
+var MILESTONE_SESSION_UPDATES = /* @__PURE__ */ new Set(["tool_call", "tool_call_update", "ask_user", "tool_confirm", "artifact"]);
 var EventBuffer = class {
   constructor(conversationId, turnId, envId, userId) {
     this.conversationId = conversationId;
@@ -5563,17 +5665,6 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
         timestamp: Date.now()
       };
     }
-    if (msg.type === "deploy_url") {
-      return {
-        sessionUpdate: "deploy_url",
-        url: msg.url,
-        type: msg.deploymentType || "web",
-        qrCodeUrl: msg.qrCodeUrl,
-        pagePath: msg.pagePath,
-        appId: msg.appId,
-        label: msg.label
-      };
-    }
     if (msg.type === "artifact" && msg.artifact) {
       return {
         sessionUpdate: "artifact",
@@ -5770,8 +5861,8 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
       if (acpEvent) {
         eventBuffer.push(acpEvent);
       }
-      if (msg.type === "deploy_url") {
-        this.persistDeployment(conversationId, msg).catch((err) => {
+      if (msg.type === "artifact" && msg.artifact) {
+        this.persistDeploymentFromArtifact(conversationId, msg.artifact).catch((err) => {
           console.error("Failed to persist deployment:", err);
         });
       }
@@ -5823,8 +5914,8 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
             }),
             workspaceFolderPaths: actualCwd,
             log: (msg) => console.log(msg),
-            onDeployUrl: (url) => {
-              wrappedCallback({ type: "deploy_url", url });
+            onArtifact: (artifact) => {
+              wrappedCallback({ type: "artifact", artifact });
             },
             getMpDeployCredentials: async (appId) => {
               const app9 = await getDb().miniprogramApps.findByAppIdAndUserId(appId, userContext.userId);
@@ -5864,6 +5955,16 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
     }
     let connectTimer;
     let iterationTimeoutTimer;
+    let toolCallInProgress = false;
+    function resetIterationTimeout() {
+      if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer);
+      if (toolCallInProgress) return;
+      iterationTimeoutTimer = setTimeout(() => {
+        abortController.abort();
+        currentQuery?.cleanup?.();
+      }, ITERATION_TIMEOUT_MS);
+    }
+    let currentQuery = null;
     try {
       const sessionOpts = hasHistory ? { resume: conversationId, sessionId: conversationId } : { persistSession: true, sessionId: conversationId };
       if (toolOverrideConfig) {
@@ -5874,7 +5975,7 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
       if (sandboxMcpClient) {
         mcpServers.cloudbase = sandboxMcpClient.sdkServer;
       }
-      const abortController = new AbortController();
+      const abortController2 = new AbortController();
       const pendingToolInterrupt = { value: null };
       const queryArgs = {
         prompt,
@@ -5890,7 +5991,7 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
             append: buildAppendPrompt(actualCwd, conversationId, userContext.envId)
           },
           mcpServers,
-          abortController,
+          abortController: abortController2,
           canUseTool: async (toolName, input, _options) => {
             const toolUseId = _options?.toolUseID;
             if (toolName === "AskUserQuestion") {
@@ -6003,27 +6104,32 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
       };
       console.log("[Agent] calling query(), model:", modelId, "sessionOpts:", JSON.stringify(sessionOpts));
       const q = query(queryArgs);
+      currentQuery = q;
       console.log("[Agent] query() returned, entering message loop...");
       connectTimer = setTimeout(() => {
-        abortController.abort();
+        abortController2.abort();
       }, CONNECT_TIMEOUT_MS);
       let firstMessageReceived = false;
       const tracker = createToolCallTracker();
-      iterationTimeoutTimer = setTimeout(() => {
-        abortController.abort();
-        q.cleanup?.();
-      }, ITERATION_TIMEOUT_MS);
+      resetIterationTimeout();
       try {
         console.log("[Agent] starting for-await loop...");
         messageLoop: for await (const message of q) {
           console.log("[Agent] message type:", message.type, JSON.stringify(message).slice(0, 300));
-          if (iterationTimeoutTimer) {
-            clearTimeout(iterationTimeoutTimer);
+          if (message.type === "user") {
+            toolCallInProgress = false;
           }
-          iterationTimeoutTimer = setTimeout(() => {
-            abortController.abort();
-            q.cleanup?.();
-          }, ITERATION_TIMEOUT_MS);
+          if (message.type === "assistant") {
+            const content = message.message?.content;
+            if (Array.isArray(content) && content.some((b) => b.type === "tool_use")) {
+              toolCallInProgress = true;
+              if (iterationTimeoutTimer) {
+                clearTimeout(iterationTimeoutTimer);
+                iterationTimeoutTimer = void 0;
+              }
+            }
+          }
+          resetIterationTimeout();
           if (!firstMessageReceived) {
             firstMessageReceived = true;
             clearTimeout(connectTimer);
@@ -6079,6 +6185,10 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
       if (connectTimer) clearTimeout(connectTimer);
       if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer);
       try {
+        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId);
+      } catch {
+      }
+      try {
         await eventBuffer.close();
       } catch {
       }
@@ -6122,10 +6232,6 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
         }
       }
       try {
-        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId);
-      } catch {
-      }
-      try {
         await getDb().tasks.update(conversationId, {
           status: finalStatus === "error" ? "error" : "completed",
           completedAt: Date.now(),
@@ -6141,18 +6247,24 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
     }
   }
   // ─── Deployment Persistence ────────────────────────────────────────
-  async persistDeployment(taskId, msg) {
-    const deploymentType = msg.deploymentType || "web";
+  async persistDeploymentFromArtifact(taskId, artifact) {
     const now4 = Date.now();
+    const meta = artifact.metadata || {};
+    const deploymentType = meta.deploymentType || (artifact.contentType === "link" ? "web" : "miniprogram");
+    const metadataJson = Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
     if (deploymentType === "miniprogram") {
+      const qrCodeUrl = artifact.contentType === "image" ? artifact.data : meta.qrCodeUrl || null;
+      const pagePath = meta.pagePath || null;
+      const appId = meta.appId || null;
+      const label = artifact.title || null;
       const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, "miniprogram", null);
       if (existing) {
         await getDb().deployments.update(existing.id, {
-          qrCodeUrl: msg.qrCodeUrl || existing.qrCodeUrl,
-          pagePath: msg.pagePath || existing.pagePath,
-          appId: msg.appId || existing.appId,
-          label: msg.label || existing.label,
-          metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+          qrCodeUrl: qrCodeUrl || existing.qrCodeUrl,
+          pagePath: pagePath || existing.pagePath,
+          appId: appId || existing.appId,
+          label: label || existing.label,
+          metadata: metadataJson || existing.metadata,
           updatedAt: now4
         });
       } else {
@@ -6162,29 +6274,30 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
           type: "miniprogram",
           url: null,
           path: null,
-          qrCodeUrl: msg.qrCodeUrl || null,
-          pagePath: msg.pagePath || null,
-          appId: msg.appId || null,
-          label: msg.label || null,
-          metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+          qrCodeUrl,
+          pagePath,
+          appId,
+          label,
+          metadata: metadataJson,
           createdAt: now4,
           updatedAt: now4
         });
       }
-    } else if (msg.url) {
+    } else if (artifact.contentType === "link" && artifact.data) {
+      const url = artifact.data;
       let urlPath = null;
       try {
-        const urlObj = new URL(msg.url);
-        urlPath = urlObj.pathname;
+        const urlObj = new URL(url);
+        urlPath = urlObj.pathname.replace(/\/index\.html$/, "/").replace(/\/+$/, "") || "/";
       } catch {
       }
       if (urlPath) {
         const existing = await getDb().deployments.findByTaskIdAndTypePath(taskId, "web", urlPath);
         if (existing) {
           await getDb().deployments.update(existing.id, {
-            url: msg.url,
-            label: msg.label || existing.label,
-            metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : existing.metadata,
+            url,
+            label: artifact.title || existing.label,
+            metadata: metadataJson || existing.metadata,
             updatedAt: now4
           });
         } else {
@@ -6192,24 +6305,37 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
             id: nanoid8(12),
             taskId,
             type: "web",
-            url: msg.url,
+            url,
             path: urlPath,
             qrCodeUrl: null,
             pagePath: null,
             appId: null,
-            label: msg.label || null,
-            metadata: msg.deploymentMetadata ? JSON.stringify(msg.deploymentMetadata) : null,
+            label: artifact.title || null,
+            metadata: metadataJson,
             createdAt: now4,
             updatedAt: now4
           });
         }
       }
-    }
-    if (msg.url) {
       try {
-        await getDb().tasks.update(taskId, { previewUrl: msg.url });
+        await getDb().tasks.update(taskId, { previewUrl: url });
       } catch {
       }
+    } else {
+      await getDb().deployments.create({
+        id: nanoid8(12),
+        taskId,
+        type: deploymentType,
+        url: artifact.contentType === "link" ? artifact.data : null,
+        path: null,
+        qrCodeUrl: artifact.contentType === "image" ? artifact.data : null,
+        pagePath: null,
+        appId: null,
+        label: artifact.title || null,
+        metadata: metadataJson,
+        createdAt: now4,
+        updatedAt: now4
+      });
     }
   }
   // ─── Stream Event Handlers ──────────────────────────────────────────
@@ -6313,7 +6439,7 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
   }
   /**
    * 尝试从 uploadFiles 工具结果中提取 CloudBase 静态托管部署 URL
-   * 结果包含 accessUrl 或 staticDomain 则触发 deploy_url callback
+   * 结果包含 accessUrl 或 staticDomain 则触发 artifact callback
    */
   tryExtractDeployUrl(toolUseId, rawText, tracker, callback) {
     const toolInfo = tracker.pendingToolCalls.get(toolUseId);
@@ -6333,7 +6459,15 @@ var CloudbaseAgentService = class _CloudbaseAgentService {
       const isFile = localPath ? /\.[a-zA-Z0-9]+$/.test(localPath.replace(/\/+$/, "").split("/").pop() || "") : false;
       const deployUrl = _CloudbaseAgentService.extractDeployUrl(rawText, isFile);
       if (deployUrl) {
-        callback({ type: "deploy_url", url: deployUrl });
+        callback({
+          type: "artifact",
+          artifact: {
+            title: "Web \u5E94\u7528\u5DF2\u90E8\u7F72",
+            contentType: "link",
+            data: deployUrl,
+            metadata: { deploymentType: "web" }
+          }
+        });
       }
     } catch {
     }
@@ -6447,6 +6581,10 @@ var acp = new Hono5();
 acp.use("/*", async (c, next) => {
   if (c.req.path.endsWith("/health") || c.req.path.endsWith("/config")) {
     return next();
+  }
+  const scopes = c.get("apiKeyScopes");
+  if (scopes !== void 0 && !scopes.includes("acp")) {
+    return c.json({ error: "API key does not have ACP scope" }, 403);
   }
   return requireUserEnv(c, next);
 });
@@ -6744,6 +6882,8 @@ async function observeStream(c, rpcId, sessionId, turnId, _envId, _userId) {
       await stream.writeSSE({ data: JSON.stringify(rpcOk(rpcId, { stopReason })) });
     }
     await stream.writeSSE({ data: "[DONE]" });
+    persistenceService.cleanupStreamEvents(sessionId, turnId).catch(() => {
+    });
   });
 }
 async function handleSessionCancel(c, id, params, isNotification) {
@@ -10211,6 +10351,40 @@ admin.post("/users/:userId/enable", async (c) => {
   });
   return c.json({ success: true });
 });
+admin.delete("/users/:userId", async (c) => {
+  const userId = c.req.param("userId");
+  const adminUser = c.get("adminUser");
+  if (userId === adminUser.id) {
+    return c.json({ error: "Cannot delete yourself" }, 400);
+  }
+  const db = getDb();
+  const user = await db.users.findById(userId);
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  if (user.role === "admin") {
+    return c.json({ error: "Cannot delete admin user, remove admin role first" }, 400);
+  }
+  await db.adminLogs.create({
+    id: nanoid14(),
+    adminUserId: adminUser.id,
+    action: "user_delete",
+    targetUserId: userId,
+    details: JSON.stringify({ username: user.username, email: user.email }),
+    ipAddress: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    userAgent: c.req.header("user-agent")
+  });
+  const resource = await db.userResources.findByUserId(userId);
+  if (resource) {
+    await destroyProvisionedResources({
+      camUsername: resource.camUsername,
+      policyId: resource.policyId,
+      envId: resource.envId
+    });
+  }
+  await db.users.deleteById(userId);
+  return c.json({ success: true });
+});
 admin.post("/users/:userId/set-role", async (c) => {
   const userId = c.req.param("userId");
   const adminUser = c.get("adminUser");
@@ -10295,6 +10469,7 @@ admin.post("/users/create", async (c) => {
     name: username,
     role,
     status: "active",
+    apiKey: encrypt(`sak_${nanoid14(40)}`),
     createdAt: now4,
     updatedAt: now4,
     lastLoginAt: now4
@@ -10725,6 +10900,7 @@ admin.post("/proxy/:envId/functions/:name/invoke", async (c) => {
 var admin_default = admin;
 
 // src/index.ts
+import { nanoid as nanoid15 } from "nanoid";
 var __filename = fileURLToPath2(import.meta.url);
 var __dirname = dirname2(__filename);
 process.on("unhandledRejection", (err) => {
@@ -10762,32 +10938,37 @@ var webDistPath = resolve(__dirname, "../web/dist");
 var serveStaticFiles = existsSync2(webDistPath);
 if (serveStaticFiles) {
   console.log(`[Server] Serving static files from: ${webDistPath}`);
+  const indexHtml = readFileSync(resolve(webDistPath, "index.html"), "utf-8");
   app8.use("/assets/*", serveStatic({ root: webDistPath }));
   app8.use("/*", serveStatic({ root: webDistPath }));
   app8.get("*", async (c, next) => {
-    const path5 = c.req.path;
-    if (path5.startsWith("/api")) {
+    if (c.req.path.startsWith("/api")) {
       return next();
     }
-    return c.html(
-      `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Coding Agent</title>
-  <link rel="stylesheet" href="/assets/index.css">
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/assets/index.js"></script>
-</body>
-</html>`
-    );
+    return c.html(indexHtml);
   });
 } else {
   console.log("[Server] Running in API-only mode (no static files)");
   console.log("[Server] For full-stack mode, build the web package first: pnpm build:web");
+}
+async function backfillApiKeys() {
+  try {
+    const db = getDb();
+    const users2 = await db.users.findAll(1e3, 0);
+    let count = 0;
+    for (const user of users2) {
+      if (!user.apiKey) {
+        const plainKey = `sak_${nanoid15(40)}`;
+        await db.users.update(user.id, { apiKey: encrypt(plainKey) });
+        count++;
+      }
+    }
+    if (count > 0) {
+      console.log(`[Server] Backfilled API keys for ${count} users`);
+    }
+  } catch (err) {
+    console.error("[Server] Failed to backfill API keys:", err);
+  }
 }
 var PORT = Number(process.env.PORT) || 3001;
 serve({ fetch: app8.fetch, port: PORT }, () => {
@@ -10801,6 +10982,7 @@ serve({ fetch: app8.fetch, port: PORT }, () => {
   initCronScheduler().catch((err) => {
     console.error("Failed to initialize cron scheduler:", err);
   });
+  backfillApiKeys();
 });
 var index_default = app8;
 export {

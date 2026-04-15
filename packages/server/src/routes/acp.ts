@@ -365,7 +365,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, 'prompt must contain at least one text block'))
   }
 
-  const effectivePrompt = prompt.trim() ? prompt : hasResumePayload ? 'continue' : prompt
+  const effectivePrompt = prompt.trim() ? prompt : hasResumePayload ? '继续未完成的任务' : prompt
 
   // Read task's selectedModel
   let selectedModel: string | undefined

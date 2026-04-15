@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from '@hono/node-server/serve-static'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -77,35 +77,21 @@ const serveStaticFiles = existsSync(webDistPath)
 if (serveStaticFiles) {
   console.log(`[Server] Serving static files from: ${webDistPath}`)
 
+  // Read index.html once at startup for SPA fallback
+  const indexHtml = readFileSync(resolve(webDistPath, 'index.html'), 'utf-8')
+
   // Serve static assets (JS, CSS, images, etc.)
   app.use('/assets/*', serveStatic({ root: webDistPath }))
 
-  // Serve other static files (favicon, etc.)
+  // Serve other static files (favicon, logos, etc.)
   app.use('/*', serveStatic({ root: webDistPath }))
 
   // SPA fallback - serve index.html for all non-API routes
   app.get('*', async (c, next) => {
-    const path = c.req.path
-    // Skip API routes
-    if (path.startsWith('/api')) {
+    if (c.req.path.startsWith('/api')) {
       return next()
     }
-    // Serve index.html for SPA routes
-    return c.html(
-      `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Coding Agent</title>
-  <link rel="stylesheet" href="/assets/index.css">
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/assets/index.js"></script>
-</body>
-</html>`,
-    )
+    return c.html(indexHtml)
   })
 } else {
   console.log('[Server] Running in API-only mode (no static files)')
