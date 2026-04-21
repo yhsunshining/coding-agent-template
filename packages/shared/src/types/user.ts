@@ -41,7 +41,7 @@ export type InsertUser = z.infer<typeof insertUserSchema>
 
 export interface SessionUserInfo {
   user: SessionUser | undefined
-  authProvider?: 'github' | 'vercel'
+  authProvider?: 'github'
 }
 
 export interface Tokens {
@@ -52,7 +52,7 @@ export interface Tokens {
 
 export interface Session {
   created: number
-  authProvider: 'github' | 'vercel'
+  authProvider: 'github'
   user: SessionUser
 }
 

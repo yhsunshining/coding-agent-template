@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { getDb } from '../db/index.js'
 import { requireAuth, type AppEnv } from '../middleware/auth'
 
-const GITHUB_REPO = 'vercel-labs/coding-agent-template'
+const GITHUB_REPO = 'TencentCloudBase/openVibeCoding'
 const CACHE_DURATION_MS = 5 * 60 * 1000 // 5 minutes
 
 let cachedStars: number | null = null
@@ -72,11 +72,6 @@ app.get('/sandboxes', async (c) => {
     console.error('Error fetching sandboxes:', error)
     return c.json({ error: 'Failed to fetch sandboxes' }, 500)
   }
-})
-
-// GET /api/vercel/teams - Stub (Vercel OAuth removed)
-app.get('/vercel/teams', (c) => {
-  return c.json({ scopes: [] })
 })
 
 export default app

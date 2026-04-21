@@ -137,7 +137,7 @@ export function SignOut({ user, authProvider }: Pick<Session, 'user' | 'authProv
           Sandboxes
         </DropdownMenuItem> */}
 
-        {authProvider === 'vercel' && hasGitHub && (
+        {false && hasGitHub && (
           <>
             {githubConnection.connected ? (
               <DropdownMenuItem onClick={handleGitHubDisconnect} className="cursor-pointer">

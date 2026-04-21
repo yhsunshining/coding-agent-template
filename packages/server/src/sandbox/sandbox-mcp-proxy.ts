@@ -573,7 +573,7 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
   // requires SDK-wrapped servers (not raw @modelcontextprotocol/sdk McpServer).
   // We re-wrap the same tools using sdkTool() + createSdkMcpServer().
   const sdkTools = cloudbaseTools
-    .filter((t: any) => t.name !== 'logout')
+    .filter((t: any) => t.name !== 'logout' && t.name !== 'interactiveDialog')
     .map((t: any) => {
       const zodShape = jsonSchemaToZodRawShape(t.inputSchema)
       return sdkTool(

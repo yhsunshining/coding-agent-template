@@ -11,7 +11,7 @@ export interface SessionUser {
 
 export interface SessionUserInfo {
   user?: SessionUser
-  authProvider?: 'github' | 'vercel' | 'local' | 'cloudbase'
+  authProvider?: 'github' | 'local' | 'cloudbase'
   envId?: string
   provisionStatus?: 'processing' | 'success' | 'failed' | 'not_started'
 }
