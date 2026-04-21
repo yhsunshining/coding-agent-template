@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Loader2, ArrowUp, Settings, X, Cable, Users, Globe } from 'lucide-react'
+import { Loader2, ArrowUp, Settings, X, Cable, Users, Globe, Code2 } from 'lucide-react'
 import { CodeBuddy, ProviderLogos, type ProviderKey } from '@/components/logos'
 // import { Claude, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { setInstallDependencies, setMaxDuration, setKeepAlive, setEnableBrowser } from '@/lib/utils/cookies'
@@ -42,6 +42,7 @@ interface TaskFormProps {
     selectedAgent: string
     selectedModel: string
     selectedModels?: string[]
+    mode: 'default' | 'coding'
     installDependencies: boolean
     maxDuration: number
     keepAlive: boolean
@@ -140,6 +141,7 @@ export function TaskForm({
   const [maxDuration, setMaxDurationState] = useState(initialMaxDuration)
   const [keepAlive, setKeepAliveState] = useState(initialKeepAlive)
   const [enableBrowser, setEnableBrowserState] = useState(initialEnableBrowser)
+  const [mode, setMode] = useState<'default' | 'coding'>('coding')
   const [showMcpServersDialog, setShowMcpServersDialog] = useState(false)
 
   // Connectors state
@@ -302,6 +304,7 @@ export function TaskForm({
         repoUrl: '',
         selectedAgent,
         selectedModel,
+        mode,
         installDependencies,
         maxDuration,
         keepAlive,
@@ -349,6 +352,7 @@ export function TaskForm({
       repoUrl: selectedRepoData?.clone_url || '',
       selectedAgent,
       selectedModel,
+      mode,
       installDependencies,
       maxDuration,
       keepAlive,
@@ -495,6 +499,26 @@ export function TaskForm({
                 {/* Buttons */}
                 <div className="flex items-center gap-2">
                   <TooltipProvider delayDuration={1500} skipDelayDuration={1500}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="rounded-full h-8 w-8 p-0 relative"
+                          onClick={() => setMode((m) => (m === 'coding' ? 'default' : 'coding'))}
+                        >
+                          <Code2 className="h-4 w-4" />
+                          {mode === 'coding' && (
+                            <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Coding Mode {mode === 'coding' ? '(on)' : '(off)'}</p>
+                      </TooltipContent>
+                    </Tooltip>
+
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
