@@ -54,6 +54,7 @@ export const selectTaskSchema = z.object({
   repoUrl: z.string().nullable(),
   selectedAgent: z.string().nullable(),
   selectedModel: z.string().nullable(),
+  mode: z.enum(['default', 'coding']).nullable(),
   installDependencies: z.boolean().nullable(),
   maxDuration: z.number().nullable(),
   keepAlive: z.boolean().nullable(),

@@ -154,3 +154,69 @@ IMPORTANT RULES:
 }
 
 export const CODING_DEV_SERVER_PORT = DEV_SERVER_PORT
+
+interface PreviewPortInfo {
+  port: number
+  service?: string
+  kind?: string
+}
+
+/**
+ * Detect a running dev server inside the sandbox using the /preview/ports endpoint.
+ * The sandbox's remote-workspace service parses /proc/net/tcp{,6} and infers service types
+ * (vite, next-dev, webpack-dev-server, etc.) automatically.
+ * Returns the port number of the first "preview"-kind service, or 0 if none found.
+ */
+async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
+  try {
+    const res = await sandbox.request('/preview/ports', {
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!res.ok) return 0
+    const data = (await res.json()) as { ports?: PreviewPortInfo[] }
+    const previewPort = data.ports?.find((p) => p.kind === 'preview')
+    return previewPort?.port ?? 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Detect the running dev server port, starting one if not found.
+ * - First checks for an existing process via pgrep + ss / /proc/net/tcp6
+ * - If none found, starts `npm run dev` in the workspace background
+ * - Polls up to 15s for the server to become ready
+ * Returns the port number, or throws if the server fails to start.
+ */
+export async function detectAndEnsureDevServer(sandbox: SandboxInstance, workspace: string): Promise<number> {
+  // Step 1: check for already-running dev server
+  const existingPort = await detectDevServerPort(sandbox)
+  if (existingPort > 0) {
+    console.log(`[CodingMode] Dev server already running on port ${existingPort}`)
+    return existingPort
+  }
+
+  // Step 2: start dev server
+  console.log('[CodingMode] No dev server found, starting one')
+  await sandbox.request('/api/tools/bash', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command: `cd "${workspace}" && nohup npm run dev > /tmp/devserver.log 2>&1 &`,
+      timeout: 10000,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  })
+
+  // Step 3: poll until port is detected (up to ~15s)
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, 2000))
+    const port = await detectDevServerPort(sandbox)
+    if (port > 0) {
+      console.log(`[CodingMode] Dev server ready on port ${port}`)
+      return port
+    }
+  }
+
+  throw new Error('Dev server failed to start within timeout')
+}

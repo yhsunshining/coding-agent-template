@@ -8,6 +8,7 @@ import { Octokit } from '@octokit/rest'
 import { SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
+import { detectAndEnsureDevServer } from '../agent/coding-mode.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -2328,6 +2329,38 @@ tasksRouter.post('/:taskId/file-operation', requireUserEnv, async (c) => {
   } catch (error) {
     console.error('Error performing file operation:', error)
     return c.json({ success: false, error: 'Failed to perform file operation' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// GET /:taskId/preview-url — detect (or start) dev server, return Gateway URL
+// ---------------------------------------------------------------------------
+
+tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
+  const session = c.get('session')!
+  const { envId } = c.get('userEnv')!
+  const { taskId } = c.req.param()
+
+  const task = await findActiveTask(taskId, session.user.id)
+  if (!task) return c.json({ error: 'Task not found' }, 404)
+  if (!task.sandboxId) return c.json({ error: 'Sandbox not initialized' }, 400)
+
+  const sandbox = await getScfSandbox(task, envId)
+  if (!sandbox) return c.json({ error: 'Sandbox not available' }, 503)
+
+  try {
+    const workspace = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
+    const port = await detectAndEnsureDevServer(sandbox, workspace)
+
+    const sandboxEnvId = process.env.TCB_ENV_ID || ''
+    const functionName = task.sandboxId
+    const sessionId = task.sandboxSessionId || envId
+    const gatewayUrl = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview/proxy/${port}/?session-id=${sessionId}`
+
+    return c.json({ port, gatewayUrl })
+  } catch (err) {
+    console.error('[preview-url] Failed to detect/start dev server:', err)
+    return c.json({ error: 'Dev server failed to start' }, 502)
   }
 })
 
