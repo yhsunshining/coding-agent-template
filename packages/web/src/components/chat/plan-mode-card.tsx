@@ -2,6 +2,7 @@ import { Rocket, Loader2 } from 'lucide-react'
 import type { PermissionAction } from '@coder/shared'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { MarkdownBlock } from './markdown-block'
 
 /**
  * PlanModeCard — 计划审批卡片（专用于 ExitPlanMode 工具）
@@ -10,7 +11,7 @@ import { Button } from '@/components/ui/button'
  *
  * 与 `InterruptionCard` 的普通写工具分支相比，本卡片的特点：
  * 1. 用 Rocket 图标 + 主题高亮替代 ShieldAlert 警示色
- * 2. 大面积展示 plan 内容（Markdown 格式暂以 `<pre>` 渲染，未来接入 ReactMarkdown 时再替换）
+ * 2. **P6+**: plan 内容用 MarkdownBlock 渲染,享受代码块语法高亮 / 列表 / 标题 / 链接等
  * 3. 三按钮：是 开始编码 / 继续规划 / 退出 Plan 模式
  *    - allow            → 批准计划，模型开始执行
  *    - deny             → 继续规划（保留 Plan 模式，让模型重新起草）
@@ -23,6 +24,7 @@ interface PlanModeCardProps {
 }
 
 export function PlanModeCard({ planContent, isSending, onDecision }: PlanModeCardProps) {
+  const hasPlan = planContent && planContent.trim().length > 0
   return (
     <Card className="p-3 border-primary/60 bg-primary/5">
       <div className="flex items-center gap-2 mb-2">
@@ -31,14 +33,15 @@ export function PlanModeCard({ planContent, isSending, onDecision }: PlanModeCar
       </div>
 
       <div className="space-y-2">
-        {/*
-          Markdown 渲染留给后续（可复用聊天消息的 markdown 组件）。
-          暂时按行保留格式，避免用户看到错位的一大坨文本。
-        */}
-        <div className="bg-muted/50 rounded p-2 max-h-96 overflow-auto">
-          <pre className="text-xs whitespace-pre-wrap break-words font-mono leading-5">
-            {planContent || '（模型未提供计划内容）'}
-          </pre>
+        <div className="bg-muted/50 rounded p-2 max-h-96 overflow-auto text-xs">
+          {hasPlan ? (
+            // P6+: 接入 streamdown,plan 里的 `- ` 列表 / 代码块 / 粗体都会被正确渲染
+            <MarkdownBlock>{planContent}</MarkdownBlock>
+          ) : (
+            <pre className="text-xs whitespace-pre-wrap break-words font-mono leading-5 text-muted-foreground">
+              （模型未提供计划内容）
+            </pre>
+          )}
         </div>
       </div>
 

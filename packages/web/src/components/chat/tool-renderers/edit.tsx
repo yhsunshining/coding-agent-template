@@ -4,6 +4,7 @@ import { DiffView, DiffModeEnum } from '@git-diff-view/react'
 import { generateDiffFile } from '@git-diff-view/file'
 import '@git-diff-view/react/styles/diff-view-pure.css'
 import type { ToolRenderer, ToolRenderContext } from './index'
+import { guessLanguage } from './guess-language'
 
 interface EditInput {
   file_path?: string
@@ -14,30 +15,7 @@ interface EditInput {
   edits?: Array<{ old_string: string; new_string: string; replace_all?: boolean }>
 }
 
-/** 根据扩展名猜测语言 id, 未知语言交给 diff-view 自动处理 */
-function guessLanguage(filePath?: string): string {
-  if (!filePath) return 'text'
-  const ext = filePath.split('.').pop()?.toLowerCase() || ''
-  const map: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    json: 'json',
-    md: 'markdown',
-    css: 'css',
-    scss: 'scss',
-    html: 'html',
-    py: 'python',
-    go: 'go',
-    rs: 'rust',
-    sh: 'bash',
-    yml: 'yaml',
-    yaml: 'yaml',
-  }
-  return map[ext] || 'text'
-}
-
+/** 把长路径收敛为 `…/<dir>/<file>`,便于头部摘要展示 */
 function shortenPath(path: string, maxLen = 48): string {
   if (path.length <= maxLen) return path
   const parts = path.split('/')

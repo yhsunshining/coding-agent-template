@@ -6,6 +6,8 @@
  */
 import { ToolCallCard } from '@/components/chat/tool-call-card'
 import { TOOL_RENDERERS } from '@/components/chat/tool-renderers'
+import { PlanModeCard } from '@/components/chat/plan-mode-card'
+import { MarkdownBlock } from '@/components/chat/markdown-block'
 
 type MockCase = {
   toolName: string
@@ -29,7 +31,16 @@ const CASES: MockCase[] = [
       type: 'text',
       text: 'total 24\ndrwxr-xr-x  5 root  root  160 Apr 24 10:00 .\n-rw-r--r--  1 root  root  1024 Apr 24 09:00 package.json',
     }),
-    note: 'Bash: 命令预览 + 描述 + 纯文本输出',
+    note: 'Bash: P6+ shiki 高亮命令 + 纯文本输出',
+  },
+  {
+    toolName: 'Bash',
+    input: {
+      command: 'for i in 1 2 3; do\n  echo "iter $i"\n  curl -s https://api.example.com/item/$i\ndone',
+      description: 'Loop over items',
+    },
+    result: 'iter 1\n{"ok":true}\niter 2\n{"ok":true}\niter 3\n{"ok":false}',
+    note: 'Bash: P6+ 多行脚本高亮',
   },
   {
     toolName: 'Bash',
@@ -45,20 +56,45 @@ const CASES: MockCase[] = [
     input: { file_path: '/Users/yang/project/packages/web/src/main.tsx', offset: 10, limit: 50 },
     result: JSON.stringify({
       type: 'text',
-      text: '1→import React from "react"\n2→import ReactDOM from "react-dom/client"',
+      text:
+        '     1→import React from "react"\n' +
+        '     2→import ReactDOM from "react-dom/client"\n' +
+        '     3→\n' +
+        '     4→function App() {\n' +
+        '     5→  return <div>Hello</div>\n' +
+        '     6→}\n' +
+        '     7→\n' +
+        '     8→ReactDOM.createRoot(document.getElementById("root")!).render(<App />)',
     }),
-    note: 'Read: 路径 + offset/limit',
+    note: 'Read: P6+ 去行号 + shiki 高亮',
   },
 
   // Write
   {
     toolName: 'Write',
     input: {
-      file_path: '/Users/yang/project/foo.ts',
-      content: 'export const hello = "world"\nexport const answer = 42\n',
+      file_path: '/Users/yang/project/src/Counter.tsx',
+      content:
+        'import { useState } from "react"\n\n' +
+        'export function Counter() {\n' +
+        '  const [count, setCount] = useState(0)\n' +
+        '  return (\n' +
+        '    <button onClick={() => setCount(c => c + 1)}>\n' +
+        '      Clicked {count} times\n' +
+        '    </button>\n' +
+        '  )\n' +
+        '}\n',
     },
     result: JSON.stringify({ type: 'text', text: 'File created successfully' }),
-    note: 'Write: 路径 + 完整内容预览',
+    note: 'Write: P6+ 按 .tsx 高亮 (TypeScript JSX)',
+  },
+  {
+    toolName: 'Write',
+    input: {
+      file_path: '/Users/yang/project/data.json',
+      content: '{\n  "name": "demo",\n  "version": "1.0.0",\n  "items": [1, 2, 3]\n}\n',
+    },
+    note: 'Write: P6+ JSON 高亮',
   },
 
   // Edit
@@ -199,6 +235,70 @@ export function ToolRenderersPreviewPage() {
           </section>
         ))}
       </div>
+
+      {/* P6+: MarkdownBlock 通用渲染示例 */}
+      <section className="space-y-2 pt-6 border-t border-border">
+        <h2 className="text-lg font-semibold">MarkdownBlock (P6+)</h2>
+        <div className="bg-muted/30 rounded p-3">
+          <MarkdownBlock>{`### 这是三级标题
+
+这是一个**加粗**文本,带 \`inline code\` 和 [链接](https://example.com)。
+
+列表项:
+- 第一项
+- 第二项 \`code\`
+
+\`\`\`tsx
+import { useState } from 'react'
+
+export function Demo() {
+  const [n, setN] = useState(0)
+  return <button onClick={() => setN(n + 1)}>{n}</button>
+}
+\`\`\`
+
+\`\`\`bash
+# shiki 也能高亮 shell 脚本
+echo "hello" | tr 'a-z' 'A-Z'
+\`\`\`
+`}</MarkdownBlock>
+        </div>
+      </section>
+
+      {/* P6+: PlanModeCard 预览 */}
+      <section className="space-y-2 pt-6 border-t border-border">
+        <h2 className="text-lg font-semibold">PlanModeCard (P2 + P6+)</h2>
+        <p className="text-xs text-muted-foreground">Plan 内容用 MarkdownBlock 渲染,代码块获得 shiki 高亮</p>
+        <PlanModeCard
+          isSending={false}
+          onDecision={(action) => console.log('[preview] decision:', action)}
+          planContent={`## 实现计数器组件
+
+### 步骤
+1. 创建 \`src/components/Counter.tsx\`
+2. 使用 React hooks 管理状态
+3. 添加 Tailwind 样式
+
+### 代码示例
+\`\`\`tsx
+import { useState } from 'react'
+
+export function Counter() {
+  const [count, setCount] = useState(0)
+  return (
+    <button className="btn btn-primary" onClick={() => setCount(c => c + 1)}>
+      Count: {count}
+    </button>
+  )
+}
+\`\`\`
+
+### 测试计划
+- [ ] 初始显示 Count: 0
+- [ ] 点击后递增
+- [ ] 样式符合 daisyUI`}
+        />
+      </section>
     </div>
   )
 }
