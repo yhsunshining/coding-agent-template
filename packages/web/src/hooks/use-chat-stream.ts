@@ -12,7 +12,7 @@
 
 import { useState, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
-import type { ExtendedSessionUpdate } from '@coder/shared'
+import type { ExtendedSessionUpdate, PermissionAction } from '@coder/shared'
 import type { TaskMessage, AskUserQuestionData, ToolConfirmData, DeploymentInfo, ArtifactInfo } from '@/types/task-chat'
 
 // ─── Stream Phase ─────────────────────────────────────────────────────
@@ -595,7 +595,7 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
 
   /** Confirm or deny a tool execution and resume the stream. */
   const confirmTool = useCallback(
-    async (action: 'allow' | 'deny') => {
+    async (action: PermissionAction) => {
       if (!toolConfirm) return
 
       const data = toolConfirm

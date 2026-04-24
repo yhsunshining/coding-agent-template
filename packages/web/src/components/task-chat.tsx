@@ -1,6 +1,6 @@
 import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
 import type { Theme } from '@coder/dashboard/CloudDashboard'
-import type { Task } from '@coder/shared'
+import type { Task, PermissionAction } from '@coder/shared'
 import type {
   TaskMessage,
   AskUserQuestionData,
@@ -14,7 +14,7 @@ import { useChatStream } from '@/hooks/use-chat-stream'
 import { ThinkingBlock } from '@/components/chat/thinking-block'
 import { ToolCallCard } from '@/components/chat/tool-call-card'
 import { AskUserForm } from '@/components/chat/ask-user-form'
-import { ToolConfirmDialog } from '@/components/chat/tool-confirm-dialog'
+import { InterruptionCard } from '@/components/chat/interruption-card'
 import { useState, useEffect, useRef, useCallback, Children, isValidElement } from 'react'
 import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
@@ -466,7 +466,7 @@ export function TaskChat({
     chatAnswerQuestion(askData).then(() => fetchMessages(false))
   }
 
-  const handleConfirmTool = (action: 'allow' | 'deny') => chatConfirmTool(action)
+  const handleConfirmTool = (action: PermissionAction) => chatConfirmTool(action)
 
   const handleAnswerSelect = (toolCallId: string, question: string, label: string) => {
     setQuestionAnswersByTool((prev) => ({
@@ -1261,10 +1261,10 @@ export function TaskChat({
       {/* Tab Content */}
       <div className="flex-1 min-h-0 px-3 pt-3 flex flex-col overflow-hidden">{renderTabContent()}</div>
 
-      {/* ToolConfirm Dialog */}
+      {/* InterruptionCard — 工具权限确认卡片（四值决策） */}
       {!readOnly && activeTab === 'chat' && toolConfirm && (
         <div className="flex-shrink-0 px-3 pb-2">
-          <ToolConfirmDialog data={toolConfirm} isSending={isSending} onConfirm={handleConfirmTool} />
+          <InterruptionCard data={toolConfirm} isSending={isSending} onDecision={handleConfirmTool} />
         </div>
       )}
 

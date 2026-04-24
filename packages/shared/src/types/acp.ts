@@ -85,6 +85,9 @@ export type {
   AvailableCommandsUpdate,
 }
 
+// Re-export permission action type for frontend single-point import
+export type { PermissionAction } from './agent'
+
 // ─── Stream Event Persistence Types ──────────────────────────────────
 
 export type AgentRunStatus = 'running' | 'completed' | 'error' | 'cancelled'

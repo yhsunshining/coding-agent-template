@@ -155,6 +155,16 @@ export interface AcpImageBlock {
 export type AcpContentBlock = AcpTextBlock | AcpImageBlock
 
 /**
+ * 工具权限决策动作
+ *
+ * - `allow`: 仅允许本次工具调用
+ * - `allow_always`: 允许本次，并在当前会话中后续同名工具调用不再询问
+ * - `deny`: 拒绝本次工具调用
+ * - `reject_and_exit_plan`: 拒绝并退出 Plan 模式（P2 使用：附带切换 permissionMode）
+ */
+export type PermissionAction = 'allow' | 'allow_always' | 'deny' | 'reject_and_exit_plan'
+
+/**
  * session/prompt 方法参数
  */
 export interface SessionPromptParams {
@@ -165,7 +175,7 @@ export interface SessionPromptParams {
   /** 工具确认结果 */
   toolConfirmation?: {
     interruptId: string
-    payload: { action: 'allow' | 'deny' }
+    payload: { action: PermissionAction }
   }
 }
 
@@ -425,7 +435,7 @@ export interface AgentCallbackMessage {
   /** ask_user 问题的答案（resume 场景） */
   answers?: Record<string, string>
   /** tool_confirm 的确认动作 */
-  action?: 'allow' | 'deny'
+  action?: PermissionAction
   /** artifact: 结构化产物（部署 URL、小程序二维码、上传结果等） */
   artifact?: {
     title: string
@@ -463,7 +473,7 @@ export interface AgentOptions {
   /** resume 时传入的工具确认结果 */
   toolConfirmation?: {
     interruptId: string
-    payload: { action: 'allow' | 'deny'; result?: string }
+    payload: { action: PermissionAction; result?: string }
   }
   /** 指定模型 */
   model?: string

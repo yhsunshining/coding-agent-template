@@ -17,6 +17,7 @@ import { decrypt } from '../lib/crypto.js'
 import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage, ExtendedSessionUpdate } from '@coder/shared'
 import { registerAgent, getAgentRun, completeAgent, removeAgent, isAgentRunning } from './agent-registry.js'
 import { EventBuffer } from './event-buffer.js'
+import { sessionPermissions, normalizeToolName } from './session-permissions.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -164,36 +165,19 @@ async function initSandboxWorkspace(
  * canUseTool 中对这些工具发起 interrupt，等待客户端确认后再执行。
  * 可通过 bypassToolConfirmation=true 跳过确认。
  */
-const WRITE_TOOLS = true
-  ? new Set([])
-  : new Set([
-      // 数据库相关 (4个)
-      'writeNoSqlDatabaseStructure', // 修改 NoSQL 数据库结构
-      'writeNoSqlDatabaseContent', // 修改 NoSQL 数据库内容
-      'executeWriteSQL', // 执行写入 SQL
-      'modifyDataModel', // 修改数据模型
+const WRITE_TOOLS = new Set([
+  // 数据库写操作（4 个）
+  'writeNoSqlDatabaseStructure', // 修改 NoSQL 数据库结构
+  'writeNoSqlDatabaseContent', // 修改 NoSQL 数据库内容
+  'executeWriteSQL', // 执行写入 SQL
+  'modifyDataModel', // 修改数据模型
 
-      // 云函数相关 (7个)
-      'createFunction', // 创建云函数
-      'updateFunctionCode', // 更新云函数代码
-      'updateFunctionConfig', // 更新云函数配置
-      'invokeFunction', // 调用云函数
-      'manageFunctionTriggers', // 管理云函数触发器
-      'writeFunctionLayers', // 管理云函数层
-      'createFunctionHTTPAccess', // 创建云函数 HTTP 访问
-
-      // 存储相关 (2个) - uploadFiles 不拦截（静态托管部署需要）
-      'deleteFiles', // 删除文件
-      'manageStorage', // 管理云存储
-
-      // 其他 (5个)
-      'domainManagement', // 域名管理
-      'interactiveDialog', // 交互式对话
-      'manageCloudRun', // 管理云托管
-      'writeSecurityRule', // 写入安全规则
-      'activateInviteCode', // 激活邀请码
-      'callCloudApi', // 调用云 API
-    ])
+  // 云函数写操作（4 个）
+  'createFunction', // 创建云函数
+  'updateFunctionCode', // 更新云函数代码
+  'updateFunctionConfig', // 更新云函数配置
+  'invokeFunction', // 调用云函数
+])
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -598,10 +582,31 @@ export class CloudbaseAgentService {
 
       // Resume + toolConfirmation 场景：处理用户确认结果
       if (toolConfirmation) {
-        const isAllowed = toolConfirmation.payload.action === 'allow'
+        const action = toolConfirmation.payload.action
+        // allow_always 等同 allow：放行本次 + 写入会话级白名单
+        const isAllowed = action === 'allow' || action === 'allow_always'
+
+        // 预查 toolCallInfo 以获取工具名（用于白名单写入和后续执行）
+        // 注意：此处写入白名单必须独立于 sandboxMcpClient 状态，否则 sandbox 未就绪时
+        // allow_always 将永远无法生效。
+        if (action === 'allow_always') {
+          try {
+            const info = await persistenceService.getToolCallInfo(
+              conversationId,
+              assistantMessageId,
+              toolConfirmation.interruptId,
+            )
+            if (info) {
+              const normalized = normalizeToolName(info.toolName)
+              sessionPermissions.allowAlways(conversationId, normalized)
+            }
+          } catch {
+            // 白名单写入失败不影响主流程（canUseTool / PreToolUse Hook 处仍会写入）
+          }
+        }
 
         if (isAllowed && sandboxMcpClient) {
-          // allow: 通过 MCP client 调用工具获取真实结果
+          // allow / allow_always: 通过 MCP client 调用工具获取真实结果
           const mcpClient = sandboxMcpClient.client
           const toolCallInfo = await persistenceService.getToolCallInfo(
             conversationId,
@@ -610,9 +615,7 @@ export class CloudbaseAgentService {
           )
 
           if (toolCallInfo) {
-            const normalizedToolName = toolCallInfo.toolName.startsWith('mcp__')
-              ? toolCallInfo.toolName.split('__').slice(2).join('__') || toolCallInfo.toolName
-              : toolCallInfo.toolName
+            const normalizedToolName = normalizeToolName(toolCallInfo.toolName)
 
             try {
               // 通过 MCP client 调用工具
@@ -649,8 +652,22 @@ export class CloudbaseAgentService {
               )
             }
           }
+        } else if (isAllowed && !sandboxMcpClient) {
+          // allow / allow_always 但 sandbox 未就绪：写占位结果让 Agent 继续。
+          // 避免误写"用户拒绝了此操作"导致 Agent 停步；此处白名单已写入（若为 allow_always）。
+          await persistenceService.updateToolResult(
+            conversationId,
+            assistantMessageId,
+            toolConfirmation.interruptId,
+            {
+              type: 'text',
+              text: action === 'allow_always' ? '已允许此类操作（本会话），请继续。' : '已允许，请继续。',
+            },
+            'completed',
+          )
         } else {
-          // deny 或无 MCP client: 更新为拒绝消息
+          // deny / reject_and_exit_plan（P1 范围下 reject_and_exit_plan 按 deny 处理）:
+          //   更新为拒绝消息
           await persistenceService.updateToolResult(
             conversationId,
             assistantMessageId,
@@ -952,22 +969,43 @@ export class CloudbaseAgentService {
             }
 
             // 写工具确认处理（提取工具名，去掉 mcp__server__ 前缀）
-            const normalizedToolName = toolName.startsWith('mcp__')
-              ? toolName.split('__').slice(2).join('__') || toolName
-              : toolName
+            const normalizedToolName = normalizeToolName(toolName)
 
             if (WRITE_TOOLS.has(normalizedToolName)) {
-              // Resume 场景：已有用户确认结果
+              // (A) 白名单命中：直接放行，不打断
+              if (conversationId && sessionPermissions.isAllowed(conversationId, normalizedToolName)) {
+                return {
+                  behavior: 'allow' as const,
+                  updatedInput: input as Record<string, unknown>,
+                }
+              }
+
+              // (B) Resume 场景：已有用户确认结果
               if (toolConfirmation && toolConfirmation.interruptId === toolUseId) {
-                if (toolConfirmation.payload.action === 'allow') {
+                const action = toolConfirmation.payload.action
+
+                if (action === 'allow_always') {
+                  // 写入会话级白名单，后续同工具免确认
+                  if (conversationId) {
+                    sessionPermissions.allowAlways(conversationId, normalizedToolName)
+                  }
                   return {
                     behavior: 'allow' as const,
                     updatedInput: input as Record<string, unknown>,
                   }
                 }
+                if (action === 'allow') {
+                  return {
+                    behavior: 'allow' as const,
+                    updatedInput: input as Record<string, unknown>,
+                  }
+                }
+                // 'deny' | 'reject_and_exit_plan' — 本次均按拒绝处理
+                // TODO(P2): reject_and_exit_plan 需退出 Plan 模式
                 return { behavior: 'deny' as const, message: '用户拒绝了此操作' }
               }
 
+              // (C) 首次调用：发 tool_confirm 中断，等待用户决策
               // 捕获工具调用信息供 catch 持久化
               if (toolUseId && pendingToolInterrupt) {
                 pendingToolInterrupt.value = {
@@ -1006,15 +1044,30 @@ export class CloudbaseAgentService {
                     const actualToolUseId = toolUseId || (hookInput as any).tool_use_id
 
                     // 提取工具名（去掉 mcp__server__ 前缀）
-                    const normalizedToolName = toolName.startsWith('mcp__')
-                      ? toolName.split('__').slice(2).join('__') || toolName
-                      : toolName
+                    const normalizedToolName = normalizeToolName(toolName)
 
                     // 检查是否为需要确认的写工具
                     if (WRITE_TOOLS.has(normalizedToolName)) {
-                      // Resume 场景：已有用户确认结果
+                      // (A) 白名单命中：直接放行，不打断
+                      if (conversationId && sessionPermissions.isAllowed(conversationId, normalizedToolName)) {
+                        return {
+                          continue: true,
+                          hookSpecificOutput: {
+                            hookEventName: 'PreToolUse',
+                            permissionDecision: 'allow',
+                          },
+                        }
+                      }
+
+                      // (B) Resume 场景：已有用户确认结果
                       if (toolConfirmation && toolConfirmation.interruptId === actualToolUseId) {
-                        if (toolConfirmation.payload.action === 'allow') {
+                        const action = toolConfirmation.payload.action
+
+                        if (action === 'allow_always') {
+                          // 写入会话级白名单，后续同工具免确认
+                          if (conversationId) {
+                            sessionPermissions.allowAlways(conversationId, normalizedToolName)
+                          }
                           return {
                             continue: true,
                             hookSpecificOutput: {
@@ -1023,6 +1076,17 @@ export class CloudbaseAgentService {
                             },
                           }
                         }
+                        if (action === 'allow') {
+                          return {
+                            continue: true,
+                            hookSpecificOutput: {
+                              hookEventName: 'PreToolUse',
+                              permissionDecision: 'allow',
+                            },
+                          }
+                        }
+                        // 'deny' | 'reject_and_exit_plan' — 本次均按拒绝处理
+                        // TODO(P2): reject_and_exit_plan 需退出 Plan 模式
                         return {
                           continue: false,
                           decision: 'block',
@@ -1035,7 +1099,7 @@ export class CloudbaseAgentService {
                         }
                       }
 
-                      // 捕获工具调用信息供 catch 持久化
+                      // (C) 首次：捕获工具调用信息供 catch 持久化
                       if (actualToolUseId && pendingToolInterrupt) {
                         pendingToolInterrupt.value = {
                           callId: actualToolUseId,
