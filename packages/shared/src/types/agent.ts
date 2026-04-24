@@ -254,6 +254,8 @@ export interface ToolCallUpdate {
   kind: 'function' | 'other'
   status: 'in_progress' | 'completed' | 'failed'
   input?: unknown
+  /** P7: 父 Task 的 toolCallId，非空表示此调用由子代理（Task 工具）产生 */
+  parentToolCallId?: string
 }
 
 export interface ToolCallStatusUpdate {
@@ -263,6 +265,8 @@ export interface ToolCallStatusUpdate {
   result?: unknown
   input?: unknown
   error?: { message: string }
+  /** P7: 父 Task 的 toolCallId（冗余字段，前端优先从 tool_call part 继承） */
+  parentToolCallId?: string
 }
 
 export interface AvailableCommandsUpdate {
@@ -441,6 +445,7 @@ export interface AgentCallbackMessage {
     | 'tool_confirm'
     | 'ask_user'
     | 'artifact'
+    | 'agent_phase'
   content?: string
   name?: string
   input?: unknown
@@ -448,6 +453,11 @@ export interface AgentCallbackMessage {
   id?: string
   tool_use_id?: string
   is_error?: boolean
+  /**
+   * P7 Subagent: 来自 Claude SDK 顶层 message 的 `parent_tool_use_id`。
+   * 非空表示此消息由某个 Task 子代理产生，前端据此构建嵌套卡片。
+   */
+  parent_tool_use_id?: string | null
   sessionId?: string
   /** assistant 消息的 DB record id */
   assistantMessageId?: string
@@ -455,6 +465,10 @@ export interface AgentCallbackMessage {
   answers?: Record<string, string>
   /** tool_confirm 的确认动作 */
   action?: PermissionAction
+  /** agent_phase: 代理执行阶段(P4) */
+  phase?: 'preparing' | 'model_responding' | 'tool_executing' | 'compacting' | 'idle'
+  /** agent_phase: 对应工具名(仅 phase='tool_executing' 时传) */
+  phaseToolName?: string
   /** artifact: 结构化产物（部署 URL、小程序二维码、上传结果等） */
   artifact?: {
     title: string

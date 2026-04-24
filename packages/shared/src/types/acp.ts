@@ -70,6 +70,40 @@ export interface ArtifactUpdate {
   }
 }
 
+/**
+ * Agent 执行阶段上报（P4）。
+ *
+ * 用于让客户端感知"代理当前在做什么",例如:
+ *   - 模型推理中 → 展示"模型响应中..."
+ *   - 工具执行中 → 展示"执行 Bash ..."
+ *   - 上下文压缩 → 展示"正在压缩历史..."
+ *
+ * 约定:
+ *   - 服务端在每次边界触发一次(循环开始、assistant→tool_use、user tool_result 回流、result 结束)
+ *   - 事件是**增量**:只描述"刚进入的阶段",不携带历史
+ *   - 非里程碑事件:可与其它事件合并批量下发(不强制立即 flush)
+ */
+export type AgentPhaseName =
+  /** 准备阶段:沙箱启动/健康检查/历史恢复 */
+  | 'preparing'
+  /** 模型推理中,等待 LLM 输出 */
+  | 'model_responding'
+  /** 工具正在执行(本地 tool 或 MCP 远程调用) */
+  | 'tool_executing'
+  /** 长上下文压缩中(SDK 自动触发 compact) */
+  | 'compacting'
+  /** 空闲,没有实质进行中的操作 */
+  | 'idle'
+
+export interface AgentPhaseUpdate {
+  sessionUpdate: 'agent_phase'
+  phase: AgentPhaseName
+  /** 可选:工具名(仅 phase='tool_executing' 时传) */
+  toolName?: string
+  /** 时间戳(ms),用于前端判断陈旧事件 */
+  timestamp: number
+}
+
 // Extended SessionUpdate type (base + custom)
 export type ExtendedSessionUpdate =
   | BaseSessionUpdate
@@ -80,6 +114,7 @@ export type ExtendedSessionUpdate =
   | AskUserUpdate
   | ToolConfirmUpdate
   | ArtifactUpdate
+  | AgentPhaseUpdate
 
 // Re-export base types for convenience
 export type {

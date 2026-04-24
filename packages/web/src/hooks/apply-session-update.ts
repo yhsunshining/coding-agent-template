@@ -13,7 +13,7 @@
  * - clearQuestionState 在 tool_call_update 里调用，hook 内部已 useCallback
  */
 import type { Dispatch, SetStateAction, MutableRefObject } from 'react'
-import type { ExtendedSessionUpdate } from '@coder/shared'
+import type { ExtendedSessionUpdate, AgentPhaseName } from '@coder/shared'
 import type { TaskMessage, ToolConfirmData, DeploymentInfo, ArtifactInfo } from '@/types/task-chat'
 import { extractPlanContent } from '@/components/chat/plan-content'
 
@@ -31,6 +31,19 @@ interface PlanModeLike {
   toolCallId: string | null
 }
 
+/**
+ * Agent 执行阶段展示态（P4 前端）。
+ *
+ * - phase: 当前阶段（null 表示 idle,不展示指示器）
+ * - toolName: 仅 phase='tool_executing' 时有值
+ * - timestamp: 便于前端丢弃乱序事件(正常 SSE 时序即可,留给 reconnect 场景防陈旧覆盖)
+ */
+export interface AgentPhaseInfo {
+  phase: AgentPhaseName | null
+  toolName?: string
+  timestamp: number
+}
+
 export interface ApplySessionUpdateCtx {
   update: ExtendedSessionUpdate
   assistantMsgId: string
@@ -42,6 +55,7 @@ export interface ApplySessionUpdateCtx {
   setArtifacts: Dispatch<SetStateAction<ArtifactInfo[]>>
   setDeploymentNotifications: Dispatch<SetStateAction<DeploymentInfo[]>>
   setPlanMode: Dispatch<SetStateAction<PlanModeLike>>
+  setAgentPhase: Dispatch<SetStateAction<AgentPhaseInfo>>
   clearQuestionState: (toolCallId: string) => void
 }
 
@@ -56,6 +70,7 @@ export interface ApplySessionUpdateCtx {
  * - tool_confirm：设 toolConfirm state，ExitPlanMode 时联动 plan-mode atom
  * - ask_user：切 waiting
  * - artifact：去重追加 artifact + deploymentNotification
+ * - agent_phase：同步代理阶段到 UI(P4)
  */
 export function applySessionUpdate(ctx: ApplySessionUpdateCtx): void {
   const {
@@ -69,6 +84,7 @@ export function applySessionUpdate(ctx: ApplySessionUpdateCtx): void {
     setArtifacts,
     setDeploymentNotifications,
     setPlanMode,
+    setAgentPhase,
     clearQuestionState,
   } = ctx
   const u = update as any
@@ -117,12 +133,16 @@ export function applySessionUpdate(ctx: ApplySessionUpdateCtx): void {
           if (m.id !== assistantMsgId) return m
           const prevParts = m.parts || []
           const existingIdx = prevParts.findIndex((p) => p.type === 'tool_call' && p.toolCallId === u.toolCallId)
+          // P7: 防御 —— 若服务端误把 parentToolCallId 设为自身（SDK 语义边界），忽略
+          const hasValidParent = u.parentToolCallId && u.parentToolCallId !== u.toolCallId
           const newPart = {
             type: 'tool_call' as const,
             toolCallId: u.toolCallId || '',
             toolName: u.title || 'tool',
             input: u.input,
             assistantMessageId: u.assistantMessageId || assistantMsgId,
+            // P7: 子代理产生的工具链到父 Task；前端据此构建 SubagentCard 嵌套视图
+            ...(hasValidParent ? { parentToolCallId: u.parentToolCallId as string } : {}),
           }
           if (existingIdx >= 0) {
             const updated = [...prevParts]
@@ -173,6 +193,11 @@ export function applySessionUpdate(ctx: ApplySessionUpdateCtx): void {
                 toolName: toolCallPart?.type === 'tool_call' ? toolCallPart.toolName : undefined,
                 content: String(u.result || ''),
                 isError: u.status === 'failed',
+                // P7: 从同 toolCallId 的 tool_call part 继承 parentToolCallId
+                //     服务端也在 tool_call_update 注入该字段（冗余安全兜底）
+                ...(toolCallPart?.type === 'tool_call' && toolCallPart.parentToolCallId
+                  ? { parentToolCallId: toolCallPart.parentToolCallId }
+                  : {}),
               },
             ],
           }
@@ -286,5 +311,21 @@ export function applySessionUpdate(ctx: ApplySessionUpdateCtx): void {
         optionsRef.current.onDeploymentDetected?.()
       }
       break
+
+    case 'agent_phase': {
+      // P4: 代理执行阶段上报。服务端在关键边界(preparing/model_responding/tool_executing/
+      // compacting/idle)推送,前端只负责把 phase + toolName 映射到状态指示器。
+      //
+      // 同一 turn 内服务端已做过去重(lastEmittedPhase),这里直接覆盖即可;
+      // reconnect 场景若有乱序事件,用 timestamp 保证后到的旧事件不覆盖新 phase。
+      const nextPhase = (u.phase ?? null) as AgentPhaseName | null
+      const nextToolName = typeof u.toolName === 'string' ? u.toolName : undefined
+      const nextTs = typeof u.timestamp === 'number' ? u.timestamp : Date.now()
+      setAgentPhase((prev) => {
+        if (prev.timestamp > nextTs) return prev
+        return { phase: nextPhase, toolName: nextToolName, timestamp: nextTs }
+      })
+      break
+    }
   }
 }

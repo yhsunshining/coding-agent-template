@@ -24,6 +24,8 @@ export type MessagePart =
       input?: unknown
       assistantMessageId?: string
       status?: string
+      /** P7: 父 Task 的 toolCallId，非空表示此调用由子代理（Task）产生，渲染时应嵌套到 SubagentCard 内 */
+      parentToolCallId?: string
     }
   | {
       type: 'tool_result'
@@ -33,6 +35,8 @@ export type MessagePart =
       isError?: boolean
       /** 'incomplete' when tool was interrupted (e.g. AskUserQuestion waiting for user answer) */
       status?: string
+      /** P7: 从同 toolCallId 的 tool_call part 继承 */
+      parentToolCallId?: string
     }
 
 // ─── Interaction Types ────────────────────────────────────────────────

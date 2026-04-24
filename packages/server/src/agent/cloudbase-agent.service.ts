@@ -368,6 +368,8 @@ export class CloudbaseAgentService {
         status: 'in_progress',
         input: msg.input,
         assistantMessageId: msg.assistantMessageId,
+        // P7: 子代理产生的工具带 parentToolCallId
+        ...(msg.parent_tool_use_id ? { parentToolCallId: msg.parent_tool_use_id } : {}),
       } as ExtendedSessionUpdate
     }
     if (msg.type === 'tool_input_update') {
@@ -376,6 +378,7 @@ export class CloudbaseAgentService {
         toolCallId: msg.id || '',
         status: 'in_progress',
         input: msg.input,
+        ...(msg.parent_tool_use_id ? { parentToolCallId: msg.parent_tool_use_id } : {}),
       } as ExtendedSessionUpdate
     }
     if (msg.type === 'tool_result') {
@@ -384,6 +387,7 @@ export class CloudbaseAgentService {
         toolCallId: msg.tool_use_id || '',
         status: msg.is_error ? 'failed' : 'completed',
         result: msg.content,
+        ...(msg.parent_tool_use_id ? { parentToolCallId: msg.parent_tool_use_id } : {}),
       } as ExtendedSessionUpdate
     }
     if (msg.type === 'error') {
@@ -433,6 +437,15 @@ export class CloudbaseAgentService {
     if (msg.type === 'result') {
       // result events are not streamed as session updates
       return null
+    }
+    // P4: 代理执行阶段上报 — 非里程碑事件(不强制 flush),用于前端后续展示"代理在做什么"
+    if (msg.type === 'agent_phase' && msg.phase) {
+      return {
+        sessionUpdate: 'agent_phase',
+        phase: msg.phase,
+        ...(msg.phaseToolName ? { toolName: msg.phaseToolName } : {}),
+        timestamp: Date.now(),
+      } as ExtendedSessionUpdate
     }
     return null
   }
@@ -794,6 +807,21 @@ export class CloudbaseAgentService {
     let detectedSandboxCwd: string | undefined
 
     const sandboxEnabled = process.env.TCB_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI
+
+    // P4: 代理阶段上报助手 —— 在关键边界向前端透传当前状态
+    // 去重:只在 phase 或 toolName 变化时 emit,避免密集的 tool_use stream_event 刷屏
+    let lastEmittedPhase: { phase: string; toolName?: string } | null = null
+    const emitPhase = (
+      phase: 'preparing' | 'model_responding' | 'tool_executing' | 'compacting' | 'idle',
+      toolName?: string,
+    ) => {
+      if (lastEmittedPhase && lastEmittedPhase.phase === phase && lastEmittedPhase.toolName === toolName) return
+      lastEmittedPhase = { phase, toolName }
+      wrappedCallback({ type: 'agent_phase', phase, phaseToolName: toolName })
+    }
+
+    // 首个 phase:准备阶段(沙箱启动、工作空间初始化、历史恢复全部发生在 query() 之前)
+    emitPhase('preparing')
 
     if (sandboxEnabled) {
       try {
@@ -1252,18 +1280,31 @@ export class CloudbaseAgentService {
           // Tool result (user message) means tool execution completed — resume timeout
           if (message.type === 'user') {
             toolCallInProgress = false
+            // P4: 工具结果已回流,代理即将再次让模型推理
+            emitPhase('model_responding')
           }
 
           // Assistant message with tool_use means tool is about to execute — pause timeout
           if (message.type === 'assistant') {
             const content = (message as any).message?.content
-            if (Array.isArray(content) && content.some((b: any) => b.type === 'tool_use')) {
+            const toolUseBlock = Array.isArray(content) ? content.find((b: any) => b.type === 'tool_use') : undefined
+            if (toolUseBlock) {
               toolCallInProgress = true
               if (iterationTimeoutTimer) {
                 clearTimeout(iterationTimeoutTimer)
                 iterationTimeoutTimer = undefined
               }
+              // P4: 模型决定调用工具 → 进入工具执行阶段,附带工具名
+              emitPhase('tool_executing', (toolUseBlock as any).name)
+            } else if (Array.isArray(content)) {
+              // 纯文本/思考型 assistant 消息 → 模型仍在响应中
+              emitPhase('model_responding')
             }
+          }
+
+          // P4: 收到第一条 agent 消息时,从 preparing 切到 model_responding
+          if (!firstMessageReceived) {
+            emitPhase('model_responding')
           }
 
           resetIterationTimeout()
@@ -1283,19 +1324,29 @@ export class CloudbaseAgentService {
               const errorMsg = (message as any).error || 'Unknown error'
               throw new Error(errorMsg)
             }
-            case 'stream_event':
-              this.handleStreamEvent((message as any).event, tracker, wrappedCallback)
-              break
-            case 'user': {
-              const content = (message as any).message?.content
-              if (content) this.handleToolResults(content, tracker, wrappedCallback)
+            case 'stream_event': {
+              // P7: SDKPartialAssistantMessage 顶层 parent_tool_use_id 透传到子工具链路
+              const parentId = (message as any).parent_tool_use_id ?? null
+              this.handleStreamEvent((message as any).event, tracker, wrappedCallback, parentId)
               break
             }
-            case 'assistant':
-              this.handleToolNotFoundErrors(message, tracker, wrappedCallback)
-              this.handleAssistantToolUseInputs(message, tracker, wrappedCallback)
+            case 'user': {
+              const content = (message as any).message?.content
+              // P7: SDKUserMessage.parent_tool_use_id 透传
+              const parentId = (message as any).parent_tool_use_id ?? null
+              if (content) this.handleToolResults(content, tracker, wrappedCallback, parentId)
               break
+            }
+            case 'assistant': {
+              // P7: SDKAssistantMessage.parent_tool_use_id 透传
+              const parentId = (message as any).parent_tool_use_id ?? null
+              this.handleToolNotFoundErrors(message, tracker, wrappedCallback)
+              this.handleAssistantToolUseInputs(message, tracker, wrappedCallback, parentId)
+              break
+            }
             case 'result':
+              // P4: agent 本轮执行完毕
+              emitPhase('idle')
               wrappedCallback({
                 type: 'result',
                 content: JSON.stringify({
@@ -1522,22 +1573,32 @@ export class CloudbaseAgentService {
 
   // ─── Stream Event Handlers ──────────────────────────────────────────
 
-  private handleStreamEvent(event: any, tracker: ToolCallTracker, callback: AgentCallback): void {
+  private handleStreamEvent(
+    event: any,
+    tracker: ToolCallTracker,
+    callback: AgentCallback,
+    parentToolUseId: string | null = null,
+  ): void {
     if (!event) return
     switch (event.type) {
       case 'content_block_delta':
         this.handleContentBlockDelta(event, tracker, callback)
         break
       case 'content_block_start':
-        this.handleContentBlockStart(event, tracker, callback)
+        this.handleContentBlockStart(event, tracker, callback, parentToolUseId)
         break
       case 'content_block_stop':
-        this.handleContentBlockStop(event, tracker, callback)
+        this.handleContentBlockStop(event, tracker, callback, parentToolUseId)
         break
     }
   }
 
-  private handleContentBlockStart(event: any, tracker: ToolCallTracker, callback: AgentCallback): void {
+  private handleContentBlockStart(
+    event: any,
+    tracker: ToolCallTracker,
+    callback: AgentCallback,
+    parentToolUseId: string | null = null,
+  ): void {
     const block = event?.content_block
     if (!block) return
 
@@ -1555,7 +1616,13 @@ export class CloudbaseAgentService {
       input: block.input || {},
       inputJson: '',
     })
-    callback({ type: 'tool_use', name: block.name, input: block.input || {}, id: block.id })
+    callback({
+      type: 'tool_use',
+      name: block.name,
+      input: block.input || {},
+      id: block.id,
+      parent_tool_use_id: parentToolUseId,
+    })
   }
 
   private handleContentBlockDelta(event: any, tracker: ToolCallTracker, callback: AgentCallback): void {
@@ -1578,7 +1645,12 @@ export class CloudbaseAgentService {
     }
   }
 
-  private handleContentBlockStop(event: any, tracker: ToolCallTracker, callback: AgentCallback): void {
+  private handleContentBlockStop(
+    event: any,
+    tracker: ToolCallTracker,
+    callback: AgentCallback,
+    parentToolUseId: string | null = null,
+  ): void {
     const toolId = tracker.blockIndexToToolId.get(event.index)
     if (!toolId) return
 
@@ -1593,7 +1665,13 @@ export class CloudbaseAgentService {
         const parsedInput = JSON.parse(toolInfo.inputJson)
         toolInfo.input = parsedInput
         // Send input update (not a new tool_call) so frontend can merge
-        callback({ type: 'tool_input_update', name: toolInfo.name, input: parsedInput, id: toolId })
+        callback({
+          type: 'tool_input_update',
+          name: toolInfo.name,
+          input: parsedInput,
+          id: toolId,
+          parent_tool_use_id: parentToolUseId,
+        })
       } catch {
         // ignore
       }
@@ -1601,7 +1679,12 @@ export class CloudbaseAgentService {
     tracker.blockIndexToToolId.delete(event.index)
   }
 
-  private handleToolResults(content: any[], tracker: ToolCallTracker, callback: AgentCallback): void {
+  private handleToolResults(
+    content: any[],
+    tracker: ToolCallTracker,
+    callback: AgentCallback,
+    parentToolUseId: string | null = null,
+  ): void {
     if (!Array.isArray(content)) return
     for (const block of content) {
       if (block.type !== 'tool_result') continue
@@ -1641,6 +1724,7 @@ export class CloudbaseAgentService {
         tool_use_id: toolUseId,
         content: typeof processedContent === 'string' ? processedContent : JSON.stringify(processedContent),
         is_error: block.is_error,
+        parent_tool_use_id: parentToolUseId,
       })
     }
   }
@@ -1818,7 +1902,12 @@ export class CloudbaseAgentService {
    * 而是在 content_block_start 时 input 为空（{}），然后在 assistant message 里包含完整 input。
    * 此方法将完整 input 通过 tool_input_update 事件发送给前端，使前端能正确展示工具参数。
    */
-  private handleAssistantToolUseInputs(msg: any, tracker: ToolCallTracker, callback: AgentCallback): void {
+  private handleAssistantToolUseInputs(
+    msg: any,
+    tracker: ToolCallTracker,
+    callback: AgentCallback,
+    parentToolUseId: string | null = null,
+  ): void {
     const content = msg.message?.content
     if (!Array.isArray(content)) return
     for (const block of content) {
@@ -1831,7 +1920,13 @@ export class CloudbaseAgentService {
       const hasInput = block.input && typeof block.input === 'object' && Object.keys(block.input).length > 0
       if (hasInput && pendingTool && Object.keys(pendingTool.input).length === 0) {
         pendingTool.input = block.input
-        callback({ type: 'tool_input_update', name: block.name || pendingTool.name, input: block.input, id: toolId })
+        callback({
+          type: 'tool_input_update',
+          name: block.name || pendingTool.name,
+          input: block.input,
+          id: toolId,
+          parent_tool_use_id: parentToolUseId,
+        })
       }
     }
   }

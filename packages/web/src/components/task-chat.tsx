@@ -13,9 +13,12 @@ import type {
 import { useChatStream } from '@/hooks/use-chat-stream'
 import { ThinkingBlock } from '@/components/chat/thinking-block'
 import { ToolCallCard } from '@/components/chat/tool-call-card'
+import { SubagentCard } from '@/components/chat/subagent-card'
 import { AskUserForm } from '@/components/chat/ask-user-form'
 import { InterruptionCard } from '@/components/chat/interruption-card'
-import { useState, useEffect, useRef, useCallback, Children, isValidElement } from 'react'
+import { AgentStatusIndicator } from '@/components/chat/agent-status-indicator'
+import { mdComponents } from '@/components/chat/markdown-block'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -143,6 +146,7 @@ export function TaskChat({
     deploymentNotifications,
     setDeploymentNotifications,
     artifacts,
+    agentPhase,
     canFetchMessages,
     sendInitialPrompt,
     sendMessage: chatSendMessage,
@@ -573,35 +577,8 @@ export function TaskChat({
   }
 
   // ─── Shared markdown components ────────────────────────────────────
-
-  const mdComponents = {
-    code: ({ className, children, ...props }: React.ComponentPropsWithoutRef<'code'>) => (
-      <code className={`${className} !text-xs`} {...props}>
-        {children}
-      </code>
-    ),
-    pre: ({ children, ...props }: React.ComponentPropsWithoutRef<'pre'>) => (
-      <pre className="!text-xs" {...props}>
-        {children}
-      </pre>
-    ),
-    p: ({ children, ...props }: React.ComponentPropsWithoutRef<'p'>) => <p {...props}>{children}</p>,
-    ul: ({ children, ...props }: React.ComponentPropsWithoutRef<'ul'>) => (
-      <ul className="text-xs list-disc ml-4" {...props}>
-        {children}
-      </ul>
-    ),
-    ol: ({ children, ...props }: React.ComponentPropsWithoutRef<'ol'>) => (
-      <ol className="text-xs list-decimal ml-4" {...props}>
-        {children}
-      </ol>
-    ),
-    li: ({ children, ...props }: React.ComponentPropsWithoutRef<'li'>) => (
-      <li className="text-xs mb-2" {...props}>
-        {Children.toArray(children).filter((c) => typeof c === 'string' || isValidElement(c))}
-      </li>
-    ),
-  }
+  // P6+: `mdComponents` 已统一到 `@/components/chat/markdown-block`,
+  //      在页面顶部 import;这里不再重复定义,避免不同位置样式漂移。
 
   const isCodingMode = task.mode === 'coding'
 
@@ -993,6 +970,38 @@ export function TaskChat({
                         ) : (
                           <div className="space-y-2">
                             {agentMessage.parts?.map((part, pi, parts) => {
+                              // P7-1: 子部件（有 parentToolCallId）由 SubagentCard 内部渲染 —— 主 timeline 跳过
+                              // 但必须先确认 parent 确实存在于同一 agentMessage，防止乱序导致信息丢失
+                              if ((part.type === 'tool_call' || part.type === 'tool_result') && part.parentToolCallId) {
+                                const parentExists = agentMessage.parts?.some(
+                                  (p) => p.type === 'tool_call' && p.toolCallId === part.parentToolCallId,
+                                )
+                                if (parentExists) return null
+                                // parent 尚未到达 → 兜底正常渲染（避免信息丢失）
+                              }
+
+                              // P7-2: Task 工具渲染为紫色 SubagentCard（嵌套子工具）
+                              if (part.type === 'tool_call' && part.toolName === 'Task') {
+                                const childParts =
+                                  agentMessage.parts?.filter(
+                                    (p) =>
+                                      (p.type === 'tool_call' || p.type === 'tool_result') &&
+                                      p.parentToolCallId === part.toolCallId,
+                                  ) ?? []
+                                const taskResult = agentMessage.parts?.find(
+                                  (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
+                                )
+                                return (
+                                  <SubagentCard
+                                    key={`subagent-${pi}`}
+                                    taskToolCall={part}
+                                    taskToolResult={taskResult?.type === 'tool_result' ? taskResult : undefined}
+                                    childParts={childParts}
+                                    isStreaming={isStreamingResponse}
+                                  />
+                                )
+                              }
+
                               if (part.type === 'thinking' && part.text) {
                                 const hasMoreThinking = agentMessage.parts
                                   ?.slice(pi + 1)
@@ -1265,6 +1274,17 @@ export function TaskChat({
       {!readOnly && activeTab === 'chat' && toolConfirm && (
         <div className="flex-shrink-0 px-3 pb-2">
           <InterruptionCard data={toolConfirm} isSending={isSending} onDecision={handleConfirmTool} />
+        </div>
+      )}
+
+      {/*
+        AgentStatusIndicator — 代理阶段指示器(P4)
+        只在 chat tab、正在流式输出、有 toolConfirm 时紧贴输入框上方显示。
+        phase === null 时组件自动返回 null,不占位。
+      */}
+      {!readOnly && activeTab === 'chat' && isStreamingResponse && agentPhase?.phase && (
+        <div className="flex-shrink-0 px-3 pb-1">
+          <AgentStatusIndicator phase={agentPhase.phase} toolName={agentPhase.toolName} />
         </div>
       )}
 
