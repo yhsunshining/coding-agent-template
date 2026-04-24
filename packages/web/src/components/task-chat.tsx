@@ -18,6 +18,8 @@ import { AskUserForm } from '@/components/chat/ask-user-form'
 import { InterruptionCard } from '@/components/chat/interruption-card'
 import { AgentStatusIndicator } from '@/components/chat/agent-status-indicator'
 import { mdComponents } from '@/components/chat/markdown-block'
+import { BrowserControls } from '@/components/chat/browser-controls'
+import { PreviewPlaceholder } from '@/components/chat/preview-placeholder'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
@@ -83,6 +85,15 @@ export function TaskChat({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [previewKey, setPreviewKey] = useState(0)
+  /**
+   * P6+: 预览 iframe 真正加载完成(onLoad 触发)的标志。
+   * 用于:
+   *   - BrowserControls 的软刷新(iframe.src = iframe.src)需拿到 DOM 引用
+   *   - iframe 淡入动画:未 load 时显示骨架屏 + Loader2 遮罩,load 完 fade-in
+   * 当 previewKey 变化(硬刷新)时重置为 false。
+   */
+  const [iframeLoaded, setIframeLoaded] = useState(false)
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null)
 
   // Scroll refs
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -295,6 +306,11 @@ export function TaskChat({
     loadPreviewUrl()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, task.mode])
+
+  // P6+: 每次硬刷新(previewKey 递增)或 URL 切换时,重置加载遮罩,等新 iframe onLoad 再淡入
+  useEffect(() => {
+    setIframeLoaded(false)
+  }, [previewKey, previewGatewayUrl])
 
   const loadPreviewUrl = async () => {
     setPreviewLoading(true)
@@ -586,51 +602,79 @@ export function TaskChat({
 
   const renderTabContent = () => {
     if (activeTab === 'preview' && isCodingMode) {
-      return (
-        <div className="flex-1 overflow-hidden -mx-3 -mt-3 relative">
-          {previewLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
-              <span className="text-sm text-muted-foreground">正在启动预览...</span>
-            </div>
-          ) : previewError ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2">
-              <p className="text-sm text-destructive">{previewError}</p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setPreviewGatewayUrl(null)
-                  loadPreviewUrl()
-                }}
-              >
-                重试
-              </Button>
-            </div>
-          ) : previewGatewayUrl ? (
-            <>
-              <div className="absolute top-2 right-2 z-10">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 w-7 p-0"
-                  onClick={() => setPreviewKey((k) => k + 1)}
-                  title="刷新预览"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
+      // P6+ 预览增强:
+      //   1) previewLoading 阶段 → PreviewPlaceholder 骨架屏(不再是一行 "正在启动预览...")
+      //   2) previewGatewayUrl 就绪后 → 顶部 BrowserControls(前进/后退/刷新/地址栏),
+      //      下方 iframe 带 fade-in 过渡 + iframe 未 onLoad 时叠加 Loader 遮罩
+      if (previewLoading) {
+        return (
+          <div className="flex-1 overflow-hidden -mx-3 -mt-3 relative">
+            <PreviewPlaceholder />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground bg-background/80 backdrop-blur rounded-md px-3 py-1.5 shadow">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在启动预览...
               </div>
+            </div>
+          </div>
+        )
+      }
+      if (previewError) {
+        return (
+          <div className="flex-1 overflow-hidden -mx-3 -mt-3 flex flex-col items-center justify-center gap-2">
+            <p className="text-sm text-destructive">{previewError}</p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPreviewGatewayUrl(null)
+                loadPreviewUrl()
+              }}
+            >
+              重试
+            </Button>
+          </div>
+        )
+      }
+      if (previewGatewayUrl) {
+        return (
+          <div className="flex-1 overflow-hidden -mx-3 -mt-3 flex flex-col">
+            {/* 浏览器工具栏 */}
+            <div className="flex h-8 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
+              <BrowserControls
+                previewUrl={previewGatewayUrl}
+                iframeRef={previewIframeRef}
+                onHardRefresh={() => setPreviewKey((k) => k + 1)}
+                className="flex-1 min-w-0"
+              />
+            </div>
+            {/* iframe 区 */}
+            <div className="relative flex-1 min-h-0 bg-muted/5">
+              {/* 未 load 完遮罩:骨架屏 + 中央加载器 */}
+              {!iframeLoaded && (
+                <div className="absolute inset-0 z-10">
+                  <PreviewPlaceholder />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/60" />
+                  </div>
+                </div>
+              )}
               <iframe
                 key={previewKey}
+                ref={previewIframeRef}
                 src={previewGatewayUrl}
-                className="w-full h-full border-0"
+                className={`w-full h-full border-0 transition-opacity duration-300 ${
+                  iframeLoaded ? 'opacity-100' : 'opacity-0'
+                }`}
                 title="Project Preview"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                onLoad={() => setIframeLoaded(true)}
               />
-            </>
-          ) : null}
-        </div>
-      )
+            </div>
+          </div>
+        )
+      }
+      return <div className="flex-1 overflow-hidden -mx-3 -mt-3" />
     }
 
     if (activeTab === 'cloud') {
@@ -998,6 +1042,7 @@ export function TaskChat({
                                     taskToolResult={taskResult?.type === 'tool_result' ? taskResult : undefined}
                                     childParts={childParts}
                                     isStreaming={isStreamingResponse}
+                                    allParts={agentMessage.parts}
                                   />
                                 )
                               }

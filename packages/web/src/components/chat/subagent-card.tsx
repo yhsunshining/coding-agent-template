@@ -13,6 +13,8 @@ import { ToolCallCard } from './tool-call-card'
  * - 紫色主题与普通 ToolCallCard 区分
  * - 默认展开态：流式执行中且尚未有 taskToolResult；否则折叠
  * - 内部对每个子 tool_call 用常规 ToolCallCard 渲染（复用 P6 注册表）
+ * - **P7-fix**：若子工具本身是 Task（嵌套 subagent），则递归渲染 SubagentCard，
+ *   保证 3 层及以上嵌套时孙子工具不丢失
  * - fallback：childParts 为空时展示 Task 本身的简要信息（description / prompt）
  */
 interface SubagentCardProps {
@@ -24,6 +26,11 @@ interface SubagentCardProps {
   childParts: MessagePart[]
   /** 是否还在流式响应中（用于决定初始展开态） */
   isStreaming: boolean
+  /**
+   * P7-fix: 完整的 agentMessage.parts 快照。仅在子 Task 递归时用于查找孙子部件；
+   * 顶层调用可不传（默认 = childParts）。保持 optional 以向后兼容。
+   */
+  allParts?: MessagePart[]
 }
 
 interface TaskInputShape {
@@ -32,7 +39,10 @@ interface TaskInputShape {
   subagent_type?: string
 }
 
-export function SubagentCard({ taskToolCall, taskToolResult, childParts, isStreaming }: SubagentCardProps) {
+export function SubagentCard({ taskToolCall, taskToolResult, childParts, isStreaming, allParts }: SubagentCardProps) {
+  // P7-fix: 递归查找孙子部件的数据源。顶层没传 allParts 时退化为 childParts(= 直接子),
+  // 等同于修复前的行为;内层调用时外层会把完整 parts[] 透传下来。
+  const partsForLookup = allParts ?? childParts
   // 解析 Task input（服务端回放时可能是 JSON 字符串，流式时已是对象）
   const parsedInput = useMemo<TaskInputShape>(() => {
     const raw = taskToolCall.input
@@ -122,10 +132,29 @@ export function SubagentCard({ taskToolCall, taskToolResult, childParts, isStrea
               )}
             </div>
           ) : (
-            // 嵌套渲染：左侧紫色竖线 + 子 ToolCallCard 列表
+            // 嵌套渲染：左侧紫色竖线 + 子 ToolCallCard / SubagentCard 列表
             <div className="ml-1 pl-3 border-l border-purple-500/25 space-y-1.5">
               {childToolCalls.map((tc, i) => {
                 const result = childToolResults.find((r) => r.toolCallId === tc.toolCallId)
+                // P7-fix: 子工具本身是 Task -> 递归渲染 SubagentCard,孙子工具层层展开
+                if (tc.toolName === 'Task') {
+                  const grandChildren = partsForLookup.filter(
+                    (p) => (p.type === 'tool_call' || p.type === 'tool_result') && p.parentToolCallId === tc.toolCallId,
+                  )
+                  const grandResult = partsForLookup.find(
+                    (p) => p.type === 'tool_result' && p.toolCallId === tc.toolCallId,
+                  )
+                  return (
+                    <SubagentCard
+                      key={`nested-subagent-${tc.toolCallId}-${i}`}
+                      taskToolCall={tc}
+                      taskToolResult={grandResult?.type === 'tool_result' ? grandResult : undefined}
+                      childParts={grandChildren}
+                      isStreaming={isStreaming}
+                      allParts={partsForLookup}
+                    />
+                  )
+                }
                 return (
                   <ToolCallCard
                     key={`child-${tc.toolCallId}-${i}`}
