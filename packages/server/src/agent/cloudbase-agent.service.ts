@@ -829,30 +829,70 @@ export class CloudbaseAgentService {
         )
         if (toolCallInfo) {
           const normalizedToolName = normalizeToolName(toolCallInfo.toolName)
+
+          // ── 从原 function_call.metadata.providerData 继承 messageId/model/agent ──
+          // baseline JSONL 中 function_call_result.providerData.messageId 与
+          // function_call.providerData.messageId 同源；不能让它缺失,否则 SDK
+          // resume 时认为这条 result 格式不完整 → 重发调用 → 死循环。
+          const tcProviderData = (toolCallInfo.metadata?.providerData ?? {}) as Record<string, unknown>
+          const inheritedProviderData: Record<string, unknown> = {}
+          if (tcProviderData.messageId) inheritedProviderData.messageId = tcProviderData.messageId
+          if (tcProviderData.model) inheritedProviderData.model = tcProviderData.model
+          if (tcProviderData.agent) inheritedProviderData.agent = tcProviderData.agent
+
           try {
             const res = (await mcpClient.callTool({
               name: normalizedToolName,
               arguments: toolCallInfo.input,
-            })) as { content?: Record<string, unknown> }
-            const toolResult: Record<string, unknown> = res.content || { result: res }
+            })) as { content?: unknown; isError?: boolean }
+
+            // MCP 标准 CallToolResult.content 是 [{type:'text', text:...}] 数组。
+            // baseline 将其 JSON.stringify 后既作为 output.text 也作为
+            // providerData.toolResult.content（两处字符串完全相同）。
+            const rawContent = res.content ?? [{ type: 'text', text: '' }]
+            const contentStr = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)
+
             await persistenceService.updateToolResult(
               conversationId,
               assistantMessageId,
               toolConfirmation.interruptId,
-              { type: 'text', text: JSON.stringify(toolResult) },
+              { type: 'text', text: contentStr },
               'completed',
+              {
+                sessionId: conversationId,
+                providerData: {
+                  ...inheritedProviderData,
+                  toolResult: {
+                    content: contentStr,
+                    renderer: { type: 'media' },
+                  },
+                },
+              },
             )
           } catch (err) {
-            const errorResult = {
-              error: true,
-              message: (err as Error).message || '工具执行失败',
-            }
+            const errorPayload = [
+              {
+                type: 'text',
+                text: `Error: ${(err as Error).message || '工具执行失败'}`,
+              },
+            ]
+            const errorStr = JSON.stringify(errorPayload)
             await persistenceService.updateToolResult(
               conversationId,
               assistantMessageId,
               toolConfirmation.interruptId,
-              { type: 'text', text: JSON.stringify(errorResult) },
+              { type: 'text', text: errorStr },
               'error',
+              {
+                sessionId: conversationId,
+                providerData: {
+                  ...inheritedProviderData,
+                  toolResult: {
+                    content: errorStr,
+                    renderer: { type: 'media' },
+                  },
+                },
+              },
             )
           }
         }

@@ -263,20 +263,24 @@ export class PersistenceService {
     _sessionId: string,
     messages: CodeBuddyMessage[],
   ): void {
-    const pendingMessages: CodeBuddyMessage[] = []
-    let messagePartMsg: CodeBuddyMessage | null = null
-
+    // Preserve the original order of parts as the SDK wrote them.
+    //
+    // Within a single assistant turn the SDK may emit multiple content blocks
+    // (e.g. text block + tool_use block) sharing the same message.id. Baseline
+    // JSONL written by the SDK keeps them in stream order — typically
+    //   message(id=X) → function_call(id=X) → function_call_result(parentId=X)
+    // — and the resume path depends on that order: on id collision, the entry
+    // that appears last wins SDK's internal index, so a function_call emitted
+    // after its text-only counterpart must remain the last writer for id=X.
+    //
+    // A previous implementation sorted non-text parts before text parts,
+    // which inverted the order and caused SDK resume to treat the tool call
+    // as never executed, reissuing it under a new callId and deadlocking on
+    // our canUseTool deny handler. Just walk parts in their persisted order.
     for (const part of record.parts || []) {
-      if (part.contentType === 'text') {
-        messagePartMsg = this.restorePartToMessage(part)
-      } else {
-        const msg = this.restorePartToMessage(part)
-        if (msg) pendingMessages.push(msg)
-      }
+      const msg = this.restorePartToMessage(part)
+      if (msg) messages.push(msg)
     }
-
-    messages.push(...pendingMessages)
-    if (messagePartMsg) messages.push(messagePartMsg)
   }
 
   private restorePartToMessage(part: UnifiedMessagePart): CodeBuddyMessage | null {
@@ -896,6 +900,10 @@ export class PersistenceService {
    * @param callId function_call 的 toolCallId
    * @param output 用户回答的内容
    * @param status 更新后的状态，默认 'completed'
+   * @param extraMetadata 额外要写入 part.metadata 的字段（与现有 metadata 浅合并；
+   *   特别地，extraMetadata.providerData 会与已有 providerData 合并而不是覆盖）。
+   *   用于 confirm-resume 真实执行后回填 messageId/model/agent/toolResult/sessionId
+   *   等字段，使 restore 后的 JSONL 与 SDK baseline（无 confirm 直接执行）一致。
    */
   async updateToolResult(
     conversationId: string,
@@ -903,6 +911,7 @@ export class PersistenceService {
     callId: string,
     output: string | Record<string, unknown>,
     status: string = 'completed',
+    extraMetadata?: Record<string, unknown>,
   ): Promise<void> {
     const outputStr = typeof output === 'string' ? output : JSON.stringify(output)
 
@@ -928,28 +937,60 @@ export class PersistenceService {
       // Find and update the tool_result part
       const toolResultIndex = parts.findIndex((p) => p.contentType === 'tool_result' && p.toolCallId === callId)
 
+      // Helper: build providerData by stripping SDK "denied" markers and merging extras
+      const mergeProviderData = (oldPd: unknown, extraPd: unknown): Record<string, unknown> | undefined => {
+        const oldObj = oldPd && typeof oldPd === 'object' ? (oldPd as Record<string, unknown>) : {}
+        // Strip SDK deny markers (skipRun=false, error="No (tell CodeBuddy...)" etc.)
+        const { skipRun: _skipRun, error: _error, ...restOldPd } = oldObj
+        const extraObj = extraPd && typeof extraPd === 'object' ? (extraPd as Record<string, unknown>) : {}
+        const merged = { ...restOldPd, ...extraObj }
+        return Object.keys(merged).length > 0 ? merged : undefined
+      }
+
       if (toolResultIndex >= 0) {
         // Update existing tool_result part
+        // CRITICAL: clear SDK's "denied" markers from providerData. When SDK first
+        // hits canUseTool with deny+interrupt, it persists the function_call_result
+        // with providerData.skipRun=false and providerData.error="No (tell CodeBuddy
+        // what to do differently)". If those markers leak back into JSONL on resume,
+        // the SDK's model self-corrects by reissuing the call with a new callId,
+        // bypassing our toolConfirmation match → infinite deny loop.
+        //
+        // Additionally, baseline JSONL (where the tool runs without confirmation)
+        // includes providerData.{messageId, model, agent, toolResult: {content, renderer}}
+        // and a sessionId field on function_call_result. We rebuild those here from
+        // extraMetadata to make the resumed JSONL byte-equivalent to baseline.
+        const oldMetadata = (parts[toolResultIndex].metadata || {}) as Record<string, unknown>
+        const { providerData: oldProviderData, ...restMetadata } = oldMetadata
+        const { providerData: extraProviderData, ...restExtra } = extraMetadata || {}
+        const mergedProviderData = mergeProviderData(oldProviderData, extraProviderData)
+        const cleanedMetadata: Record<string, unknown> = { ...restMetadata, ...restExtra, status }
+        if (mergedProviderData) {
+          cleanedMetadata.providerData = mergedProviderData
+        }
         parts[toolResultIndex] = {
           ...parts[toolResultIndex],
           content: outputStr,
-          metadata: {
-            ...(parts[toolResultIndex].metadata || {}),
-            status,
-          },
+          metadata: cleanedMetadata,
         }
       } else {
         // Find tool_call part and add tool_result
         const toolCallIndex = parts.findIndex((p) => p.contentType === 'tool_call' && p.toolCallId === callId)
 
         if (toolCallIndex >= 0) {
+          const { providerData: extraProviderData, ...restExtra } = extraMetadata || {}
+          const mergedProviderData = mergeProviderData(undefined, extraProviderData)
+          const newMetadata: Record<string, unknown> = { ...restExtra, status }
+          if (mergedProviderData) {
+            newMetadata.providerData = mergedProviderData
+          }
           // Add tool_result part
           parts.push({
             partId: uuidv4(),
             contentType: 'tool_result',
             toolCallId: callId,
             content: outputStr,
-            metadata: { status },
+            metadata: newMetadata,
           })
         }
       }
@@ -1059,7 +1100,7 @@ export class PersistenceService {
     conversationId: string,
     recordId: string,
     callId: string,
-  ): Promise<{ toolName: string; input: Record<string, unknown> } | null> {
+  ): Promise<{ toolName: string; input: Record<string, unknown>; metadata: Record<string, unknown> } | null> {
     try {
       const collection = await this.getCollection()
       const app = await this.getCloudBaseApp()
@@ -1083,8 +1124,8 @@ export class PersistenceService {
 
       if (!toolCallPart) return null
 
-      const metadata = toolCallPart.metadata as Record<string, unknown> | undefined
-      const toolName = metadata?.toolCallName as string | undefined
+      const metadata = (toolCallPart.metadata || {}) as Record<string, unknown>
+      const toolName = metadata.toolCallName as string | undefined
       const inputStr = toolCallPart.content
       let input: Record<string, unknown> = {}
 
@@ -1096,7 +1137,7 @@ export class PersistenceService {
         }
       }
 
-      return toolName ? { toolName, input } : null
+      return toolName ? { toolName, input, metadata } : null
     } catch {
       return null
     }
