@@ -8,7 +8,7 @@ import { Octokit } from '@octokit/rest'
 import { SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
-import { detectAndEnsureDevServer } from '../agent/coding-mode.js'
+import { detectAndEnsureDevServer, initCodingProject } from '../agent/coding-mode.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -2335,6 +2335,12 @@ tasksRouter.post('/:taskId/file-operation', requireUserEnv, async (c) => {
 // ---------------------------------------------------------------------------
 // GET /:taskId/preview-url — detect (or start) dev server, return Gateway URL
 // ---------------------------------------------------------------------------
+//
+// 冷启动支持(P6+ 预览增强):
+//   - 当 task.sandboxId 为 null 或 sandbox 不可访问时,自动 getOrCreate + initCodingProject
+//   - 让用户在未曾聊天的情况下直接打开 Preview tab 也能看到预览
+//   - initCodingProject 内部幂等(已有 package.json 则跳过克隆),多次调用安全
+//   - 整个流程最长 ~180s(网络慢时 npm install);前端已有骨架屏 + Loader 兜底
 
 tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   const session = c.get('session')!
@@ -2343,19 +2349,73 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
 
   const task = await findActiveTask(taskId, session.user.id)
   if (!task) return c.json({ error: 'Task not found' }, 404)
-  if (!task.sandboxId) return c.json({ error: 'Sandbox not initialized' }, 400)
 
-  const sandbox = await getScfSandbox(task, envId)
-  if (!sandbox) return c.json({ error: 'Sandbox not available' }, 503)
+  // ── 尝试拿到沙箱(可能需要冷启动) ──────────────────────────────────
+  let sandbox: SandboxInstance | null = null
+  let resolvedSandboxId: string = task.sandboxId || ''
+  let resolvedSessionId: string = task.sandboxSessionId || envId
+  let resolvedCwd: string = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
+
+  if (task.sandboxId) {
+    // 沙箱 ID 已存在:尝试复用
+    sandbox = await getScfSandbox(task, envId)
+  }
+
+  if (!sandbox) {
+    // 沙箱不存在或已失效:冷启动
+    console.log(`[preview-url] Cold-starting sandbox for task ${taskId}`)
+    try {
+      // sandboxMode 字段区分工作区隔离方式('shared' = 多任务共享工作目录,'isolated' = 独立目录);
+      // scfSandboxManager.getOrCreate 的 `mode` 参数对应函数复用级别,跟 workspaceIsolation 不同。
+      // 对齐 cloudbase-agent.service.ts 的调用方式:mode 始终传 'shared'(函数级别),
+      // workspaceIsolation 传 task 记录中的 sandboxMode 字段。
+      const workspaceIsolation = (task.sandboxMode || 'shared') as 'shared' | 'isolated'
+      const sandboxSessionId = workspaceIsolation === 'shared' ? envId : taskId
+      const sandboxCwd = `/tmp/workspace/${envId}/${taskId}`
+
+      sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
+        mode: 'shared',
+        workspaceIsolation,
+        sandboxSessionId,
+      })
+
+      resolvedSandboxId = sandbox.functionName
+      resolvedSessionId = sandboxSessionId
+      resolvedCwd = sandboxCwd
+
+      // 持久化沙箱信息到 task 表,让后续 /files、/file-content 等接口可用
+      await getDb().tasks.update(taskId, {
+        sandboxId: resolvedSandboxId,
+        sandboxSessionId: resolvedSessionId,
+        sandboxCwd: resolvedCwd,
+        updatedAt: Date.now(),
+      })
+    } catch (err) {
+      console.error('[preview-url] Sandbox cold-start failed:', err)
+      return c.json({ error: 'Sandbox unavailable — could not start' }, 503)
+    }
+  }
+
+  // ── coding mode:确保项目已初始化 + dev server 已就绪 ─────────────────
+  // `task.mode` 字段存在于 shared/types/task.ts 但服务端 types.ts 尚未同步;
+  // 用 (task as any).mode 读取。另外 initCodingProject 内部幂等,已有 package.json 则跳过。
+  const taskMode = (task as any).mode as string | null | undefined
+  if (taskMode === 'coding' || !taskMode) {
+    // 若无 mode 字段(旧任务)或明确是 coding,尝试 initCodingProject(幂等,失败继续)
+    try {
+      await initCodingProject(sandbox, resolvedCwd)
+    } catch (err) {
+      // 初始化失败不 abort —— dev server 可能已经在跑(上次 agent 留下的)
+      console.warn('[preview-url] initCodingProject warn:', (err as Error).message)
+    }
+  }
 
   try {
-    const workspace = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
-    const port = await detectAndEnsureDevServer(sandbox, workspace)
+    const port = await detectAndEnsureDevServer(sandbox, resolvedCwd)
 
     const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const functionName = task.sandboxId
-    const sessionId = task.sandboxSessionId || envId
-    const gatewayUrl = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview/proxy/${port}/?session-id=${sessionId}`
+    const functionName = resolvedSandboxId
+    const gatewayUrl = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview/proxy/${port}/?session-id=${resolvedSessionId}`
 
     return c.json({ port, gatewayUrl })
   } catch (err) {
