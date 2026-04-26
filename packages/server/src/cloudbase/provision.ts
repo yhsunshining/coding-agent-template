@@ -85,6 +85,20 @@ export function buildUserEnvPolicyStatements(envId: string) {
       effect: 'allow',
       resource: [`qcs::tcb:::env/${envId}`],
     },
+    // 某些 tcb 顶层 action(如 tcb:CreateFunction)在 CloudBase 内部以主账号为鉴权
+    // 范围,不以 envId 作为资源限制,必须 resource: *。单独列出避免整体 tcb:*
+    // 打到全资源造成过度授权。合法 action 名参见 CAM UpdatePolicy 探测结果。
+    {
+      action: [
+        'tcb:CreateFunction',
+        'tcb:UpdateFunctionCode',
+        'tcb:GetFunction',
+        'tcb:InvokeFunction',
+        'tcb:ListFunctions',
+      ],
+      effect: 'allow',
+      resource: ['*'],
+    },
     {
       action: ['tcbr:*'],
       effect: 'allow',
@@ -105,6 +119,9 @@ export function buildUserEnvPolicyStatements(envId: string) {
       effect: 'allow',
       resource: ['*'],
     },
+    // flexdb:* 不是合法 CAM service,CAM UpdatePolicy 会返回
+    // "Invalid service for action: flexdb:*" 并拒绝整个 policy。
+    // CloudBase 数据库(云开发数据库)的访问走 `tcb:*` 与 envId 资源级别鉴权,已覆盖。
     {
       action: ['cls:*'],
       effect: 'allow',
