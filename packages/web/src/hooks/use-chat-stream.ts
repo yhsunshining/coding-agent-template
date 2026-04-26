@@ -373,6 +373,17 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
       phaseRef.current = 'streaming'
       enterStreaming()
 
+      // 对齐 answerQuestion：把本地 "stream-xxx" 消息 id remap 到服务端 assistantMessageId，
+      // 否则 resume 后 SSE 里的 tool_call / agent_message_chunk 等事件的 `setMessages` 匹配
+      // (m.id === assistantMsgId) 会全部 false —— UI 不会再更新，用户看到"允许后没反应"。
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.role !== 'agent' || !m.parts?.some((p) => p.type === 'tool_call' && p.toolCallId === data.toolCallId))
+            return m
+          return m.id === data.assistantMessageId ? m : { ...m, id: data.assistantMessageId }
+        }),
+      )
+
       // P2: 根据用户在 PlanModeCard 的决策更新本地 plan-mode atom
       //   · allow / allow_always / reject_and_exit_plan → 退出 Plan 模式，permissionMode='default'
       //   · deny → 保持 Plan 模式，permissionMode='plan' 继续规划
