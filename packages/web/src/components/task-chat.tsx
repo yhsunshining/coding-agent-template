@@ -1193,11 +1193,13 @@ export function TaskChat({
                             })}
                             {/*
                               P4 / P1 就地渲染：
-                              - AgentStatusIndicator：仅在最新 agentMessage 且流式进行中展示（随消息尾部滚动）
+                              - AgentStatusIndicator：仅在**最新 group** 的最新 agentMessage 且流式进行中展示
+                                （随当前回合消息尾部滚动；否则下一轮开始时会错误地挂在旧 group 的末尾）
                               - InterruptionCard：如果当前 toolConfirm 对应的 tool_call 就在本 agentMessage.parts 内，
                                 就在此消息末尾渲染；否则其它 agentMessage 不展示，避免"固定在输入框上方"。
                             */}
                             {!readOnly &&
+                              isLatestGroup &&
                               isLatestMessage &&
                               isStreamingResponse &&
                               agentPhase?.phase &&
