@@ -92,8 +92,15 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
   //   hook 实例虽然随 taskId 变化重建 AcpClient（useMemo deps），
   //   但 useState 初值只在首次 mount 生效；taskId 变而组件未卸载时，
   //   toolConfirm / agentPhase / 交互态会"串"到新 task 上。
-  //   这里显式重置，确保从 A 切到 B 时不会残留 A 的确认卡片 / 阶段指示器。
+  //
+  //   关键：只在 **真正切换** 时 reset，跳过 initial mount，
+  //   否则首次 mount 时的 reset 会踩踏 sendInitialPrompt 已经启动的流式状态，
+  //   导致 phaseRef.current 被清回 idle → 触发 fetchMessages → reconnectToStream，
+  //   最终覆盖掉正在流式接收的 ACP 响应，页面短暂显示 "no message"。
+  const prevTaskIdRef = useRef<string>(taskId)
   useEffect(() => {
+    if (prevTaskIdRef.current === taskId) return
+    prevTaskIdRef.current = taskId
     setToolConfirm(null)
     setAgentPhase(IDLE_PHASE)
     setQuestionAnswersByTool({})
