@@ -85,9 +85,10 @@ export function buildUserEnvPolicyStatements(envId: string) {
       effect: 'allow',
       resource: [`qcs::tcb:::env/${envId}`],
     },
-    // 某些 tcb 顶层 action(如 tcb:CreateFunction)在 CloudBase 内部以主账号为鉴权
-    // 范围,不以 envId 作为资源限制,必须 resource: *。单独列出避免整体 tcb:*
-    // 打到全资源造成过度授权。合法 action 名参见 CAM UpdatePolicy 探测结果。
+    // 某些 tcb 顶层 action(如 tcb:CreateFunction / tcb:QueryRecords)在
+    // CloudBase 内部以主账号为鉴权范围,不以 envId 作为资源限制,必须 resource: *。
+    // 单独列出避免整体 tcb:* 打到全资源造成过度授权。合法 action 名参见 CAM
+    // UpdatePolicy 探测结果。
     {
       action: [
         'tcb:CreateFunction',
@@ -95,6 +96,12 @@ export function buildUserEnvPolicyStatements(envId: string) {
         'tcb:GetFunction',
         'tcb:InvokeFunction',
         'tcb:ListFunctions',
+        // 云数据库(NoSQL) 记录操作,同样走主账号鉴权
+        'tcb:QueryRecords',
+        'tcb:PutItem',
+        'tcb:UpdateItem',
+        'tcb:DeleteItem',
+        'tcb:CreateTable',
       ],
       effect: 'allow',
       resource: ['*'],
