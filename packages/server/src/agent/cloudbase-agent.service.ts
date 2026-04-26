@@ -607,156 +607,19 @@ export class CloudbaseAgentService {
         }
       }
 
-      // Resume + toolConfirmation 场景：处理用户确认结果
-      if (toolConfirmation) {
-        const action = toolConfirmation.payload.action
-
-        // 预查 toolCallInfo，用于：
-        //   1. allow_always 写入白名单
-        //   2. 识别工具类型（ExitPlanMode 对 reject_and_exit_plan 有特殊语义）
-        let resumedToolName: string | undefined
-        try {
-          const info = await persistenceService.getToolCallInfo(
-            conversationId,
-            assistantMessageId,
-            toolConfirmation.interruptId,
-          )
-          resumedToolName = info?.toolName
-        } catch {
-          // 读取失败不影响主流程
-        }
-        const isExitPlanMode = resumedToolName === 'ExitPlanMode'
-
-        // allow / allow_always / (ExitPlanMode + reject_and_exit_plan) 都视为允许本次
-        // ExitPlanMode 的 reject_and_exit_plan 语义：允许本次退出 Plan 模式（由前端在下一轮传 permissionMode='default' 生效），
-        // 而非拒绝该工具调用——否则 Agent 会被卡住无法进入执行阶段。
-        const isAllowed =
-          action === 'allow' || action === 'allow_always' || (isExitPlanMode && action === 'reject_and_exit_plan')
-
-        // 写入会话级白名单（仅 allow_always）
-        // 注意：此处写入白名单必须独立于 sandboxMcpClient 状态，否则 sandbox 未就绪时
-        // allow_always 将永远无法生效。
-        if (action === 'allow_always' && resumedToolName) {
-          const normalized = normalizeToolName(resumedToolName)
-          sessionPermissions.allowAlways(conversationId, normalized)
-        }
-
-        if (isAllowed && sandboxMcpClient && !isExitPlanMode) {
-          // allow / allow_always: 通过 MCP client 调用工具获取真实结果
-          // 注：ExitPlanMode 不是真实 MCP 工具，不能走 MCP 调用路径；走下方的占位分支即可。
-          const mcpClient = sandboxMcpClient.client
-          const toolCallInfo = await persistenceService.getToolCallInfo(
-            conversationId,
-            assistantMessageId,
-            toolConfirmation.interruptId,
-          )
-
-          if (toolCallInfo) {
-            const normalizedToolName = normalizeToolName(toolCallInfo.toolName)
-
-            try {
-              // 通过 MCP client 调用工具
-              const res = (await mcpClient.callTool({
-                name: normalizedToolName,
-                arguments: toolCallInfo.input,
-              })) as { content?: Record<string, unknown> }
-              const toolResult: Record<string, unknown> = res.content || { result: res }
-              await persistenceService.updateToolResult(
-                conversationId,
-                assistantMessageId,
-                toolConfirmation.interruptId,
-                {
-                  type: 'text',
-                  text: JSON.stringify(toolResult),
-                },
-                'completed',
-              )
-            } catch (err) {
-              // 工具执行失败，记录错误
-              const errorResult = {
-                error: true,
-                message: (err as Error).message || '工具执行失败',
-              }
-              await persistenceService.updateToolResult(
-                conversationId,
-                assistantMessageId,
-                toolConfirmation.interruptId,
-                {
-                  type: 'text',
-                  text: JSON.stringify(errorResult),
-                },
-                'error',
-              )
-            }
-          }
-        } else if (isAllowed) {
-          // 两种情况走此分支：
-          //   a) ExitPlanMode 被允许（allow / reject_and_exit_plan）—— 不需要真实执行工具，
-          //      只需告诉 Agent 计划已被接受，让后续 turn 切出 Plan 模式进入执行阶段。
-          //   b) 普通写工具 allow / allow_always 但 sandbox 未就绪 —— 写占位结果让 Agent 继续。
-          let text: string
-          if (isExitPlanMode) {
-            text =
-              action === 'reject_and_exit_plan'
-                ? '用户选择退出 Plan 模式，请直接进入执行阶段（后续对话已切回 default 模式）。'
-                : '用户已批准计划，请开始执行。'
-          } else {
-            text = action === 'allow_always' ? '已允许此类操作（本会话），请继续。' : '已允许，请继续。'
-          }
-          await persistenceService.updateToolResult(
-            conversationId,
-            assistantMessageId,
-            toolConfirmation.interruptId,
-            { type: 'text', text },
-            'completed',
-          )
-        } else {
-          // deny（包括 ExitPlanMode 的 deny = "继续规划" 与 普通工具的 deny）
-          // 以及其它一切未匹配到"允许"语义的组合：统一写拒绝消息
-          const text = isExitPlanMode ? '用户希望继续规划，请完善计划后再调用 ExitPlanMode。' : '用户拒绝了此操作'
-          await persistenceService.updateToolResult(
-            conversationId,
-            assistantMessageId,
-            toolConfirmation.interruptId,
-            { type: 'text', text },
-            'completed',
-          )
-        }
-      }
-
-      // 从 DB 恢复消息历史（askAnswers / toolConfirmation 场景下 DB 已是最新）
-      const restored = await persistenceService.restoreMessages(
-        conversationId,
-        userContext.envId,
-        userContext.userId,
-        actualCwd,
-      )
-      historicalMessages = restored.messages
-      lastRecordId = restored.lastRecordId
-      hasHistory = historicalMessages.length > 0
-
-      // resume interrupt 场景下，即使 DB 中无历史，
-      // 只要有 conversationId 就强制走 resume 路径
-      if (!hasHistory && isResumeFromInterrupt) {
-        hasHistory = true
-      }
+      // Resume + toolConfirmation 场景:**真实**处理在 sandbox + sandboxMcpClient
+      // ready 之后再做(见下方注释 "Resume toolConfirmation: 真实执行" 块)。
+      // 此处只在原位置做 askAnswers 这种不依赖 sandbox 的处理。
+      // 真正的 allow/allow_always/deny 写 DB result 推迟,避免 sandbox 未就绪时
+      // 写入占位文本"已允许,请继续。"导致 SDK 误以为工具已执行,从而重新生成
+      // 一个新 toolCallId 再次申请权限的死循环。
+      // 同理 restoreMessages / preSavePendingRecords 也推迟。
     }
 
-    // ── 预保存 pending 记录 ──────────────────────────────────────────
-    // resume 场景跳过预保存（assistant 记录已存在）
+
+    // ── 预保存 pending 记录(已推迟到 sandbox + restoreMessages 之后) ──
+    // 见下方 "Resume toolConfirmation: 真实执行" 块
     let preSavedUserRecordId: string | null = null
-
-    if (conversationId && userContext.envId && !isResumeFromInterrupt) {
-      const preSaved = await persistenceService.preSavePendingRecords({
-        conversationId,
-        envId: userContext.envId,
-        userId: userContext.userId,
-        prompt,
-        prevRecordId: lastRecordId,
-        assistantRecordId: assistantMessageId,
-      })
-      preSavedUserRecordId = preSaved.userRecordId
-    }
 
     // DEBUG: ACP SSE event log path (shared with message loop debug dir)
     const debugAcpLogDir = path.resolve(actualCwd, 'debug-jsonl')
@@ -918,6 +781,143 @@ export class CloudbaseAgentService {
           content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
         })
       }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Resume toolConfirmation: 真实执行 + restoreMessages + preSavePending
+    // ════════════════════════════════════════════════════════════════════
+    // 此前这一段在 sandbox 启动**之前**执行,导致 allow/allow_always 命中
+    // sandboxMcpClient=null 时只能写占位文本"已允许,请继续。",SDK 误以为
+    // 工具已执行 → 重新生成新 toolCallId 再次申请权限,死循环。
+    //
+    // 现搬到 sandbox + sandboxMcpClient ready 之后,按以下顺序:
+    //   1. toolConfirmation 真实执行(allow/allow_always 走 MCP,deny/ExitPlanMode 写文本)
+    //   2. restoreMessages(把含真实 result 的最新 DB 状态写入 JSONL)
+    //   3. preSavePendingRecords(非 resume 路径才需要)
+    if (conversationId && userContext.envId && toolConfirmation) {
+      const action = toolConfirmation.payload.action
+
+      // 预查 toolCallInfo: allow_always 写白名单 + 识别 ExitPlanMode 特殊语义
+      let resumedToolName: string | undefined
+      try {
+        const info = await persistenceService.getToolCallInfo(
+          conversationId,
+          assistantMessageId,
+          toolConfirmation.interruptId,
+        )
+        resumedToolName = info?.toolName
+      } catch {
+        // 读取失败不影响主流程
+      }
+      const isExitPlanMode = resumedToolName === 'ExitPlanMode'
+
+      const isAllowed =
+        action === 'allow' || action === 'allow_always' || (isExitPlanMode && action === 'reject_and_exit_plan')
+
+      if (action === 'allow_always' && resumedToolName) {
+        const normalized = normalizeToolName(resumedToolName)
+        sessionPermissions.allowAlways(conversationId, normalized)
+      }
+
+      if (isAllowed && sandboxMcpClient && !isExitPlanMode) {
+        // allow / allow_always: 通过 MCP client 调用工具获取真实结果
+        const mcpClient = sandboxMcpClient.client
+        const toolCallInfo = await persistenceService.getToolCallInfo(
+          conversationId,
+          assistantMessageId,
+          toolConfirmation.interruptId,
+        )
+        if (toolCallInfo) {
+          const normalizedToolName = normalizeToolName(toolCallInfo.toolName)
+          try {
+            const res = (await mcpClient.callTool({
+              name: normalizedToolName,
+              arguments: toolCallInfo.input,
+            })) as { content?: Record<string, unknown> }
+            const toolResult: Record<string, unknown> = res.content || { result: res }
+            await persistenceService.updateToolResult(
+              conversationId,
+              assistantMessageId,
+              toolConfirmation.interruptId,
+              { type: 'text', text: JSON.stringify(toolResult) },
+              'completed',
+            )
+          } catch (err) {
+            const errorResult = {
+              error: true,
+              message: (err as Error).message || '工具执行失败',
+            }
+            await persistenceService.updateToolResult(
+              conversationId,
+              assistantMessageId,
+              toolConfirmation.interruptId,
+              { type: 'text', text: JSON.stringify(errorResult) },
+              'error',
+            )
+          }
+        }
+      } else if (isAllowed) {
+        // ExitPlanMode 允许:不需要真实执行,只需告诉 Agent 计划已被接受
+        // sandbox 不可用(sandboxMcpClient 仍 null)且非 ExitPlanMode 则只能写占位
+        // —— 这是降级路径,正常情况下走上面 MCP 真实执行
+        let text: string
+        if (isExitPlanMode) {
+          text =
+            action === 'reject_and_exit_plan'
+              ? '用户选择退出 Plan 模式，请直接进入执行阶段（后续对话已切回 default 模式）。'
+              : '用户已批准计划，请开始执行。'
+        } else {
+          text = action === 'allow_always' ? '已允许此类操作（本会话），请继续。' : '已允许，请继续。'
+        }
+        await persistenceService.updateToolResult(
+          conversationId,
+          assistantMessageId,
+          toolConfirmation.interruptId,
+          { type: 'text', text },
+          'completed',
+        )
+      } else {
+        // deny: 写拒绝消息
+        const text = isExitPlanMode ? '用户希望继续规划，请完善计划后再调用 ExitPlanMode。' : '用户拒绝了此操作'
+        await persistenceService.updateToolResult(
+          conversationId,
+          assistantMessageId,
+          toolConfirmation.interruptId,
+          { type: 'text', text },
+          'completed',
+        )
+      }
+    }
+
+    // 从 DB 恢复消息历史(含上方 toolConfirmation 真实执行后的 tool_result)
+    if (conversationId && userContext.envId) {
+      const restored = await persistenceService.restoreMessages(
+        conversationId,
+        userContext.envId,
+        userContext.userId,
+        actualCwd,
+      )
+      historicalMessages = restored.messages
+      lastRecordId = restored.lastRecordId
+      hasHistory = historicalMessages.length > 0
+
+      // resume interrupt 场景下,即使 DB 中无历史,只要有 conversationId 就强制走 resume
+      if (!hasHistory && isResumeFromInterrupt) {
+        hasHistory = true
+      }
+    }
+
+    // 预保存 pending 记录(resume 跳过,assistant 记录已存在)
+    if (conversationId && userContext.envId && !isResumeFromInterrupt) {
+      const preSaved = await persistenceService.preSavePendingRecords({
+        conversationId,
+        envId: userContext.envId,
+        userId: userContext.userId,
+        prompt,
+        prevRecordId: lastRecordId,
+        assistantRecordId: assistantMessageId,
+      })
+      preSavedUserRecordId = preSaved.userRecordId
     }
 
     // ── MCP Server ────────────────────────────────────────────────────
