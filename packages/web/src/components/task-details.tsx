@@ -263,40 +263,120 @@ export function TaskDetails({
   const [previewGatewayUrl, setPreviewGatewayUrl] = useState<string | null>(null)
   const [previewGatewayLoading, setPreviewGatewayLoading] = useState(false)
   const [previewGatewayError, setPreviewGatewayError] = useState<string | null>(null)
+  const [previewLoadingMessage, setPreviewLoadingMessage] = useState('正在启动预览...')
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const previewIframeRef = useRef<HTMLIFrameElement | null>(null)
+  const previewAbortRef = useRef<AbortController | null>(null)
 
-  // 加载 coding mode 的 preview gateway URL
+  /**
+   * 调后端 SSE 流，实时推送进度。
+   * 后端会按需安装依赖 / 启动 dev server，完成后推 { stage:'ready', gatewayUrl }。
+   */
   const loadPreviewGatewayUrl = useCallback(async () => {
     if (!isCodingMode) return
+
+    // 取消上一次请求
+    previewAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    previewAbortRef.current = ctrl
+
     setPreviewGatewayLoading(true)
     setPreviewGatewayError(null)
+    setPreviewGatewayUrl(null)
+    setPreviewLoadingMessage('正在启动预览...')
+
     try {
-      const res = await fetch(`/api/tasks/${task.id}/preview-url`, { credentials: 'include' })
-      const data = (await res.json()) as { gatewayUrl?: string; error?: string }
-      if (data.gatewayUrl) {
-        setPreviewGatewayUrl(data.gatewayUrl)
-      } else {
-        setPreviewGatewayError(data.error || 'Dev server not available')
+      const res = await fetch(`/api/tasks/${task.id}/preview-url`, {
+        credentials: 'include',
+        signal: ctrl.signal,
+      })
+
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string }
+        setPreviewGatewayError(data.error || `启动失败 (${res.status})`)
+        setPreviewGatewayLoading(false)
+        return
       }
-    } catch {
+
+      // 解析 SSE 流
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6)) as {
+              stage: 'progress' | 'ready' | 'error'
+              message: string
+              gatewayUrl?: string
+              port?: number
+            }
+
+            if (event.stage === 'progress') {
+              setPreviewLoadingMessage(event.message)
+            } else if (event.stage === 'ready' && event.gatewayUrl) {
+              setPreviewGatewayUrl(event.gatewayUrl)
+              setPreviewGatewayLoading(false)
+              return
+            } else if (event.stage === 'error') {
+              setPreviewGatewayError(event.message)
+              setPreviewGatewayLoading(false)
+              return
+            }
+          } catch {
+            // skip unparseable lines
+          }
+        }
+      }
+
+      // 流结束但没收到 ready
+      if (!ctrl.signal.aborted) {
+        setPreviewGatewayError('Preview stream ended unexpectedly')
+        setPreviewGatewayLoading(false)
+      }
+    } catch (err: unknown) {
+      if ((err as Error)?.name === 'AbortError') return
       setPreviewGatewayError('Failed to load preview')
-    } finally {
       setPreviewGatewayLoading(false)
     }
   }, [isCodingMode, task.id])
 
-  // coding mode: preview pane 打开时加载 URL（若尚未加载）
+  // 组件卸载时取消请求
   useEffect(() => {
-    if (isCodingMode && showPreviewPane && !previewGatewayUrl && !previewGatewayLoading) {
+    return () => {
+      previewAbortRef.current?.abort()
+    }
+  }, [])
+
+  // coding mode: preview pane 打开时加载 URL（若尚未加载）
+  // 注意: 必须检查 !previewGatewayError，否则出错后 loading=false+url=null
+  // 会导致 effect 再次触发 → 无限轮询
+  useEffect(() => {
+    if (isCodingMode && showPreviewPane && !previewGatewayUrl && !previewGatewayLoading && !previewGatewayError) {
       loadPreviewGatewayUrl()
     }
-  }, [isCodingMode, showPreviewPane, previewGatewayUrl, previewGatewayLoading, loadPreviewGatewayUrl])
+  }, [isCodingMode, showPreviewPane, previewGatewayUrl, previewGatewayLoading, previewGatewayError, loadPreviewGatewayUrl])
 
   // previewKey / URL 变化时重置 iframe 加载状态
+  // previewKey 增加（手动刷新）时，重新调后端拉起 dev server
   useEffect(() => {
     setIframeLoaded(false)
-  }, [previewKey, previewGatewayUrl])
+    if (previewKey > 0 && isCodingMode) {
+      setPreviewGatewayUrl(null)
+      setPreviewGatewayError(null)
+      setPreviewLoadingMessage('正在重启预览...')
+      void loadPreviewGatewayUrl()
+    }
+  }, [previewKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pane widths for resizing
   const [filesPaneWidth, setFilesPaneWidth] = useState(() => getFilesPaneWidth())
@@ -2036,6 +2116,18 @@ export function TaskDetails({
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => {
+                          if (previewGatewayUrl) window.open(previewGatewayUrl, '_blank')
+                        }}
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title="Open in new window"
+                        disabled={!previewGatewayUrl}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
                         className="h-6 w-6 p-0 flex-shrink-0 ml-1"
                         title={isPreviewFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
@@ -2049,30 +2141,29 @@ export function TaskDetails({
                     </div>
                     {/* 内容区 */}
                     <div className="relative flex-1 min-h-0">
+                      {/* Loading 状态：实时显示后端推送的进度 */}
                       {previewGatewayLoading && (
                         <>
                           <PreviewPlaceholder />
                           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                             <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground bg-background/80 backdrop-blur rounded-md px-4 py-3 shadow text-center">
                               <div className="flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                                正在启动预览...
+                                <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
+                                <span>{previewLoadingMessage}</span>
                               </div>
-                              <p className="text-xs text-muted-foreground/70 max-w-[200px]">
-                                首次启动需初始化环境，通常约 30-60 秒
-                              </p>
                             </div>
                           </div>
                         </>
                       )}
+                      {/* Error 状态 */}
                       {previewGatewayError && !previewGatewayLoading && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                          <p className="text-sm text-destructive">{previewGatewayError}</p>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center">
+                          <AlertCircle className="h-8 w-8 text-destructive/60" />
+                          <p className="text-sm text-destructive max-w-[280px]">{previewGatewayError}</p>
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => {
-                              setPreviewGatewayUrl(null)
                               loadPreviewGatewayUrl()
                             }}
                           >
@@ -2080,9 +2171,10 @@ export function TaskDetails({
                           </Button>
                         </div>
                       )}
-                      {previewGatewayUrl && (
+                      {/* iframe：后端已确认 dev server 就绪才返回 URL，拿到即可渲染 */}
+                      {previewGatewayUrl && !previewGatewayLoading && (
                         <>
-                          {/* 加载遮罩 */}
+                          {/* 加载遮罩（等待 iframe onLoad） */}
                           {!iframeLoaded && (
                             <div className="absolute inset-0 z-10">
                               <PreviewPlaceholder />

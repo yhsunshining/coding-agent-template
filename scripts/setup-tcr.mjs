@@ -291,6 +291,8 @@ function getCloudbaseCredential() {
 /**
  * 从 cloudbase auth.json 读取账号 uin（不区分临时/永久凭证）
  * 永久密钥登录时 auth.json 不含 uin，回退到 STS.GetCallerIdentity 查询
+ * 返回 { accountId: 主账号AppID, callerUin: 当前调用者Uin } 或 null
+ * auth.json 路径无法获取 callerUin，只有 STS 路径才有
  */
 async function getCloudbaseAccountId(secretId, secretKey) {
   // 1. 优先从 auth.json 读取
@@ -299,7 +301,7 @@ async function getCloudbaseAccountId(secretId, secretKey) {
       const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
       const auth = JSON.parse(content)
       if (auth.credential?.uin) {
-        return auth.credential.uin
+        return { accountId: auth.credential.uin, callerUin: '' }
       }
     } catch {
       // ignore parse errors
@@ -317,7 +319,8 @@ async function getCloudbaseAccountId(secretId, secretKey) {
       })
       const resp = await stsClient.GetCallerIdentity({})
       if (resp?.AccountId) {
-        return resp.AccountId
+        // 返回对象包含 accountId 和 callerUin，供调用方区分主账号/子账号
+        return { accountId: resp.AccountId, callerUin: resp.Uin || '' }
       }
     } catch {
       // ignore API errors
@@ -604,7 +607,11 @@ async function setupPermanentKey(config) {
 
     // 如果缺少 accountId，尝试从 cloudbase auth.json 获取
     if (!config.accountId) {
-      config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
+      const result = await getCloudbaseAccountId(config.secretId, config.secretKey)
+      if (result) {
+        config.accountId = result.accountId
+        if (result.callerUin) config.callerUin = result.callerUin
+      }
     }
 
     return true
@@ -671,11 +678,13 @@ async function setupPermanentKey(config) {
   config.isTemporaryCredential = false
 
   // 获取账号 ID（从 auth.json 刷新，登录后会更新）
-  const accountId = await getCloudbaseAccountId(config.secretId, config.secretKey)
-  if (accountId) {
-    config.accountId = accountId
-    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', accountId)
-    log(`账号 ID：${accountId}`, 'info')
+  const idResult = await getCloudbaseAccountId(config.secretId, config.secretKey)
+  if (idResult) {
+    config.accountId = idResult.accountId
+    if (idResult.callerUin) config.callerUin = idResult.callerUin
+    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', idResult.accountId)
+    log(`账号 ID：${idResult.accountId}`, 'info')
+    if (idResult.callerUin) log(`子账号 Uin：${idResult.callerUin}`, 'info')
   } else {
     log('未能自动获取账号 ID', 'warn')
   }
@@ -891,7 +900,11 @@ async function setupTcr(config) {
 
   // 确保有 accountId（Docker login 需要）
   if (!config.accountId) {
-    config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
+    const idResult = await getCloudbaseAccountId(config.secretId, config.secretKey)
+    if (idResult) {
+      config.accountId = idResult.accountId
+      if (idResult.callerUin) config.callerUin = idResult.callerUin
+    }
   }
   if (!config.accountId) {
     log('未能自动获取账号 ID（AppID）', 'warn')
@@ -908,7 +921,9 @@ async function setupTcr(config) {
   }
 
   // Step 4: Docker login
-  if (!dockerLogin(TCR_DOMAIN, config.accountId, password)) {
+  // 子账号 callerUin 不为空时直接用 callerUin 作为 username，否则用 accountId（主账号）
+  const dockerUsername = config.callerUin || config.accountId
+  if (!dockerLogin(TCR_DOMAIN, dockerUsername, password)) {
     return false
   }
 
@@ -1041,6 +1056,7 @@ async function main() {
     secretId: process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || '',
     secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || '',
     accountId: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
+    callerUin: '',
     tcbEnvId: process.env.TCB_ENV_ID || '',
     // Token for temporary credentials: read from env only, never persisted to disk
     token: process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || undefined,

@@ -1351,6 +1351,7 @@ export class CloudbaseAgentService {
       }, CONNECT_TIMEOUT_MS)
 
       let firstMessageReceived = false
+      let resultEmitted = false // 防止双发 result（break messageLoop 路径 vs 自然结束路径）
       const tracker = createToolCallTracker()
 
       resetIterationTimeout()
@@ -1442,6 +1443,7 @@ export class CloudbaseAgentService {
             }
             case 'result':
               // P4: agent 本轮执行完毕
+              resultEmitted = true
               emitPhase('idle')
               wrappedCallback({
                 type: 'result',
@@ -1454,6 +1456,16 @@ export class CloudbaseAgentService {
             default:
               break
           }
+        }
+        // for-await 循环自然结束（SDK 没有发 'result' 消息，如 GLM 的 end_turn 行为）
+        // 补发 idle phase + result，确保前端 phase indicator 复位、agent 状态标记为完成
+        if (!resultEmitted) {
+          console.log('[Agent] for-await loop ended without result message, emitting synthetic result')
+          emitPhase('idle')
+          wrappedCallback({
+            type: 'result',
+            content: JSON.stringify({ subtype: 'success', duration_ms: 0 }),
+          })
         }
       } catch (err) {
         console.error('[Agent] message loop error:', err)

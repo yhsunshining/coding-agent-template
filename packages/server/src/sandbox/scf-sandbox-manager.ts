@@ -472,22 +472,30 @@ export class ScfSandboxManager {
   /**
    * 确保共享沙箱的预览网关 API 已注册。
    * 可在 preview-url 接口中调用,保证网关路径可达。
+   * 结果缓存在内存中，避免每次都调用 CreateCloudBaseGWAPI。
    */
+  private gatewayEnsured = false
+
   async ensurePreviewGateway(): Promise<string> {
     const envConfig = this.getEnvConfig()
+    const domain = `${envConfig.envId}.service.tcloudbase.com`
+    const previewBase = `https://${domain}/preview`
+
+    if (this.gatewayEnsured) return previewBase
+
     const functionPrefix = envConfig.functionPrefix || this.config.functionPrefix
     const functionName = this.generateFunctionName('shared', functionPrefix)
-    console.log(`[ScfSandbox] ensurePreviewGateway: functionName=${functionName}, envId=${envConfig.envId}`)
     try {
       await this.createGatewayApi(functionName)
-      console.log(`[ScfSandbox] ensurePreviewGateway: gateway OK`)
+      console.log(`[ScfSandbox] ensurePreviewGateway: gateway OK (${functionName})`)
     } catch (err: any) {
-      console.warn(`[ScfSandbox] ensurePreviewGateway: createGatewayApi error: ${err.message}`)
+      // "api created" / ResourceInUse = already exists, that's fine
+      if (!err.message?.includes('api created') && !err.message?.includes('ResourceInUse')) {
+        console.warn(`[ScfSandbox] ensurePreviewGateway: createGatewayApi error: ${err.message}`)
+      }
     }
-    // 预览网关的实际可达域名是 {envId}.service.tcloudbase.com，路径为 /preview
-    // 这是沙箱平台自动注册的预览服务路径，与我们在 createGatewayApi 中注册的 /{functionName}/preview 不同
-    const domain = `${envConfig.envId}.service.tcloudbase.com`
-    return `https://${domain}/preview`
+    this.gatewayEnsured = true
+    return previewBase
   }
 
   private async checkFunctionExists(functionName: string): Promise<{ exists: boolean; currentImageUri?: string }> {

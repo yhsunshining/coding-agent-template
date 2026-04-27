@@ -245,15 +245,18 @@ IMPORTANT RULES:
 6. Keep the code clean and well-structured. Use TypeScript for new files (.tsx/.ts).
 7. After modifying code, the dev server will auto-reload via Vite HMR — no need to restart it.
 8. When creating new UI, prefer DaisyUI components (btn, card, modal, navbar, etc.) over building from scratch.
+9. COMPLETE THE ENTIRE TASK IN ONE TURN. Do not split work across multiple conversation turns.
+   Write all necessary files, install dependencies (if needed), and ensure the app runs — all in a single response.
+   Do not end your turn early expecting the user to ask you to continue.
 
 VITE CONFIG RULES (critical — do not change these):
-9. The vite.config.ts MUST always have \`server.host: "0.0.0.0"\` and \`server.allowedHosts: true\`.
-   These settings allow the CloudBase preview gateway to reach the dev server.
-   Never set host to "127.0.0.1" or "localhost" — those block the gateway.
-10. Do NOT add or change the \`base\` option in vite.config.ts.
+10. The vite.config.ts MUST always have \`server.host: "0.0.0.0"\` and \`server.allowedHosts: true\`.
+    These settings allow the CloudBase preview gateway to reach the dev server.
+    Never set host to "127.0.0.1" or "localhost" — those block the gateway.
+11. Do NOT add or change the \`base\` option in vite.config.ts.
     The dev server is launched with \`--base=/preview/\` as a CLI flag — this is managed automatically.
     If you add \`base\` to the config file it will conflict with the CLI flag.
-11. When you need to reference the base path in code (e.g. for asset imports), use Vite's \`import.meta.env.BASE_URL\`.
+12. When you need to reference the base path in code (e.g. for asset imports), use Vite's \`import.meta.env.BASE_URL\`.
 
 CORRECT vite.config.ts structure:
 \`\`\`typescript
@@ -276,22 +279,21 @@ interface PreviewPortInfo {
  * Returns the port number of the running dev server, or 0 if none found.
  */
 async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
-  // Attempt 1: bash-based detection via devserver.log — most reliable
-  // Vite prints "Local: http://localhost:PORT/" in its output
+  // Attempt 1: 从 devserver.log 提取端口 + HTTP ping 验证进程存活
   try {
     const res = await sandbox.request('/api/tools/bash', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command: [
-          // Must have a vite process running
-          `pgrep -f "vite" > /dev/null 2>&1 || exit 1`,
-          // Extract port from devserver.log (Vite prints "Local:   http://127.0.0.1:PORT/")
-          `grep -oE '(localhost|127\\.0\\.0\\.1):[0-9]+' /tmp/devserver.log 2>/dev/null | tail -1 | grep -oE '[0-9]+$'`,
-        ].join(' && '),
-        timeout: 5000,
+        command:
+          // Step 1: extract port from log (Vite prints "http://127.0.0.1:PORT/ or 0.0.0.0:PORT")
+          'PORT=$(grep -oE "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+:[0-9]+" /tmp/devserver.log 2>/dev/null | grep -oE "[0-9]+$" | tail -1); ' +
+          // Step 2: verify the port responds via HTTP
+          '[ -n "$PORT" ] && STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PORT/" 2>/dev/null || echo 0); ' +
+          'case "$STATUS" in 200|302|304) echo "$PORT";; *) echo "";; esac',
+        timeout: 8000,
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(12_000),
     })
     const data = (await res.json()) as { result?: { output?: string } }
     const portStr = data.result?.output?.trim()
@@ -303,7 +305,7 @@ async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
     // fall through
   }
 
-  // Attempt 2: HTTP ping on known default Vite port
+  // Attempt 2: HTTP ping on known default Vite port (fallback if log is stale/empty)
   try {
     const res = await sandbox.request('/api/tools/bash', {
       method: 'POST',
@@ -316,7 +318,7 @@ async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
     })
     const data = (await res.json()) as { result?: { output?: string } }
     const code = data.result?.output?.trim()
-    // Vite with --base=/preview/ redirects root / to /preview/ (302), which is also "running"
+    // Vite with --base=/preview/ redirects root / to /preview/ (302)
     if (code === '200' || code === '304' || code === '302') return DEV_SERVER_PORT
   } catch {
     // fall through
@@ -344,10 +346,19 @@ async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
  * Detect the running dev server port, starting one if not found.
  * - First checks for an existing process via pgrep + ss / /proc/net/tcp6
  * - If none found, starts `npm run dev` in the workspace background
- * - Polls up to 15s for the server to become ready
+ * - Polls until ready or maxPollSeconds is exceeded
  * Returns the port number, or throws if the server fails to start.
+ *
+ * @param options.maxPollSeconds  Max seconds to wait for the server to come up.
+ *   Default 30s. Pass a shorter value (e.g. 15) when node_modules already
+ *   exists and only a server restart is needed — Vite typically starts in 3-5s.
  */
-export async function detectAndEnsureDevServer(sandbox: SandboxInstance, workspace: string): Promise<number> {
+export async function detectAndEnsureDevServer(
+  sandbox: SandboxInstance,
+  workspace: string,
+  options?: { maxPollSeconds?: number },
+): Promise<number> {
+  const maxPollSeconds = options?.maxPollSeconds ?? 30
   // Step 1: check for already-running dev server
   const existingPort = await detectDevServerPort(sandbox)
   if (existingPort > 0) {
@@ -436,16 +447,21 @@ export async function detectAndEnsureDevServer(sandbox: SandboxInstance, workspa
     })
   }
 
-  // Step 3: poll until port is detected (up to ~30s)
-  for (let i = 0; i < 15; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
+  // Step 3: poll until port is detected (up to maxPollSeconds)
+  const pollInterval = 2000 // ms
+  const maxPolls = Math.ceil((maxPollSeconds * 1000) / pollInterval)
+  // Log the devserver output once around the halfway point to aid diagnostics
+  const logDumpPoll = Math.max(1, Math.floor(maxPolls / 2))
+
+  for (let i = 0; i < maxPolls; i++) {
+    await new Promise((r) => setTimeout(r, pollInterval))
     const port = await detectDevServerPort(sandbox)
     if (port > 0) {
       console.log(`[CodingMode] Dev server ready on port ${port}`)
       return port
     }
-    if (i === 4) {
-      // After 10s, dump the devserver log to help diagnose issues
+    if (i === logDumpPoll) {
+      // Dump the devserver log to help diagnose issues
       try {
         const logRes = await sandbox.request('/api/tools/bash', {
           method: 'POST',
@@ -464,5 +480,5 @@ export async function detectAndEnsureDevServer(sandbox: SandboxInstance, workspa
     }
   }
 
-  throw new Error('Dev server failed to start within timeout')
+  throw new Error(`Dev server failed to start within ${maxPollSeconds}s`)
 }

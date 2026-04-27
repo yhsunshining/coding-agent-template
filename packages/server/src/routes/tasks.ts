@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
 import { requireAuth, requireUserEnv, type AppEnv } from '../middleware/auth'
@@ -2335,14 +2336,18 @@ tasksRouter.post('/:taskId/file-operation', requireUserEnv, async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// GET /:taskId/preview-url — detect (or start) dev server, return Gateway URL
+// GET /:taskId/preview-url — streaming SSE: 逐步推送启动进度，最终发 gatewayUrl
+// ---------------------------------------------------------------------------
+// 事件格式: data: {"stage":"...","message":"..."}
+//   stage = "progress" | "ready" | "error"
+//   "ready" 事件包含 gatewayUrl，前端收到即可显示 iframe
 // ---------------------------------------------------------------------------
 //
-// 冷启动支持(P6+ 预览增强):
-//   - 当 task.sandboxId 为 null 或 sandbox 不可访问时,自动 getOrCreate + initCodingProject
-//   - 让用户在未曾聊天的情况下直接打开 Preview tab 也能看到预览
-//   - initCodingProject 内部幂等(已有 package.json 则跳过克隆),多次调用安全
-//   - 整个流程最长 ~180s(网络慢时 npm install);前端已有骨架屏 + Loader 兜底
+// 超时策略（与 stage 相关）:
+//   - 沙箱冷启动: ~60s
+//   - 已有 node_modules: 检测 ~5s，启动 dev server ~10s
+//   - 需要 npm install: ~60-120s
+//   - dev server 启动: ~30s (PTY polling)
 
 tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   const session = c.get('session')!
@@ -2352,89 +2357,142 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   const task = await findActiveTask(taskId, session.user.id)
   if (!task) return c.json({ error: 'Task not found' }, 404)
 
-  // ── 尝试拿到沙箱(可能需要冷启动) ──────────────────────────────────
-  let sandbox: SandboxInstance | null = null
-  let resolvedSandboxId: string = task.sandboxId || ''
-  let resolvedSessionId: string = task.sandboxSessionId || envId
-  let resolvedCwd: string = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
-
-  if (task.sandboxId) {
-    // 沙箱 ID 已存在:尝试复用
-    sandbox = await getScfSandbox(task, envId)
-  }
-
-  if (!sandbox) {
-    // 沙箱不存在或已失效:冷启动
-    console.log(`[preview-url] Cold-starting sandbox for task ${taskId}`)
-    try {
-      // sandboxMode 字段区分工作区隔离方式('shared' = 多任务共享工作目录,'isolated' = 独立目录);
-      // scfSandboxManager.getOrCreate 的 `mode` 参数对应函数复用级别,跟 workspaceIsolation 不同。
-      // 对齐 cloudbase-agent.service.ts 的调用方式:mode 始终传 'shared'(函数级别),
-      // workspaceIsolation 传 task 记录中的 sandboxMode 字段。
-      const workspaceIsolation = (task.sandboxMode || 'shared') as 'shared' | 'isolated'
-      const sandboxSessionId = workspaceIsolation === 'shared' ? envId : taskId
-      const sandboxCwd = `/tmp/workspace/${envId}/${taskId}`
-
-      sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
-        mode: 'shared',
-        workspaceIsolation,
-        sandboxSessionId,
-      })
-
-      resolvedSandboxId = sandbox.functionName
-      resolvedSessionId = sandboxSessionId
-      resolvedCwd = sandboxCwd
-
-      // 持久化沙箱信息到 task 表,让后续 /files、/file-content 等接口可用
-      await getDb().tasks.update(taskId, {
-        sandboxId: resolvedSandboxId,
-        sandboxSessionId: resolvedSessionId,
-        sandboxCwd: resolvedCwd,
-        updatedAt: Date.now(),
-      })
-    } catch (err) {
-      console.error('[preview-url] Sandbox cold-start failed:', err)
-      return c.json({ error: 'Sandbox unavailable — could not start' }, 503)
+  return streamSSE(c, async (stream) => {
+    const emit = async (stage: 'progress' | 'ready' | 'error', message: string, extra?: Record<string, unknown>) => {
+      await stream.writeSSE({ data: JSON.stringify({ stage, message, ...extra }) }).catch(() => {})
     }
-  }
 
-  // ── coding mode:确保项目已初始化 + dev server 已就绪 ─────────────────
-  // `task.mode` 字段存在于 shared/types/task.ts 但服务端 types.ts 尚未同步;
-  // 用 (task as any).mode 读取。另外 initCodingProject 内部幂等,已有 package.json 则跳过。
-  const taskMode = (task as any).mode as string | null | undefined
-  if (taskMode === 'coding' || !taskMode) {
-    // 若无 mode 字段(旧任务)或明确是 coding,尝试 initCodingProject(幂等,失败继续)
     try {
-      await initCodingProject(sandbox, resolvedCwd)
-    } catch (err) {
-      // 初始化失败不 abort —— dev server 可能已经在跑(上次 agent 留下的)
-      console.warn('[preview-url] initCodingProject warn:', (err as Error).message)
+    // ── 获取沙箱 ───────────────────────────────────────────────────────
+    let sandbox: SandboxInstance | null = null
+    let resolvedSessionId: string = task.sandboxSessionId || envId
+    let resolvedCwd: string = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
+
+    if (task.sandboxId) {
+      sandbox = await getScfSandbox(task, envId)
     }
-  }
 
-  try {
-    const port = await detectAndEnsureDevServer(sandbox, resolvedCwd)
+    if (!sandbox) {
+      await emit('progress', '正在启动沙箱...')
+      try {
+        const workspaceIsolation = (task.sandboxMode || 'shared') as 'shared' | 'isolated'
+        const sandboxSessionId = workspaceIsolation === 'shared' ? envId : taskId
+        const sandboxCwd = `/tmp/workspace/${envId}/${taskId}`
 
-    // 确保预览网关已注册,并获取正确的 previewBase URL
+        sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
+          mode: 'shared',
+          workspaceIsolation,
+          sandboxSessionId,
+        })
+
+        resolvedSessionId = sandboxSessionId
+        resolvedCwd = sandboxCwd
+
+        await getDb().tasks.update(taskId, {
+          sandboxId: sandbox.functionName,
+          sandboxSessionId: resolvedSessionId,
+          sandboxCwd: resolvedCwd,
+          updatedAt: Date.now(),
+        })
+      } catch (err) {
+        await emit('error', `沙箱启动失败: ${(err as Error).message}`)
+        return
+      }
+    }
+
+    // ── coding mode: 初始化项目 + 启动 dev server ────────────────────
+    const taskMode = (task as any).mode as string | null | undefined
+    let needsInstall = false  // 是否需要安装依赖（影响 dev server 超时时长）
+    if (taskMode === 'coding' || !taskMode) {
+      // 修正 cwd（某些任务 sandboxCwd 与沙箱实际 HOME 不符）
+      try {
+        const pkgCheck = await sandbox!.request(
+          `/e2b-compatible/files?path=${encodeURIComponent(`${resolvedCwd}/package.json`)}`,
+          { signal: AbortSignal.timeout(8_000) },
+        )
+        if (!pkgCheck.ok) {
+          const pkgAtRoot = await sandbox!.request(`/e2b-compatible/files?path=${encodeURIComponent('package.json')}`, {
+            signal: AbortSignal.timeout(8_000),
+          })
+          if (pkgAtRoot.ok) {
+            const cwdRes = await sandbox!.request('/api/tools/bash', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ command: 'pwd', timeout: 3000 }),
+              signal: AbortSignal.timeout(8_000),
+            })
+            const cwdData = (await cwdRes.json()) as { result?: { output?: string } }
+            const detectedCwd = cwdData.result?.output?.trim()
+            if (detectedCwd) {
+              console.log(`[preview-url] Correcting workspace cwd: ${resolvedCwd} → ${detectedCwd}`)
+              resolvedCwd = detectedCwd
+            }
+          }
+        }
+      } catch {
+        // 检测失败不影响主流程
+      }
+
+      // 检查是否需要安装依赖，据此给出不同的进度提示
+      try {
+        const checkRes = await sandbox!.request('/api/tools/bash', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            command: `test -f "${resolvedCwd}/package.json" && test -d "${resolvedCwd}/node_modules" && echo "ready" || (test -f "${resolvedCwd}/package.json" && echo "needs_install" || echo "not_found")`,
+            timeout: 5000,
+          }),
+          signal: AbortSignal.timeout(10_000),
+        })
+        const checkData = (await checkRes.json()) as { result?: { output?: string } }
+        const status = checkData.result?.output?.trim()
+        needsInstall = status === 'needs_install' || status === 'not_found'
+      } catch {
+        needsInstall = true
+      }
+
+      if (needsInstall) {
+        await emit('progress', '正在安装依赖（首次约 60 秒）...')
+      }
+
+      try {
+        await initCodingProject(sandbox!, resolvedCwd)
+      } catch (err) {
+        console.warn('[preview-url] initCodingProject warn:', (err as Error).message)
+      }
+    }
+
+    // ── 启动 / 确认 dev server ────────────────────────────────────────
+    // 已有 node_modules → Vite 通常 3-5s 就绪，给 15s 超时（失败快速报错）
+    // 刚安装完依赖 / 全量克隆 → 给 30s
+    const devServerMaxPollSeconds = needsInstall ? 30 : 15
+    await emit('progress', '正在启动开发服务器...')
+    let port: number
+    try {
+      port = await detectAndEnsureDevServer(sandbox!, resolvedCwd, { maxPollSeconds: devServerMaxPollSeconds })
+    } catch (err) {
+      await emit('error', `Dev server 启动失败: ${(err as Error).message}`)
+      return
+    }
+
+    // ── 获取网关 URL ──────────────────────────────────────────────────
     let previewBase: string
     try {
       previewBase = await scfSandboxManager.ensurePreviewGateway()
-      console.log(`[preview-url] Preview gateway base: ${previewBase}`)
-    } catch (gwErr) {
-      console.warn('[preview-url] ensurePreviewGateway failed:', (gwErr as Error).message)
-      // Fallback: 尝试从沙箱 preview_url 工具获取路径
+    } catch {
       const sandboxEnvId = process.env.TCB_ENV_ID || ''
-      const functionName = sandbox.functionName
-      previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview`
+      previewBase = `https://${sandboxEnvId}.service.tcloudbase.com/preview`
     }
 
     const gatewayUrl = `${previewBase}/${port}/?cloudbase_session_id=${resolvedSessionId}`
+    await emit('ready', 'Dev server ready', { gatewayUrl, port })
 
-    return c.json({ port, gatewayUrl })
-  } catch (err) {
-    console.error('[preview-url] Failed to detect/start dev server:', err)
-    return c.json({ error: 'Dev server failed to start' }, 502)
-  }
+    } catch (err) {
+      // 顶层异常兜底：确保前端总能收到 error 事件而非静默关闭
+      console.error('[preview-url] Unhandled error in SSE callback:', err)
+      await emit('error', `预览启动失败: ${(err as Error).message || '未知错误'}`)
+    }
+  })
 })
 
 export default tasksRouter

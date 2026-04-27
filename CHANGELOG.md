@@ -8,6 +8,10 @@
 - **预览沙箱 & Browser 工具栏**: 新建 coding 模式任务后自动冷启动沙箱；右侧预览面板支持浏览器地址栏、刷新/返回/前进、设备尺寸切换；首次加载有骨架屏。
 - **Agent Mode 任务切换**: 任务表单支持选择 `default` / `coding` 模式（单一 `Coding / Default` 药丸按钮）。
 - **CAM 环境策略脚本**: 新增 `packages/server/src/scripts/refresh-policy.ts`，通过 CAM `UpdatePolicy` 把本地 policy 定义刷新到已部署 policyId，免重新 provision（约 1 分钟生效）。
+- **TaskListPanel**: 聊天输入框上方新增可折叠任务进度面板，从 TaskCreate/TaskUpdate 工具调用提取任务列表（状态图标 + subject/activeForm + 进度计数）；TaskCreate/TaskUpdate/TaskList/TaskGet 工具卡片从消息流中隐藏，改为面板展示。
+- **预览新窗口打开**: 编码模式预览工具栏新增 ExternalLink 按钮，点击在新窗口打开预览 URL，方便分享。
+- **Coding mode dev server 改进**: 使用 PTY 启动 dev server；自动 patch vite.config.ts 适配 CloudBase 沙箱预览（`--base=/preview/`, `host 0.0.0.0`, `allowedHosts`）；跳过已有 package.json 但缺 node_modules 的重复 clone。
+- **CAM NoSQL 数据库权限**: `buildUserEnvPolicyStatements` 新增 `tcb:QueryRecords / PutItem / UpdateItem / DeleteItem / CreateTable`（resource `*`）。
 
 ### Fixed
 - **死循环: confirm-resume 工具调用**（核心）: 用户点击"允许"后 SDK 重复生成新 `callId` 再次触发 canUseTool → deny 的无限循环。综合 3 处修复：
@@ -24,6 +28,8 @@
 - **Phase 指示器 & 工具确认卡就地渲染**: `AgentStatusIndicator` 和 `InterruptionCard` 不再固定在输入框上方，改挂到对应 agentMessage 末尾并随滚动。
 - **CAM policy 修复**: `buildUserEnvPolicyStatements` 删除非法 `flexdb:*`，新增 `tcb:CreateFunction / UpdateFunctionCode / GetFunction / InvokeFunction / ListFunctions`（resource `*`），`tcb:CreateFunction` 权限不再缺失。
 - **UI 识别错误清理**: 删除 `task-form.tsx` 中重复的 `isCodingMode / mode` 定义与对象字面量重复 key；`Code` 图标引用改为已导入的 `Code2`；删除 `task-chat.tsx` 中重复的 `isCodingMode`。
+- **Stream event cleanup 竞态**: 先 flush eventBuffer 再 cleanup stream events；cleanup 延迟到 `completeAgent()` 之后 600ms，让 poll loop 先排空剩余事件。
+- **TCR docker login 子账号**: `setup-tcr.mjs` 通过 `STS.GetCallerIdentity` 获取 `callerUin`，子账号 docker login 用 `callerUin` 而非主账号 AppID。
 
 ### Changed
 - `toolConfirmation` 真实执行从 sandbox 启动**之前**推迟到 sandbox + sandboxMcpClient ready **之后**，避免 sandbox 未就绪时写入占位文本误触发 SDK 重试。
