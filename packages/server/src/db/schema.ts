@@ -52,43 +52,63 @@ export const localCredentials = sqliteTable('local_credentials', {
 
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
-export const tasks = sqliteTable('tasks', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  prompt: text('prompt').notNull(),
-  title: text('title'),
-  repoUrl: text('repo_url'),
-  selectedAgent: text('selected_agent').default('claude'),
-  selectedModel: text('selected_model'),
-  mode: text('mode').notNull().default('default'), // 'default' | 'coding'
-  installDependencies: integer('install_dependencies', { mode: 'boolean' }).default(false),
-  maxDuration: integer('max_duration').default(parseInt(process.env.MAX_SANDBOX_DURATION || '300', 10)),
-  keepAlive: integer('keep_alive', { mode: 'boolean' }).default(false),
-  enableBrowser: integer('enable_browser', { mode: 'boolean' }).default(false),
-  status: text('status').notNull().default('pending'),
-  progress: integer('progress').default(0),
-  logs: text('logs'), // JSON string of LogEntry[]
-  error: text('error'),
-  branchName: text('branch_name'),
-  sandboxId: text('sandbox_id'),
-  sandboxSessionId: text('sandbox_session_id'),
-  sandboxCwd: text('sandbox_cwd'),
-  sandboxMode: text('sandbox_mode'),
-  agentSessionId: text('agent_session_id'),
-  sandboxUrl: text('sandbox_url'),
-  previewUrl: text('preview_url'),
-  prUrl: text('pr_url'),
-  prNumber: integer('pr_number'),
-  prStatus: text('pr_status'),
-  prMergeCommitSha: text('pr_merge_commit_sha'),
-  mcpServerIds: text('mcp_server_ids'), // JSON string of string[]
-  createdAt: integer('created_at').notNull().$defaultFn(now),
-  updatedAt: integer('updated_at').notNull().$defaultFn(now),
-  completedAt: integer('completed_at'),
-  deletedAt: integer('deleted_at'),
-})
+export const tasks = sqliteTable(
+  'tasks',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    prompt: text('prompt').notNull(),
+    title: text('title'),
+    repoUrl: text('repo_url'),
+    selectedAgent: text('selected_agent').default('claude'),
+    selectedModel: text('selected_model'),
+    mode: text('mode').notNull().default('default'), // 'default' | 'coding'
+    installDependencies: integer('install_dependencies', { mode: 'boolean' }).default(false),
+    maxDuration: integer('max_duration').default(parseInt(process.env.MAX_SANDBOX_DURATION || '300', 10)),
+    keepAlive: integer('keep_alive', { mode: 'boolean' }).default(false),
+    enableBrowser: integer('enable_browser', { mode: 'boolean' }).default(false),
+    status: text('status').notNull().default('pending'),
+    progress: integer('progress').default(0),
+    logs: text('logs'), // JSON string of LogEntry[]
+    error: text('error'),
+    branchName: text('branch_name'),
+    sandboxId: text('sandbox_id'),
+    sandboxSessionId: text('sandbox_session_id'),
+    sandboxCwd: text('sandbox_cwd'),
+    sandboxMode: text('sandbox_mode'),
+    agentSessionId: text('agent_session_id'),
+    sandboxUrl: text('sandbox_url'),
+    previewUrl: text('preview_url'),
+    prUrl: text('pr_url'),
+    prNumber: integer('pr_number'),
+    prStatus: text('pr_status'),
+    prMergeCommitSha: text('pr_merge_commit_sha'),
+    mcpServerIds: text('mcp_server_ids'), // JSON string of string[]
+    createdAt: integer('created_at').notNull().$defaultFn(now),
+    updatedAt: integer('updated_at').notNull().$defaultFn(now),
+    completedAt: integer('completed_at'),
+    deletedAt: integer('deleted_at'),
+  },
+  (table) => ({
+    userDeletedCreatedIdx: index('tasks_user_deleted_created_idx').on(
+      table.userId,
+      table.deletedAt,
+      table.createdAt,
+    ),
+    deletedStatusCreatedIdx: index('tasks_deleted_status_created_idx').on(
+      table.deletedAt,
+      table.status,
+      table.createdAt,
+    ),
+    userPrRepoIdx: index('tasks_user_pr_repo_idx').on(
+      table.userId,
+      table.prNumber,
+      table.repoUrl,
+    ),
+  }),
+)
 
 // ─── Connectors ───────────────────────────────────────────────────────────────
 

@@ -150,11 +150,11 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
     fetchTasks()
   }, [])
 
-  // Poll for task updates every 5 seconds
+  // Poll for task updates every 15 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       fetchTasks()
-    }, 5000)
+    }, 15000)
 
     return () => clearInterval(interval)
   }, [])

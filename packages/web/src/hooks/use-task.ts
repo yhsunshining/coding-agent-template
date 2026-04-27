@@ -21,7 +21,7 @@ export function useTask(taskId: string) {
 
   useEffect(() => {
     fetchTask()
-    const interval = setInterval(fetchTask, 5000)
+    const interval = setInterval(fetchTask, 15000)
     return () => clearInterval(interval)
   }, [fetchTask])
 
