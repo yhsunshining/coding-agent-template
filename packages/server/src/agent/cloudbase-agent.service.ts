@@ -296,7 +296,7 @@ function getBundledSkillsDir(): string {
 
 // ─── System Prompt Builder ─────────────────────────────────────────────────
 
-function buildAppendPrompt(sandboxCwd?: string, conversationId?: string, envId?: string): string {
+function buildAppendPrompt(sandboxCwd?: string, conversationId?: string, envId?: string, sandboxMode?: 'shared' | 'isolated'): string {
   const base = `你是一个通用 AI 编程助手，同时具备腾讯云开发（CloudBase）能力，可通过工具操作云函数、数据库、存储、云托管等资源。
 优先使用工具完成任务；删除等破坏性操作需确认用户意图。
 默认使用中文与用户沟通。
@@ -329,7 +329,7 @@ ${
 Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20:00。`
 
   if (sandboxCwd) {
-    const homeDir = sandboxCwd.includes('/') ? sandboxCwd.substring(0, sandboxCwd.lastIndexOf('/')) : sandboxCwd
+    const homeDir = sandboxMode === 'isolated' ? sandboxCwd : sandboxCwd.substring(0, sandboxCwd.lastIndexOf('/'))
     return `${base}
 工具默认在 Home: ${homeDir} 下执行
 为项目开辟工作目录为: ${sandboxCwd}
@@ -709,7 +709,7 @@ export class CloudbaseAgentService {
       // 3. Forward to live SSE callback if present (ignore errors on disconnect)
       if (liveCallback) {
         try {
-          liveCallback(enrichedMsg, eventSeq)
+          liveCallback(enrichedMsg)
         } catch {
           // SSE disconnected, ignore
         }
@@ -828,7 +828,9 @@ export class CloudbaseAgentService {
         await startDevServer(sandboxInstance, actualCwd)
         wrappedCallback({ type: 'text', content: '开发服务器已启动，可在 Preview 标签页预览。\n\n' })
         // 项目初始化完成，写信号到 DB，前端据此触发 preview-url SSE
-        await getDb().tasks.update(conversationId, { previewUrl: 'ready' }).catch(() => {})
+        await getDb()
+          .tasks.update(conversationId, { previewUrl: 'ready' })
+          .catch(() => {})
       } catch (err) {
         console.error('[Agent] Coding mode init failed:', (err as Error).message)
         wrappedCallback({
@@ -1103,8 +1105,8 @@ export class CloudbaseAgentService {
           includePartialMessages: true,
           systemPrompt: {
             append: isCodingMode
-              ? getCodingSystemPrompt() + '\n\n' + buildAppendPrompt(actualCwd, conversationId, userContext.envId)
-              : buildAppendPrompt(actualCwd, conversationId, userContext.envId),
+              ? getCodingSystemPrompt() + '\n\n' + buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode)
+              : buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode),
           },
           mcpServers,
           abortController,
