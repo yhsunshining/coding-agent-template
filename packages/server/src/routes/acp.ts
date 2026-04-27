@@ -567,17 +567,19 @@ async function observeStreamWithLiveCallback(
         lastSeq = Math.max(lastSeq, seq)
       }
 
-      try {
-        stream.writeSSE({
+      // writeSSE returns a Promise — attach .catch() so unhandled rejection doesn't
+      // surface as an uncaught error. Actual write failure sets streamClosed=true.
+      stream
+        .writeSSE({
           data: JSON.stringify({
             jsonrpc: '2.0',
             method: 'session/update',
             params: { sessionId, update: acpEvent },
           }),
         })
-      } catch {
-        streamClosed = true
-      }
+        .catch(() => {
+          streamClosed = true
+        })
     }
 
     // ── Launch agent with liveCallback ────────────────────────

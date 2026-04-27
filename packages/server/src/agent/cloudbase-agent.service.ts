@@ -673,7 +673,6 @@ export class CloudbaseAgentService {
       // 同理 restoreMessages / preSavePendingRecords 也推迟。
     }
 
-
     // ── 预保存 pending 记录(已推迟到 sandbox + restoreMessages 之后) ──
     // 见下方 "Resume toolConfirmation: 真实执行" 块
     let preSavedUserRecordId: string | null = null
@@ -1474,20 +1473,17 @@ export class CloudbaseAgentService {
       if (connectTimer) clearTimeout(connectTimer)
       if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer)
 
-      // Cleanup stream events first — messages will be synced to DB below,
-      // so stream events (used only for SSE replay) are no longer needed.
-      try {
-        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId)
-      } catch {
-        // Non-critical
-      }
-
-      // Flush remaining events to DB
+      // Flush remaining events to DB FIRST — this must happen before cleanup,
+      // so any in-flight events are persisted for SSE replay on reconnect.
       try {
         await eventBuffer.close()
       } catch {
         // Non-critical
       }
+
+      // Cleanup stream events AFTER flushing the buffer and AFTER completeAgent()
+      // is called below, so the poll loop sees isDone=true before events are removed.
+      // (moved down — see cleanup call after completeAgent)
 
       // Archive to git if sandbox was used
       if (sandboxInstance) {
@@ -1550,6 +1546,15 @@ export class CloudbaseAgentService {
 
       // Update agent registry
       completeAgent(conversationId, finalStatus, syncError?.message)
+
+      // Cleanup stream events NOW — after completeAgent() so the poll loop sees
+      // isDone=true and drains remaining events before we remove them from DB.
+      // Give poll loop one cycle (500ms) to drain before cleaning.
+      setTimeout(() => {
+        persistenceService.cleanupStreamEvents(conversationId, assistantMessageId).catch(() => {
+          // Non-critical
+        })
+      }, 600)
 
       // Schedule registry cleanup after observers have time to detect completion
       setTimeout(() => removeAgent(conversationId), 30_000)

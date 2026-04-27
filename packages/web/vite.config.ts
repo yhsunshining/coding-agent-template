@@ -4,6 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
+  // 沙箱代理预览时需要设置 base，例如：VITE_BASE=/preview/5173/
+  // 本地开发不需要设置，默认为 /
+  base: process.env.VITE_BASE ?? '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

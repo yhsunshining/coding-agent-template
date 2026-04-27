@@ -132,7 +132,8 @@ export function TaskForm({
   const [prompt, setPrompt] = useAtom(taskPromptAtom)
   const selectedAgent = 'codebuddy'
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODELS.codebuddy)
-  const [taskMode, setTaskMode] = useState<'default' | 'coding'>('default')
+  // Default to 'coding' mode — tasks without a git repo are always coding/sandbox tasks
+  const [taskMode, setTaskMode] = useState<'default' | 'coding'>('coding')
   const [codebuddyModels, setCodebuddyModels] = useState<ModelInfo[]>([{ id: 'glm-5.0', name: 'GLM 5.0' }])
   const [repos, setRepos] = useAtom(githubReposAtomFamily(selectedOwner))
   const [, setLoadingRepos] = useState(false)

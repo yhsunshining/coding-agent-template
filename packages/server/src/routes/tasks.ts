@@ -2415,9 +2415,20 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   try {
     const port = await detectAndEnsureDevServer(sandbox, resolvedCwd)
 
-    const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const functionName = resolvedSandboxId
-    const gatewayUrl = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview/proxy/${port}/?session-id=${resolvedSessionId}`
+    // 确保预览网关已注册,并获取正确的 previewBase URL
+    let previewBase: string
+    try {
+      previewBase = await scfSandboxManager.ensurePreviewGateway()
+      console.log(`[preview-url] Preview gateway base: ${previewBase}`)
+    } catch (gwErr) {
+      console.warn('[preview-url] ensurePreviewGateway failed:', (gwErr as Error).message)
+      // Fallback: 尝试从沙箱 preview_url 工具获取路径
+      const sandboxEnvId = process.env.TCB_ENV_ID || ''
+      const functionName = sandbox.functionName
+      previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview`
+    }
+
+    const gatewayUrl = `${previewBase}/${port}/?cloudbase_session_id=${resolvedSessionId}`
 
     return c.json({ port, gatewayUrl })
   } catch (err) {
