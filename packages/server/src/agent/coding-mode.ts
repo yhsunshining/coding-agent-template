@@ -1,6 +1,6 @@
 import type { SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
 
-const TEMPLATE_REPO = 'https://github.com/TencentCloudBase/awesome-cloudbase-examples.git'
+const TEMPLATE_REPO = 'https://cnb.cool/tencent/cloud/cloudbase/awesome-cloudbase-examples.git'
 const TEMPLATE_SUBDIR = 'web/cloudbase-react-template'
 const DEV_SERVER_PORT = 5173
 
@@ -29,16 +29,19 @@ const VITE_HOST = '0.0.0.0'
 const SANDBOX_VITE_CONFIG = `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// CloudBase sandbox preview setup:
-// - server.host "0.0.0.0" lets the CloudBase gateway proxy reach the dev server
-// - server.allowedHosts true allows requests from the gateway domain
-// The dev server is launched with --base=/preview/ so asset paths carry the
-// /preview/ prefix, matching the CloudBase preview gateway routing.
+// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  base: "./", // 使用相对路径，解决静态托管部署时的资源加载问题
   server: {
-    host: "0.0.0.0",
+    host: "127.0.0.1",
     port: 5173,
+    proxy: {
+      "/__auth": {
+        target: "https://envId-appid.tcloudbaseapp.com/",
+        changeOrigin: true,
+      },
+    },
     allowedHosts: true,
   },
 });
@@ -209,9 +212,10 @@ export async function initCodingProject(sandbox: SandboxInstance, workspace: str
   // Clone template repo (sparse checkout for the specific subdir)
   console.log('[CodingMode] Initializing project from template')
   const initScript = [
+    `mkdir -p "${workspace}"`,
     `cd /tmp`,
     `rm -rf _template_repo`,
-    `git clone --depth 1 --filter=blob:none --sparse ${TEMPLATE_REPO} _template_repo 2>&1 || true`,
+    `git clone --depth 1 --filter=blob:none --sparse ${TEMPLATE_REPO} _template_repo 2>&1`,
     `cd _template_repo`,
     `git sparse-checkout set ${TEMPLATE_SUBDIR} 2>&1`,
     `cp -r ${TEMPLATE_SUBDIR}/. "${workspace}/"`,
@@ -220,6 +224,14 @@ export async function initCodingProject(sandbox: SandboxInstance, workspace: str
 
   const cloneOut = await bashExec(sandbox, initScript, 60000)
   console.log('[CodingMode] clone output:', cloneOut.slice(-200))
+
+  // Verify package.json was actually copied
+  const verifyOut = await bashExec(sandbox, `test -f "${workspace}/package.json" && echo "ok" || echo "missing"`, 5000)
+  if (verifyOut.trim() !== 'ok') {
+    throw new Error(
+      `Template copy failed — package.json missing at ${workspace}. Clone output: ${cloneOut.slice(-300)}`,
+    )
+  }
 
   // Patch vite.config.ts for CloudBase sandbox preview compatibility
   await patchViteConfig(sandbox, workspace)

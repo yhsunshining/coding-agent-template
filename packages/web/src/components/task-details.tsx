@@ -361,13 +361,22 @@ export function TaskDetails({
   // coding mode: preview pane 打开时加载 URL（若尚未加载）
   // 注意: 必须检查 !previewGatewayError，否则出错后 loading=false+url=null
   // 会导致 effect 再次触发 → 无限轮询
+  // 注意: 必须检查 task.previewUrl，等 agent 完成 initCodingProject + startDevServer 后才触发
   useEffect(() => {
-    if (isCodingMode && showPreviewPane && !previewGatewayUrl && !previewGatewayLoading && !previewGatewayError) {
+    if (
+      isCodingMode &&
+      showPreviewPane &&
+      task.previewUrl &&
+      !previewGatewayUrl &&
+      !previewGatewayLoading &&
+      !previewGatewayError
+    ) {
       loadPreviewGatewayUrl()
     }
   }, [
     isCodingMode,
     showPreviewPane,
+    task.previewUrl,
     previewGatewayUrl,
     previewGatewayLoading,
     previewGatewayError,
@@ -2212,6 +2221,15 @@ export function TaskDetails({
                     </div>
                     {/* 内容区 */}
                     <div className="relative flex-1 min-h-0">
+                      {/* 项目未初始化：等 agent 完成 initCodingProject + startDevServer */}
+                      {!task.previewUrl && !previewGatewayLoading && !previewGatewayUrl && !previewGatewayError && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground text-center">
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            <span>AI 正在初始化项目，请稍候...</span>
+                          </div>
+                        </div>
+                      )}
                       {/* Loading 状态：实时显示后端推送的进度 */}
                       {previewGatewayLoading && (
                         <>

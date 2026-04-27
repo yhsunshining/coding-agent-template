@@ -136,7 +136,7 @@ async function initSandboxWorkspace(
 
     if (res.ok) {
       const workspace = preferredCwd || `/tmp/workspace/${secret.envId}/${conversationId}`
-      console.log('[Agent] initSandboxWorkspace success, workspace:', workspace)
+      console.log(`[Agent] initSandboxWorkspace success, workspace: ${workspace}, preferredCwd: ${preferredCwd}`)
 
       // 创建会话工作目录
       const mkdirRes = await sandbox.request('/api/tools/bash', {
@@ -195,7 +195,7 @@ interface ToolCallTracker {
   toolInputJsonBuffers: Map<string, string>
 }
 
-type AgentCallback = (message: AgentCallbackMessage) => void | Promise<void>
+type AgentCallback = (message: AgentCallbackMessage, seq?: number) => void | Promise<void>
 
 // ─── OAuth Token Cache ────────────────────────────────────────────────────
 
@@ -296,7 +296,12 @@ function getBundledSkillsDir(): string {
 
 // ─── System Prompt Builder ─────────────────────────────────────────────────
 
-function buildAppendPrompt(sandboxCwd?: string, conversationId?: string, envId?: string, sandboxMode?: 'shared' | 'isolated'): string {
+function buildAppendPrompt(
+  sandboxCwd?: string,
+  conversationId?: string,
+  envId?: string,
+  sandboxMode?: 'shared' | 'isolated',
+): string {
   const base = `你是一个通用 AI 编程助手，同时具备腾讯云开发（CloudBase）能力，可通过工具操作云函数、数据库、存储、云托管等资源。
 优先使用工具完成任务；删除等破坏性操作需确认用户意图。
 默认使用中文与用户沟通。
@@ -565,6 +570,9 @@ export class CloudbaseAgentService {
 
     const { sandboxMode, sandboxSessionId, sandboxCwd: resolvedCwd } = sandboxConfig
     const actualCwd = cwd || resolvedCwd
+    console.log(
+      `[Agent] sandboxConfig: mode=${sandboxMode}, sessionId=${sandboxSessionId}, resolvedCwd=${resolvedCwd}, cwd=${cwd}, actualCwd=${actualCwd}`,
+    )
     mkdirSync(actualCwd, { recursive: true })
 
     // ── 创建 EventBuffer 用于持久化 ACP 事件 ─────────────────────────
@@ -709,7 +717,7 @@ export class CloudbaseAgentService {
       // 3. Forward to live SSE callback if present (ignore errors on disconnect)
       if (liveCallback) {
         try {
-          liveCallback(enrichedMsg)
+          liveCallback(enrichedMsg, eventSeq)
         } catch {
           // SSE disconnected, ignore
         }
@@ -820,23 +828,35 @@ export class CloudbaseAgentService {
     }
 
     // ── Coding mode: initialize template project and start dev server ──
+    // 仅首次执行（检查 previewUrl 信号，若已设置说明之前已初始化过）
     if (isCodingMode && sandboxInstance) {
+      let alreadyInitialized = false
       try {
-        wrappedCallback({ type: 'text', content: '正在初始化 Coding 项目...\n' })
-        await initCodingProject(sandboxInstance, actualCwd)
-        wrappedCallback({ type: 'text', content: '正在启动开发服务器...\n' })
-        await startDevServer(sandboxInstance, actualCwd)
-        wrappedCallback({ type: 'text', content: '开发服务器已启动，可在 Preview 标签页预览。\n\n' })
-        // 项目初始化完成，写信号到 DB，前端据此触发 preview-url SSE
-        await getDb()
-          .tasks.update(conversationId, { previewUrl: 'ready' })
-          .catch(() => {})
-      } catch (err) {
-        console.error('[Agent] Coding mode init failed:', (err as Error).message)
-        wrappedCallback({
-          type: 'text',
-          content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
-        })
+        const taskRecord = await getDb().tasks.findById(conversationId)
+        alreadyInitialized = !!taskRecord?.previewUrl
+      } catch {}
+
+      if (alreadyInitialized) {
+        console.log('[Agent] Coding project already initialized, skipping')
+      } else {
+        try {
+          console.log(`[Agent] Coding mode init: actualCwd=${actualCwd}, detectedSandboxCwd=${detectedSandboxCwd}`)
+          wrappedCallback({ type: 'text', content: '正在初始化 Coding 项目...\n' })
+          await initCodingProject(sandboxInstance, actualCwd)
+          wrappedCallback({ type: 'text', content: '正在启动开发服务器...\n' })
+          await startDevServer(sandboxInstance, actualCwd)
+          wrappedCallback({ type: 'text', content: '开发服务器已启动，可在 Preview 标签页预览。\n\n' })
+          // 项目初始化完成，写信号到 DB，前端据此触发 preview-url SSE
+          await getDb()
+            .tasks.update(conversationId, { previewUrl: 'ready' })
+            .catch(() => {})
+        } catch (err) {
+          console.error('[Agent] Coding mode init failed:', (err as Error).message)
+          wrappedCallback({
+            type: 'text',
+            content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
+          })
+        }
       }
     }
 
@@ -1105,7 +1125,9 @@ export class CloudbaseAgentService {
           includePartialMessages: true,
           systemPrompt: {
             append: isCodingMode
-              ? getCodingSystemPrompt() + '\n\n' + buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode)
+              ? getCodingSystemPrompt() +
+                '\n\n' +
+                buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode)
               : buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode),
           },
           mcpServers,

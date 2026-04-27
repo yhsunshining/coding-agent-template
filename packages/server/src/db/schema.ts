@@ -92,21 +92,13 @@ export const tasks = sqliteTable(
     deletedAt: integer('deleted_at'),
   },
   (table) => ({
-    userDeletedCreatedIdx: index('tasks_user_deleted_created_idx').on(
-      table.userId,
-      table.deletedAt,
-      table.createdAt,
-    ),
+    userDeletedCreatedIdx: index('tasks_user_deleted_created_idx').on(table.userId, table.deletedAt, table.createdAt),
     deletedStatusCreatedIdx: index('tasks_deleted_status_created_idx').on(
       table.deletedAt,
       table.status,
       table.createdAt,
     ),
-    userPrRepoIdx: index('tasks_user_pr_repo_idx').on(
-      table.userId,
-      table.prNumber,
-      table.repoUrl,
-    ),
+    userPrRepoIdx: index('tasks_user_pr_repo_idx').on(table.userId, table.prNumber, table.repoUrl),
   }),
 )
 
