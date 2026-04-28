@@ -1,4 +1,18 @@
 import type { SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
+import { readFileSync, existsSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+/** 预打包的模板 tar.gz（含 node_modules），约 30MB */
+// dev 模式: __dirname = src/agent/ → ../../assets/
+// prod 模式: __dirname = dist/ → ../assets/
+const TEMPLATE_TAR_CANDIDATES = [
+  resolve(__dirname, '../../assets/coding-template.tar.gz'), // dev: src/agent/ → assets/
+  resolve(__dirname, '../assets/coding-template.tar.gz'), // prod: dist/ → assets/
+]
+const TEMPLATE_TAR_PATH = TEMPLATE_TAR_CANDIDATES.find((p) => existsSync(p)) || TEMPLATE_TAR_CANDIDATES[0]
 
 const TEMPLATE_REPO = 'https://cnb.cool/tencent/cloud/cloudbase/awesome-cloudbase-examples.git'
 const TEMPLATE_SUBDIR = 'web/cloudbase-react-template'
@@ -99,16 +113,21 @@ if [ -f "$TAR_FILE" ] && [ ! -d "$WORKSPACE/node_modules" ]; then
     echo "[supervisor] cache extract failed, will run npm install" >> "$LOG"
 fi
 
-# ── Step 3: npm install (always — 有缓存时秒退，有新包时只装增量) ────────────
-echo "installing" > "$STATE"
-echo "[supervisor] running npm install..." >> "$LOG"
-cd "$WORKSPACE" && npm install >> "$LOG" 2>&1
-if [ $? -ne 0 ]; then
-  echo "install_failed" > "$STATE"
-  echo "[supervisor] npm install failed" >> "$LOG"
-  exit 1
+# ── Step 3: npm install (仅在 node_modules 不完整时) ──────────────────────
+# vite binary 存在说明依赖已就绪（tar.gz 预装或之前已 install），直接跳过
+if [ -x "$WORKSPACE/node_modules/.bin/vite" ]; then
+  echo "[supervisor] node_modules already complete, skipping npm install" >> "$LOG"
+else
+  echo "installing" > "$STATE"
+  echo "[supervisor] running npm install..." >> "$LOG"
+  cd "$WORKSPACE" && npm install >> "$LOG" 2>&1
+  if [ $? -ne 0 ]; then
+    echo "install_failed" > "$STATE"
+    echo "[supervisor] npm install failed" >> "$LOG"
+    exit 1
+  fi
+  echo "[supervisor] npm install done" >> "$LOG"
 fi
-echo "[supervisor] npm install done" >> "$LOG"
 
 # ── Step 4: 如果 package-lock.json 有变化则重新打包 tar ─────────────────────
 # lockfile hash 不变说明依赖没变，跳过打包节省时间
@@ -184,11 +203,12 @@ async function patchViteConfig(sandbox: SandboxInstance, workspace: string): Pro
   }
 }
 
-// ─── Project init (clone only, no install) ───────────────────────────────
-// npm install 由 supervisor 在后台异步完成，不阻塞 LLM 编码
+// ─── Project init (upload pre-built template) ────────────────────────────
+// 使用预打包的 tar.gz（含 node_modules），上传到沙箱解压，秒级完成
+// 如果 tar.gz 不存在则 fallback 到 git clone
 
 export async function initCodingProject(sandbox: SandboxInstance, workspace: string): Promise<void> {
-  // Check project state: ready | needs_install | not_found
+  // Check project state
   const checkStatus = await bashExec(
     sandbox,
     `if [ -f "${workspace}/package.json" ]; then echo "exists"; else echo "not_found"; fi`,
@@ -196,39 +216,87 @@ export async function initCodingProject(sandbox: SandboxInstance, workspace: str
   )
 
   if (checkStatus === 'exists') {
-    console.log('[CodingMode] Project already cloned, skipping')
+    console.log('[CodingMode] Project already exists, skipping')
     return
   }
 
-  // Clone template repo (sparse checkout for the specific subdir)
-  console.log('[CodingMode] Cloning project template')
-  const initScript = [
-    `mkdir -p "${workspace}"`,
-    `cd /tmp`,
-    `rm -rf _template_repo`,
-    `git clone --depth 1 --filter=blob:none --sparse ${TEMPLATE_REPO} _template_repo 2>&1`,
-    `cd _template_repo`,
-    `git sparse-checkout set ${TEMPLATE_SUBDIR} 2>&1`,
-    `cp -r ${TEMPLATE_SUBDIR}/. "${workspace}/"`,
-    `cd /tmp && rm -rf _template_repo`,
-  ].join(' && ')
+  // 确保目录存在
+  await bashExec(sandbox, `mkdir -p "${workspace}"`, 5000)
 
-  const cloneOut = await bashExec(sandbox, initScript, 60000)
-  console.log('[CodingMode] clone output:', cloneOut.slice(-200))
+  // 优先用预打包的 tar.gz（含 node_modules，~30MB，上传+解压 ~5s）
+  let uploaded = false
+  try {
+    const tarExists = existsSync(TEMPLATE_TAR_PATH)
+    console.log(`[CodingMode] Template tar path: ${TEMPLATE_TAR_PATH}, exists: ${tarExists}`)
+    if (!tarExists) throw new Error('Template tar.gz not found at ' + TEMPLATE_TAR_PATH)
 
-  // Verify package.json was actually copied
-  const verifyOut = await bashExec(sandbox, `test -f "${workspace}/package.json" && echo "ok" || echo "missing"`, 5000)
-  if (verifyOut.trim() !== 'ok') {
-    throw new Error(
-      `Template copy failed — package.json missing at ${workspace}. Clone output: ${cloneOut.slice(-300)}`,
-    )
+    const tarBuffer = readFileSync(TEMPLATE_TAR_PATH)
+    console.log(`[CodingMode] Uploading template tar.gz (${(tarBuffer.length / 1024 / 1024).toFixed(1)}MB)`)
+
+    const tarRemotePath = '/tmp/coding-template.tar.gz'
+    const formData = new FormData()
+    const blob = new Blob([tarBuffer], { type: 'application/gzip' })
+    formData.append('file', blob, tarRemotePath)
+
+    const uploadRes = await sandbox.request(`/e2b-compatible/files?path=${encodeURIComponent(tarRemotePath)}`, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(30_000),
+    })
+
+    if (uploadRes.ok) {
+      // 解压到 workspace
+      const extractOut = await bashExec(
+        sandbox,
+        `tar -xzf "${tarRemotePath}" -C "${workspace}" && rm -f "${tarRemotePath}" && echo "ok"`,
+        30000,
+      )
+      uploaded = extractOut.trim() === 'ok'
+      if (uploaded) {
+        // 验证 node_modules 是否真的解压出来了
+        const verifyNm = await bashExec(
+          sandbox,
+          `[ -x "${workspace}/node_modules/.bin/vite" ] && echo "has_vite" || echo "no_vite"`,
+          5000,
+        )
+        console.log(`[CodingMode] Template uploaded and extracted, vite check: ${verifyNm.trim()}`)
+      } else {
+        console.warn('[CodingMode] tar extract failed:', extractOut.slice(-200))
+      }
+    } else {
+      console.warn('[CodingMode] Upload failed, status:', uploadRes.status)
+    }
+  } catch (err) {
+    console.warn('[CodingMode] Template upload failed, falling back to git clone:', (err as Error).message)
   }
 
-  // Patch vite.config.ts for CloudBase sandbox preview compatibility
-  await patchViteConfig(sandbox, workspace)
+  // Fallback: git clone（网络慢但总能用）
+  if (!uploaded) {
+    console.log('[CodingMode] Falling back to git clone')
+    const initScript = [
+      `cd /tmp`,
+      `rm -rf _template_repo`,
+      `git clone --depth 1 --filter=blob:none --sparse ${TEMPLATE_REPO} _template_repo 2>&1`,
+      `cd _template_repo`,
+      `git sparse-checkout set ${TEMPLATE_SUBDIR} 2>&1`,
+      `cp -r ${TEMPLATE_SUBDIR}/. "${workspace}/"`,
+      `cd /tmp && rm -rf _template_repo`,
+    ].join(' && ')
 
-  // NOTE: npm install is NOT called here — supervisor handles it asynchronously
-  console.log('[CodingMode] Project cloned, supervisor will handle npm install')
+    const cloneOut = await bashExec(sandbox, initScript, 60000)
+    console.log('[CodingMode] clone output:', cloneOut.slice(-200))
+
+    // Patch vite.config.ts（tar.gz 里已经是正确的，只有 clone 需要 patch）
+    await patchViteConfig(sandbox, workspace)
+  }
+
+  // 验证
+  const verifyOut = await bashExec(sandbox, `test -f "${workspace}/package.json" && echo "ok" || echo "missing"`, 5000)
+  if (verifyOut.trim() !== 'ok') {
+    throw new Error(`Template init failed — package.json missing at ${workspace}`)
+  }
+
+  console.log('[CodingMode] Project initialized')
 }
 
 // ─── Supervisor management ────────────────────────────────────────────────
