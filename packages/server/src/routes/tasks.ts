@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest'
 import { SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
-import { detectAndEnsureDevServer, initCodingProject, CODING_DEV_SERVER_PORT } from '../agent/coding-mode.js'
+import { CODING_DEV_SERVER_PORT } from '../agent/coding-mode.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -2432,17 +2432,16 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
         }
       }
 
-      // ── coding mode: 初始化项目 + 启动 dev server ────────────────────
+      // ── coding mode: 确保 workspace + vite 就绪 ──────────────────────
       const taskMode = (task as any).mode as string | null | undefined
-      // 只有明确 mode==='coding' 才走初始化流程，null/undefined/'default' 均不处理
       const isCodingMode = taskMode === 'coding'
-      let needsInstall = false // 是否需要安装依赖（影响 dev server 超时时长）
       if (isCodingMode) {
-        // ── 确保 workspace 已恢复（沙箱冷启动后 /tmp 被清空）────────────
-        // 调 /api/session/init 触发沙箱内部的 git restore，恢复用户代码
+        // /api/session/init 内部完成全部初始化：
+        //   - seedCodingTemplate（首次）或 git restore（二次启动）
+        //   - ensureViteDev: npm install + spawn vite + crash 自动重启
         try {
           const { credentials: userCredentials } = c.get('userEnv')!
-          await emit('progress', '正在恢复工作空间...')
+          await emit('progress', '正在初始化工作空间...')
           await sandbox!.request('/api/session/init', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2454,94 +2453,44 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
                 ...(userCredentials?.sessionToken ? { TENCENTCLOUD_SESSIONTOKEN: userCredentials.sessionToken } : {}),
               },
             }),
-            signal: AbortSignal.timeout(15_000),
-          })
-          // 确保 workspace 目录存在
-          await sandbox!.request('/api/tools/bash', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: `mkdir -p "${resolvedCwd}"`, timeout: 5000 }),
-            signal: AbortSignal.timeout(10_000),
+            signal: AbortSignal.timeout(60_000),
           })
         } catch (err) {
           console.warn('[preview-url] session/init failed:', (err as Error).message)
         }
+      }
 
-        // 修正 cwd（某些任务 sandboxCwd 与沙箱实际 HOME 不符）
-        try {
-          const pkgCheck = await sandbox!.request(
-            `/e2b-compatible/files?path=${encodeURIComponent(`${resolvedCwd}/package.json`)}`,
-            { signal: AbortSignal.timeout(8_000) },
-          )
-          if (!pkgCheck.ok) {
-            const pkgAtRoot = await sandbox!.request(
-              `/e2b-compatible/files?path=${encodeURIComponent('package.json')}`,
-              { signal: AbortSignal.timeout(8_000) },
-            )
-            if (pkgAtRoot.ok) {
-              const cwdRes = await sandbox!.request('/api/tools/bash', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command: 'pwd', timeout: 3000 }),
-                signal: AbortSignal.timeout(8_000),
-              })
-              const cwdData = (await cwdRes.json()) as { result?: { output?: string } }
-              const detectedCwd = cwdData.result?.output?.trim()
-              if (detectedCwd) {
-                console.log(`[preview-url] Correcting workspace cwd: ${resolvedCwd} → ${detectedCwd}`)
-                resolvedCwd = detectedCwd
-              }
-            }
-          }
-        } catch {
-          // 检测失败不影响主流程
-        }
+      // ── 等待 vite 端口响应 ──────────────────────────────────────────────
+      await emit('progress', '正在等待开发服务器就绪...')
+      const maxWaitMs = 120_000
+      const pollInterval = 2000
+      const startTime = Date.now()
+      let port = CODING_DEV_SERVER_PORT
+      let alive = false
 
-        // 判断项目状态：supervisor 负责 install + dev server，
-        // 这里只负责在 not_found 时 clone 模板（supervisor 无法做 git clone）
-        let projectStatus = 'unknown'
+      while (Date.now() - startTime < maxWaitMs) {
         try {
-          const checkRes = await sandbox!.request('/api/tools/bash', {
+          const pingRes = await sandbox!.request('/api/tools/bash', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              command: `if [ -f "${resolvedCwd}/package.json" ]; then if cd "${resolvedCwd}" && node_modules/.bin/vite --version > /dev/null 2>&1; then echo "ready"; else echo "needs_install"; fi; else echo "not_found"; fi`,
+              command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port}/ 2>/dev/null || echo "0"`,
               timeout: 5000,
             }),
             signal: AbortSignal.timeout(10_000),
           })
-          const checkData = (await checkRes.json()) as { result?: { output?: string } }
-          projectStatus = checkData.result?.output?.trim() ?? 'unknown'
-          needsInstall = projectStatus !== 'ready'
-        } catch {
-          needsInstall = true
-        }
-
-        if (projectStatus === 'not_found') {
-          // 需要先 clone 模板，supervisor 之后会自动 install + start
-          await emit('progress', '正在初始化项目（首次约 60 秒）...')
-          try {
-            await initCodingProject(sandbox!, resolvedCwd)
-          } catch (err) {
-            console.warn('[preview-url] initCodingProject warn:', (err as Error).message)
+          const pingData = (await pingRes.json()) as { result?: { output?: string } }
+          const code = pingData.result?.output?.trim()
+          if (code === '200' || code === '302' || code === '304') {
+            alive = true
+            break
           }
-        } else if (needsInstall) {
-          await emit('progress', '正在安装依赖（首次约 60 秒）...')
-        }
+        } catch {}
+        await new Promise((r) => setTimeout(r, pollInterval))
       }
 
-      // ── 启动 / 确认 dev server（由 supervisor 管理）────────────────────
-      // supervisor 负责 npm install + npm run dev + 自动重启（类似 systemd Restart=always）
-      // needsInstall=true → supervisor 还要跑 npm install，给足 120s
-      // needsInstall=false → 只是启动 vite，15s 足够
-      const devServerMaxPollSeconds = needsInstall ? 120 : 15
-      console.log(`[preview-url] Starting dev server in workspace: ${resolvedCwd}, needsInstall=${needsInstall}`)
-      await emit('progress', '正在启动开发服务器...')
-      let port: number
-      try {
-        port = await detectAndEnsureDevServer(sandbox!, resolvedCwd, { maxPollSeconds: devServerMaxPollSeconds })
-      } catch (err) {
-        await emit('error', `Dev server 启动失败: ${(err as Error).message}`)
+      if (!alive) {
+        await emit('error', `Dev server 未能在 ${maxWaitMs / 1000}s 内就绪`)
         return
       }
 

@@ -10,7 +10,7 @@ import { persistenceService } from './persistence.service.js'
 import { scfSandboxManager, type SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
 import { createSandboxMcpClient } from '../sandbox/sandbox-mcp-proxy.js'
 import { archiveToGit } from '../sandbox/git-archive.js'
-import { initCodingProject, startDevServer, getCodingSystemPrompt } from './coding-mode.js'
+import { getCodingSystemPrompt } from './coding-mode.js'
 import { getDb } from '../db/index.js'
 import { resolveSandboxConfig, backfillSandboxConfig } from '../lib/sandbox-config.js'
 import { nanoid } from 'nanoid'
@@ -783,7 +783,7 @@ export class CloudbaseAgentService {
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             baseUrl: sandboxInstance.baseUrl,
-            scfSessionId: userContext.envId,
+            scfSessionId: sandboxSessionId,
             conversationId,
             getAccessToken: () => sandboxInstance!.getAccessToken(),
             getCredentials: async () => ({
@@ -827,39 +827,22 @@ export class CloudbaseAgentService {
       }
     }
 
-    // ── Coding mode: initialize template project and start dev server ──
-    // 仅首次执行（检查 previewUrl 信号，若已设置说明之前已初始化过）
+    // ── Coding mode: mark preview ready ─────────────────────────────────────
+    // 沙箱 /api/session/init 已内置完整的项目初始化流程：
+    //   - seedCodingTemplate: 从内置模板复制（零延迟）
+    //   - ensureViteDev: 自动启动 vite dev server + crash 重启
+    //   - node_modules 恢复: tar.gz 缓存 / npm install
+    // server 端只需写 previewUrl 信号，让前端触发 preview-url SSE
     if (isCodingMode && sandboxInstance) {
-      let alreadyInitialized = false
       try {
         const taskRecord = await getDb().tasks.findById(conversationId)
-        alreadyInitialized = !!taskRecord?.previewUrl
-      } catch {}
-
-      if (alreadyInitialized) {
-        console.log('[Agent] Coding project already initialized, skipping')
-      } else {
-        try {
-          console.log(`[Agent] Coding mode init: actualCwd=${actualCwd}, detectedSandboxCwd=${detectedSandboxCwd}`)
-          wrappedCallback({ type: 'text', content: '正在初始化 Coding 项目...\n' })
-          await initCodingProject(sandboxInstance, actualCwd)
-          // 后台启动 supervisor（npm install + vite dev），不阻塞 LLM 编码
-          wrappedCallback({ type: 'text', content: '项目模板已就绪，正在后台安装依赖...\n\n' })
-          startDevServer(sandboxInstance, actualCwd).catch((err) => {
-            console.error('[Agent] Background startDevServer failed:', (err as Error).message)
-          })
-          // 写信号到 DB，前端据此触发 preview-url SSE（supervisor 会自动完成 install + start）
+        if (!taskRecord?.previewUrl) {
           await getDb()
             .tasks.update(conversationId, { previewUrl: 'ready' })
             .catch(() => {})
-        } catch (err) {
-          console.error('[Agent] Coding mode init failed:', (err as Error).message)
-          wrappedCallback({
-            type: 'text',
-            content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
-          })
+          console.log('[Agent] Coding mode: previewUrl set to ready')
         }
-      }
+      } catch {}
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -1361,6 +1344,7 @@ export class CloudbaseAgentService {
           stderr: (data: string) => {
             console.error('[Agent CLI stderr]', data.trim())
           },
+          settingSources: ['user', 'project', 'local'],
           // P2: 移除 EnterPlanMode 的禁用——Plan 模式现改由显式 permissionMode='plan' + ExitPlanMode 工具驱动
           disallowedTools: ['AskUserQuestion'],
         },
