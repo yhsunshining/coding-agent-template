@@ -1,8 +1,7 @@
 import type { SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
 
-/** 预打包模板 tar.gz 的 CloudBase 存储 URL（含 node_modules，~30MB） */
-const TEMPLATE_TAR_URL =
-  'https://6875-huming-test-1giud5ua4e72b386-1328860866.tcb.qcloud.la/assets/coding-template.tar.gz'
+/** 预打包模板 tar.gz 下载地址（从环境变量读取，init.sh 上传到静态托管后写入） */
+const TEMPLATE_TAR_URL = process.env.CODING_TEMPLATE_URL || ''
 
 const TEMPLATE_REPO = 'https://cnb.cool/tencent/cloud/cloudbase/awesome-cloudbase-examples.git'
 const TEMPLATE_SUBDIR = 'web/cloudbase-react-template'
@@ -213,16 +212,17 @@ export async function initCodingProject(sandbox: SandboxInstance, workspace: str
   // 确保目录存在
   await bashExec(sandbox, `mkdir -p "${workspace}"`, 5000)
 
-  // 优先从 CloudBase 存储下载预打包的 tar.gz（含 node_modules，~30MB，curl ~3s）
+  // 优先从静态托管下载预打包的 tar.gz（含 node_modules，~30MB，curl ~3s）
   let downloaded = false
-  try {
-    console.log('[CodingMode] Downloading template tar.gz from CloudBase storage')
-    const downloadOut = await bashExec(
-      sandbox,
-      `curl -fsSL "${TEMPLATE_TAR_URL}" -o /tmp/coding-template.tar.gz && tar -xzf /tmp/coding-template.tar.gz -C "${workspace}" && rm -f /tmp/coding-template.tar.gz && echo "ok"`,
-      60000,
-    )
-    downloaded = downloadOut.trim() === 'ok'
+  if (TEMPLATE_TAR_URL) {
+    try {
+      console.log(`[CodingMode] Downloading template from: ${TEMPLATE_TAR_URL}`)
+      const downloadOut = await bashExec(
+        sandbox,
+        `curl -fsSL "${TEMPLATE_TAR_URL}" -o /tmp/coding-template.tar.gz && tar -xzf /tmp/coding-template.tar.gz -C "${workspace}" && rm -f /tmp/coding-template.tar.gz && echo "ok"`,
+        60000,
+      )
+      downloaded = downloadOut.trim() === 'ok'
     if (downloaded) {
       const verifyNm = await bashExec(
         sandbox,
@@ -233,8 +233,11 @@ export async function initCodingProject(sandbox: SandboxInstance, workspace: str
     } else {
       console.warn('[CodingMode] Download/extract failed:', downloadOut.slice(-200))
     }
-  } catch (err) {
-    console.warn('[CodingMode] Template download failed, falling back to git clone:', (err as Error).message)
+    } catch (err) {
+      console.warn('[CodingMode] Template download failed, falling back to git clone:', (err as Error).message)
+    }
+  } else {
+    console.log('[CodingMode] CODING_TEMPLATE_URL not set, using git clone')
   }
 
   // Fallback: git clone（网络慢但总能用）
