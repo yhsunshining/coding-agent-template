@@ -667,10 +667,12 @@ async function handleSessionCancel(
   const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
 
   if (sessionId) {
-    // Abort the running agent process
+    // Abort the running agent process and immediately mark as cancelled in registry
+    // (prevents new prompt from observing a dying agent)
     const run = getAgentRun(sessionId)
     if (run && run.status === 'running') {
       run.abortController.abort()
+      run.status = 'cancelled'
     }
 
     if (envId) {
