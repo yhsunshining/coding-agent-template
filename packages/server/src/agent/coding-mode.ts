@@ -29,19 +29,17 @@ const VITE_HOST = '0.0.0.0'
 const SANDBOX_VITE_CONFIG = `import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// https://vitejs.dev/config/
+// CloudBase sandbox preview setup:
+// - base "./" for static hosting deployment (relative asset paths)
+// - dev server is launched with --base=/preview/ CLI flag which overrides this
+// - server.host "0.0.0.0" lets the CloudBase gateway proxy reach the dev server
+// - server.allowedHosts true allows requests from the gateway domain
 export default defineConfig({
   plugins: [react()],
-  base: "./", // 使用相对路径，解决静态托管部署时的资源加载问题
+  base: "./",
   server: {
-    host: "127.0.0.1",
+    host: "0.0.0.0",
     port: 5173,
-    proxy: {
-      "/__auth": {
-        target: "https://envId-appid.tcloudbaseapp.com/",
-        changeOrigin: true,
-      },
-    },
     allowedHosts: true,
   },
 });
