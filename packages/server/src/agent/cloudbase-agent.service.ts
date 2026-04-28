@@ -131,7 +131,7 @@ async function initSandboxWorkspace(
           ...(secret.token ? { TENCENTCLOUD_SESSIONTOKEN: secret.token } : {}),
         },
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(120_000),
     })
 
     if (res.ok) {

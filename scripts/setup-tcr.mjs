@@ -1065,7 +1065,7 @@ async function main() {
     namespace: '',
     namespacePrefix: DEFAULT_NAMESPACE_PREFIX,
     visibility: 'private',
-    localImage: 'ghcr.io/yhsunshining/cloudbase-workspace:latest',
+    localImage: 'ghcr.io/yhsunshining/cloudbase-workspace:isolate',
     repoName: 'sandbox',
     tag: 'latest',
     // Password from env var (passed by init.mjs to avoid exposing in process list)

@@ -278,8 +278,11 @@ export async function loadSkills(originalFn: OriginalLoadSkills): Promise<SkillD
 
   // 0. 容器预装 skills（CODEBUDDY_BUNDLED_SKILLS_DIR 或 /app/skills）
   const bundledDir = process.env.CODEBUDDY_BUNDLED_SKILLS_DIR || '/app/skills'
+  console.error('[SkillLoaderOverride]', bundledDir)
   if (existsSync(bundledDir)) {
+    console.error('[SkillLoaderOverride] before', bundledDir)
     const bundledSkills = scanLocalSkillsDirectory(bundledDir, 'project')
+    console.error('[SkillLoaderOverride] after', bundledSkills)
     if (bundledSkills.length > 0) {
       skills.push(...bundledSkills)
       console.error(`[SkillLoaderOverride] Loaded ${bundledSkills.length} bundled skill(s) from ${bundledDir}`)
@@ -288,8 +291,10 @@ export async function loadSkills(originalFn: OriginalLoadSkills): Promise<SkillD
 
   // 1. 项目根 skills/（领域 skill）
   const rootSkillsDir = getProjectRootSkillsDir()
+  console.error('[SKILL OVERRIDE LOAD]', rootSkillsDir)
   if (existsSync(rootSkillsDir)) {
     const rootSkills = scanLocalSkillsDirectory(rootSkillsDir, 'project')
+    console.error('[SKILL OVERRIDE LOAD] rootSkills', rootSkills)
     skills.push(...rootSkills)
   }
 

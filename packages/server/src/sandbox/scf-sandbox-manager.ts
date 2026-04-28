@@ -447,7 +447,7 @@ export class ScfSandboxManager {
         Param: {
           ServiceId: envConfig.envId,
           Name: functionName,
-          Path: `/${functionName}/preview`,
+          Path: `/preview`,
           Type: 6,
           EnableUnion: true,
           AuthSwitch: 2,
