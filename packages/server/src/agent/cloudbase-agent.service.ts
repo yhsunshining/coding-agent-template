@@ -119,8 +119,12 @@ async function initSandboxWorkspace(
   conversationId: string,
   preferredCwd?: string,
 ): Promise<string | undefined> {
-  try {
-    const res = await sandbox.request('/api/session/init', {
+  const workspace = preferredCwd || `/tmp/workspace/${secret.envId}/${conversationId}`
+
+  // Fire session/init（不等响应，沙箱内部可能需要很久做 git restore + npm install）
+  // 沙箱网关有自己的超时限制，等待会导致 AbortError
+  sandbox
+    .request('/api/session/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -131,35 +135,49 @@ async function initSandboxWorkspace(
           ...(secret.token ? { TENCENTCLOUD_SESSIONTOKEN: secret.token } : {}),
         },
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(300_000),
+    })
+    .then((res) => {
+      if (res.ok) {
+        console.log('[Agent] session/init completed successfully')
+      } else {
+        console.warn('[Agent] session/init returned status:', res.status)
+      }
+    })
+    .catch((e) => {
+      console.warn('[Agent] session/init background error:', (e as Error).message)
     })
 
-    if (res.ok) {
-      const workspace = preferredCwd || `/tmp/workspace/${secret.envId}/${conversationId}`
-      console.log(`[Agent] initSandboxWorkspace success, workspace: ${workspace}, preferredCwd: ${preferredCwd}`)
+  // 轮询等待 workspace 就绪（session/init 在后台创建目录 + seed 模板）
+  const maxWaitMs = 120_000
+  const pollInterval = 2000
+  const startTime = Date.now()
 
-      // 创建会话工作目录
-      const mkdirRes = await sandbox.request('/api/tools/bash', {
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const checkRes = await sandbox.request('/api/tools/bash', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          command: `mkdir -p "${workspace}"`,
+          command: `test -f "${workspace}/package.json" && echo "ready" || echo "waiting"`,
           timeout: 5000,
         }),
         signal: AbortSignal.timeout(10_000),
       })
-
-      if (mkdirRes.ok) {
-        console.log('[Agent] Workspace directory created:', workspace)
+      const data = (await checkRes.json()) as { result?: { output?: string } }
+      if (data.result?.output?.trim() === 'ready') {
+        console.log(`[Agent] initSandboxWorkspace ready, workspace: ${workspace}, preferredCwd: ${preferredCwd}`)
+        return workspace
       }
-
-      return workspace
+    } catch {
+      // bash 调用失败，沙箱可能还在启动
     }
-    console.error('[Agent] initSandboxWorkspace failed, status:', res.status)
-  } catch (e) {
-    console.error('[Agent] initSandboxWorkspace error:', (e as Error).message)
+    await new Promise((r) => setTimeout(r, pollInterval))
   }
-  return undefined
+
+  // 超时兜底：目录可能还没就绪，但返回路径让后续流程继续
+  console.warn(`[Agent] initSandboxWorkspace timeout after ${maxWaitMs / 1000}s, returning workspace anyway`)
+  return workspace
 }
 
 /**
