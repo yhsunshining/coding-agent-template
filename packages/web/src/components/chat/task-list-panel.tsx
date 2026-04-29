@@ -45,7 +45,9 @@ export function deriveTasks(messages: TaskMessage[]): DerivedTask[] {
         const input = parseInput(part.input)
 
         // Find matching tool_result to extract task ID
-        const resultPart: MessagePart | undefined = msg.parts?.find((p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId)
+        const resultPart: MessagePart | undefined = msg.parts?.find(
+          (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
+        )
         const resultText: string = typeof (resultPart as any)?.content === 'string' ? (resultPart as any).content : ''
 
         const match: RegExpMatchArray | null = resultText.match(/Task #(\d+)/)
