@@ -461,7 +461,7 @@ async function observeStream(
   return streamSSE(c, async (stream) => {
     let lastSeq = -1
     const POLL_INTERVAL = 500
-    const MAX_POLL_DURATION = 10 * 60 * 1000
+    const MAX_POLL_DURATION = 30 * 60 * 1000
 
     // 1. Replay existing events
     try {
@@ -669,7 +669,9 @@ async function observeStreamWithLiveCallback(
         })
       }
 
-      await stream.writeSSE({ data: JSON.stringify(rpcOk(rpcId, { stopReason })) })
+      await stream.writeSSE({
+        data: JSON.stringify(rpcOk(rpcId, { stopReason, meta: { key: 'observeStreamWithLiveCallback', rpcId } })),
+      })
     }
     await stream.writeSSE({ data: '[DONE]' })
 

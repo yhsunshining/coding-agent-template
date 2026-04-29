@@ -1430,7 +1430,7 @@ export class CloudbaseAgentService {
           stderr: (data: string) => {
             console.error('[Agent CLI stderr]', data.trim())
           },
-          // settingSources: ['user', 'project', 'local'],
+          settingSources: ['project'],
           // P2: 移除 EnterPlanMode 的禁用——Plan 模式现改由显式 permissionMode='plan' + ExitPlanMode 工具驱动
           disallowedTools: ['AskUserQuestion'],
         },
