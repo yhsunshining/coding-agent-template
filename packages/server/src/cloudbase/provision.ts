@@ -283,12 +283,19 @@ export async function provisionUserResources(userId: string, username: string): 
   })
   envId = createEnvResp.EnvId
 
-  // 步骤3.5：添加安全域名（localhost 用于本地开发）
+  // 步骤3.5：添加安全域名
+  // - localhost:5173 用于本地开发
+  // - 主环境 .service.tcloudbase.com 域名，让用户环境的前端能通过主环境网关访问
   try {
-    console.log('[provision] Adding security domain localhost:5173')
+    const mainEnvId = process.env.TCB_ENV_ID
+    const domains = ['localhost:5173']
+    if (mainEnvId) {
+      domains.push(`${mainEnvId}.service.tcloudbase.com`)
+    }
+    console.log('[provision] Adding security domains:', domains.join(', '))
     await (tcbClient as any).CreateAuthDomain({
       EnvId: envId,
-      Domains: ['localhost:5173'],
+      Domains: domains,
     })
   } catch (e) {
     // 非关键：安全域名添加失败不阻塞环境创建

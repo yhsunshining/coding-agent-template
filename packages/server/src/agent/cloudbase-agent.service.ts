@@ -649,6 +649,13 @@ export class CloudbaseAgentService {
     )
     mkdirSync(actualCwd, { recursive: true })
 
+    // Coding 模式：自动放行所有写工具（agent 需要自由操作数据库和部署）
+    if (isCodingMode && conversationId) {
+      for (const tool of WRITE_TOOLS) {
+        sessionPermissions.allowAlways(conversationId, tool)
+      }
+    }
+
     // ── 创建 EventBuffer 用于持久化 ACP 事件 ─────────────────────────
     const eventBuffer = new EventBuffer(conversationId, assistantMessageId, userContext.envId, userContext.userId)
 
@@ -1639,7 +1646,7 @@ export class CloudbaseAgentService {
         }
       }
 
-      // Update task status in SQLite
+      // Update task status in DB
       // 被取消的 turn: handleSessionCancel 已写 status='stopped'，不再覆写回 'completed'
       if (!wasCancelled) {
         try {
@@ -1651,6 +1658,20 @@ export class CloudbaseAgentService {
         } catch {
           // Non-critical
         }
+      }
+
+      // 兜底: 如果 finalizePendingRecords 在上面因网络问题失败,延迟重试一次
+      // 防止 record 状态卡在 pending 导致后续对话被 "already in progress" 拦截
+      if (syncError) {
+        setTimeout(async () => {
+          try {
+            await persistenceService.finalizePendingRecords(assistantMessageId, 'error')
+            console.log('[Agent] Deferred finalize succeeded for', conversationId)
+          } catch {
+            // 彻底放弃——需要人工修复
+            console.error('[Agent] Deferred finalize also failed for', conversationId)
+          }
+        }, 5000)
       }
 
       // Update agent registry
