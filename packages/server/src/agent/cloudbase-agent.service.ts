@@ -366,49 +366,33 @@ function buildAppendPrompt(
 默认使用中文与用户沟通。
 </role>
 
-<cloudbase>
+<guideline name="cloudbase">
 - 你正在操作云开发环境 ${envId || '(未指定)'}，可通过 cloudbase MCP 工具管理云函数、数据库、存储、静态托管等资源。
-- 开发前端应用时，可以使用 @cloudbase/js-sdk 直接操作数据库（推荐 BaaS 模式，无需后端中转），也可以编写云函数作为后端接口，客户端通过 SDK 调用云函数。
-- 注意应用的完整性：确保前端 UI、数据持久化、接口调用、错误处理都完整实现，不要只写半成品。
-- 部署前端到静态托管时使用 cloudbase_uploadFiles 工具；部署云函数使用 manageFunctions 工具。
-</cloudbase>
+- 部署云函数使用 manageFunctions 工具；上传文件到静态托管使用 cloudbase_uploadFiles 工具。
+</guideline>
 
-<bash-timeout>
+<guideline name="bash-timeout">
 对于耗时较长的命令（如 npm install、yarn install、大型项目构建等），如果执行超时：
 1. 改为后台执行, 添加 run_in_background，可以获取 pid
 2. 定期检查进程状态：ps aux | grep '<关键词>' | grep -v grep
 3. 通过 BashOutput 结合 pid 查看输出结果
 4. 也可以通过 KillShell 关闭后台执行的任务
-</bash-timeout>
+</guideline>
 
-${
-  false
-    ? `<miniprogram>
-当用户的需求涉及微信小程序开发（创建、修改、部署小程序项目）时：
-1. 必须先使用 AskUserQuestion 工具获取用户的微信小程序 appId
-   - options 的第一个选项的 label 必须固定为 "ask:miniprogram_appid"（系统据此识别问题类别并替换为预置内容）
-   - 其余字段可任意填写，系统会自动替换为标准问题
-   - 示例: AskUserQuestion({ questions: [{ question: "选择小程序", header: "AppId", options: [{ label: "ask:miniprogram_appid", description: "选择小程序" }, { label: "跳过", description: "跳过" }], multiSelect: false }] })
-2. 获取到 appId 后，在生成 project.config.json 时使用该 appId
-3. 在调用 publishMiniprogram 部署前，确保已获取到有效的 appId
-</miniprogram>`
-    : ''
-}
-
-<cron-task>
+<guideline name="cron-task">
 当用户提到定时执行、定期运行、每天/每周/每小时执行某操作等需求时，必须使用 cronTask 工具来管理定时任务。
 - 创建：action="create"，需要 name、prompt、cronExpression
 - 查询：action="list"，查看当前所有定时任务
 - 更新：action="update"，通过 id 修改已有任务（可改 prompt、cronExpression、enabled 等）
 - 删除：action="delete"，通过 id 删除任务
 Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20:00。
-</cron-task>`
+</guideline>`
 
   if (sandboxCwd) {
     const homeDir = sandboxMode === 'isolated' ? sandboxCwd : sandboxCwd.substring(0, sandboxCwd.lastIndexOf('/'))
     return `${base}
 
-<sandbox>
+<guideline name="sandbox">
 工具默认在 Home: ${homeDir} 下执行
 为项目开辟工作目录为: ${sandboxCwd}
 使用的云开发环境为: ${envId}
@@ -417,7 +401,7 @@ Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20
 - 使用 cloudbase_uploadFiles 部署文件时，localPath 必须是容器内的**绝对路径**（即当前工作目录 ${sandboxCwd} 下的路径），例如 ${sandboxCwd}/index.html
 - 如用户没有特别要求，cloudPath 需要为 ${conversationId}，即在当前会话路径下
 - 不要使用相对路径给 cloudbase_uploadFiles
-</sandbox>`
+</guideline>`
   }
   return base
 }

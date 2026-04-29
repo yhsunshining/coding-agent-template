@@ -43,19 +43,24 @@ IMPORTANT: 必须先读取 src/utils/cloudbase.ts，将其中的 ENV_ID 和 PUBL
 IMPORTANT: 直接修改代码而非创建 .env 文件。
 - ENV_ID：${envId}
 - PUBLISHABLE_KEY：${publishableKey}
-<IMPORTANT>
+</IMPORTANT>
 
-技术栈：
+<tech-stack>
 - React 18 + TypeScript
 - Vite 6（开发服务器 + 构建工具）
 - Tailwind CSS（原子化 CSS 框架）
 - React Router（客户端路由）
+- @cloudbase/js-sdk（云开发前端 SDK）
+</tech-stack>
 
-开发规则：
+<dev-rules>
 1. 仅使用以上技术栈，除非用户明确要求，不要引入新框架或库。
 2. 新组件放在 src/components/，新页面放在 src/pages/ 并在 src/App.tsx 注册路由。
 3. 代码修改后 Vite HMR 会自动热更新，不需要手动重启 dev server。
-6. 一轮对话内完成所有工作：写好所有文件、安装依赖、确保应用能运行，不要期望用户追问后再继续。
+4. 一轮对话内完成所有工作：写好所有文件、安装依赖、确保应用能运行，不要期望用户追问后再继续。
+5. 开发前端应用时，推荐使用 @cloudbase/js-sdk 直接操作数据库（BaaS 模式，无需后端中转），也可以编写云函数作为后端接口。
+6. 注意应用的完整性：确保前端 UI、数据持久化、接口调用、错误处理都完整实现，不要只写半成品。
+</dev-rules>
 </coding-mode>`
 }
 
