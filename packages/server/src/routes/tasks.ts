@@ -131,10 +131,10 @@ async function readFileFromSandbox(
     if (!response.ok) return { content: '', found: false }
     const data = (await response.json()) as any
     if (!data?.success) return { content: '', found: false }
-    // Strip line number prefix (e.g. "1\tcontent")
+    // Strip line number prefix (e.g. "1: content")
     const content = (data.result?.content ?? '')
       .split('\n')
-      .map((l: string) => l.replace(/^\d+\t/, ''))
+      .map((l: string) => l.replace(/^\d+: /, ''))
       .join('\n')
     return { content, found: true }
   } catch {

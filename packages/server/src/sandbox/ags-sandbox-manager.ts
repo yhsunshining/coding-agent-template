@@ -37,9 +37,15 @@ export class SandboxInstance {
   private readonly tcbApiKey: string
 
   // Compat aliases for code that references old SCF SandboxInstance fields
-  get functionName(): string { return this.sandboxId }
-  get envId(): string { return this.conversationId }
-  get sandboxEnvId(): string { return process.env.TCB_ENV_ID || '' }
+  get functionName(): string {
+    return this.sandboxId
+  }
+  get envId(): string {
+    return this.conversationId
+  }
+  get sandboxEnvId(): string {
+    return process.env.TCB_ENV_ID || ''
+  }
 
   readonly mcpConfig?: {
     type: 'sse' | 'http'
@@ -126,14 +132,9 @@ export class AgsSandboxManager {
   }
 
   private buildBaseUrl(sandboxId: string): string {
-    // TRW port 9000 exposed via TCB gateway sandbox URL
-    const apiUrl = process.env.E2B_API_URL || ''
-    if (apiUrl) {
-      // E2B_API_URL is the control plane; sandbox data plane uses sandboxUrl
-      // For TRW HTTP API, we route through the same gateway
-      return apiUrl
-    }
-    return `https://${sandboxId}.api.tcloudbasegateway.com`
+    // TRW port 9000 exposed via AGS port routing: https://9000-{instanceId}.{region}.tencentags.com
+    const region = process.env.AGS_REGION || 'ap-shanghai'
+    return `https://9000-${sandboxId}.${region}.tencentags.com`
   }
 
   private buildMcpConfig(baseUrl: string): SandboxInstance['mcpConfig'] {
