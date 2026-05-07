@@ -220,11 +220,20 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
     const tmpPath = `.mcporter-schema.json`
     await bashCall(`mcporter list cloudbase --schema --output json > ${tmpPath} 2>&1`, 20_000)
     const headers = await buildHeaders()
-    const res = await fetch(`${baseUrl}/e2b-compatible/files?path=${encodeURIComponent(tmpPath)}`, {
-      headers,
+    const res = await fetch(`${baseUrl}/api/tools/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ path: tmpPath }),
     })
     if (!res.ok) throw new Error(`Failed to read schema file: ${res.status}`)
-    const parsed = (await res.json()) as any
+    const data = (await res.json()) as any
+    if (!data?.success) throw new Error(`Failed to read schema file: ${data?.error}`)
+    // /api/tools/read returns content with line numbers "1\tline1\n2\tline2"
+    const rawJson = (data.result?.content ?? '')
+      .split('\n')
+      .map((l: string) => l.replace(/^\d+\t/, ''))
+      .join('\n')
+    const parsed = JSON.parse(rawJson)
     if (!Array.isArray(parsed.tools)) throw new Error('No tools array in schema response')
     return parsed.tools
   }

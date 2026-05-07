@@ -403,28 +403,27 @@ async function drainPtyOutput(baseUrl: string, headers: Record<string, string>, 
 }
 
 /**
- * 调用 Process/List 获取沙箱中所有存活进程。
+ * List running processes in the sandbox via /api/tools/bash + ps.
  */
 async function listSandboxProcesses(
   baseUrl: string,
   headers: Record<string, string>,
 ): Promise<Array<{ pid: number; cmd: string; args: string[] }>> {
   try {
-    const res = await fetch(`${baseUrl}/e2b-compatible/process.Process/List`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: '{}',
+    const resp = await callToolApiRaw(baseUrl, 'bash', headers, {
+      command: 'ps -eo pid,args --no-headers',
     })
-    if (!res.ok) return []
-
-    const data = (await res.json()) as any
-    return (data?.processes ?? [])
-      .filter((p: any) => p.pid)
-      .map((p: any) => ({
-        pid: p.pid,
-        cmd: p.config?.cmd ?? '',
-        args: p.config?.args ?? [],
-      }))
+    if (!resp.success) return []
+    const lines = (resp.result?.output ?? '').trim().split('\n')
+    return lines
+      .map((line: string) => {
+        const match = line.trim().match(/^(\d+)\s+(.+)$/)
+        if (!match) return null
+        const [, pidStr, cmdLine] = match
+        const parts = cmdLine.split(/\s+/)
+        return { pid: Number(pidStr), cmd: parts[0], args: parts.slice(1) }
+      })
+      .filter(Boolean) as Array<{ pid: number; cmd: string; args: string[] }>
   } catch {
     return []
   }

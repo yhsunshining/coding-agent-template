@@ -121,10 +121,19 @@ async function readFileFromSandbox(
   filePath: string,
 ): Promise<{ content: string; found: boolean }> {
   try {
-    // Use e2b-compatible file read endpoint — returns raw content without line numbers
-    const response = await sandbox.request(`/e2b-compatible/files?path=${encodeURIComponent(filePath)}`)
+    const response = await sandbox.request('/api/tools/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath }),
+    })
     if (!response.ok) return { content: '', found: false }
-    const content = await response.text()
+    const data = (await response.json()) as any
+    if (!data?.success) return { content: '', found: false }
+    // Strip line number prefix (e.g. "1\tcontent")
+    const content = (data.result?.content ?? '')
+      .split('\n')
+      .map((l: string) => l.replace(/^\d+\t/, ''))
+      .join('\n')
     return { content, found: true }
   } catch {
     return { content: '', found: false }
@@ -133,16 +142,14 @@ async function readFileFromSandbox(
 
 async function writeFileToSandbox(sandbox: SandboxInstance, filePath: string, content: string): Promise<boolean> {
   try {
-    // Use e2b-compatible file upload: POST /e2b-compatible/files with FormData
-    const formData = new FormData()
-    const blob = new Blob([content], { type: 'application/octet-stream' })
-    formData.append('file', blob, filePath)
-
-    const response = await sandbox.request(`/e2b-compatible/files?path=${encodeURIComponent(filePath)}`, {
+    const response = await sandbox.request('/api/tools/write', {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, content }),
     })
-    return response.ok
+    if (!response.ok) return false
+    const data = (await response.json()) as any
+    return data?.success === true
   } catch {
     return false
   }
