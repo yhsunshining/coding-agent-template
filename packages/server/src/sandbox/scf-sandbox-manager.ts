@@ -447,7 +447,7 @@ export class ScfSandboxManager {
         Param: {
           ServiceId: envConfig.envId,
           Name: functionName,
-          Path: `/${functionName}/preview`,
+          Path: `/preview`,
           Type: 6,
           EnableUnion: true,
           AuthSwitch: 2,
@@ -467,6 +467,35 @@ export class ScfSandboxManager {
       }
       throw error
     }
+  }
+
+  /**
+   * 确保共享沙箱的预览网关 API 已注册。
+   * 可在 preview-url 接口中调用,保证网关路径可达。
+   * 结果缓存在内存中，避免每次都调用 CreateCloudBaseGWAPI。
+   */
+  private gatewayEnsured = false
+
+  async ensurePreviewGateway(): Promise<string> {
+    const envConfig = this.getEnvConfig()
+    const domain = `${envConfig.envId}.service.tcloudbase.com`
+    const previewBase = `https://${domain}/preview`
+
+    if (this.gatewayEnsured) return previewBase
+
+    const functionPrefix = envConfig.functionPrefix || this.config.functionPrefix
+    const functionName = this.generateFunctionName('shared', functionPrefix)
+    try {
+      await this.createGatewayApi(functionName)
+      console.log(`[ScfSandbox] ensurePreviewGateway: gateway OK (${functionName})`)
+    } catch (err: any) {
+      // "api created" / ResourceInUse = already exists, that's fine
+      if (!err.message?.includes('api created') && !err.message?.includes('ResourceInUse')) {
+        console.warn(`[ScfSandbox] ensurePreviewGateway: createGatewayApi error: ${err.message}`)
+      }
+    }
+    this.gatewayEnsured = true
+    return previewBase
   }
 
   private async checkFunctionExists(functionName: string): Promise<{ exists: boolean; currentImageUri?: string }> {

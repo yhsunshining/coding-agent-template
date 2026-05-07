@@ -1,5 +1,3 @@
-import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
-import type { Theme } from '@coder/dashboard/CloudDashboard'
 import type { Task, PermissionAction } from '@coder/shared'
 import type {
   TaskMessage,
@@ -19,10 +17,7 @@ import { InterruptionCard } from '@/components/chat/interruption-card'
 import { AgentStatusIndicator } from '@/components/chat/agent-status-indicator'
 import { extractPlanContent } from '@/components/chat/plan-content'
 import { mdComponents } from '@/components/chat/markdown-block'
-import { BrowserControls } from '@/components/chat/browser-controls'
-import { PreviewPlaceholder } from '@/components/chat/preview-placeholder'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useTheme } from 'next-themes'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -43,10 +38,12 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
-import { useAtom, useAtomValue } from 'jotai'
+import { useAtom } from 'jotai'
 import { taskChatInputAtomFamily } from '@/lib/atoms/task'
-import { sessionAtom } from '@/lib/atoms/session'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { TaskListPanel } from '@/components/chat/task-list-panel'
+
+const HIDDEN_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'])
 
 export function TaskChat({
   taskId,
@@ -56,10 +53,6 @@ export function TaskChat({
   readOnly = false,
   messagesApiBase = '',
 }: TaskChatProps) {
-  const { resolvedTheme } = useTheme()
-  const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
-  const session = useAtomValue(sessionAtom)
-
   // ─── Local UI state ───────────────────────────────────────────────
 
   const [isLoading, setIsLoading] = useState(true)
@@ -81,21 +74,6 @@ export function TaskChat({
   const [loadingDeployment, setLoadingDeployment] = useState(false)
   const [deploymentError, setDeploymentError] = useState<string | null>(null)
 
-  // Preview tab state
-  const [previewGatewayUrl, setPreviewGatewayUrl] = useState<string | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [previewKey, setPreviewKey] = useState(0)
-  /**
-   * P6+: 预览 iframe 真正加载完成(onLoad 触发)的标志。
-   * 用于:
-   *   - BrowserControls 的软刷新(iframe.src = iframe.src)需拿到 DOM 引用
-   *   - iframe 淡入动画:未 load 时显示骨架屏 + Loader2 遮罩,load 完 fade-in
-   * 当 previewKey 变化(硬刷新)时重置为 false。
-   */
-  const [iframeLoaded, setIframeLoaded] = useState(false)
-  const previewIframeRef = useRef<HTMLIFrameElement | null>(null)
-
   // Scroll refs
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -110,8 +88,6 @@ export function TaskChat({
   // Tab loading cache
   const commentsLoadedRef = useRef(false)
   const actionsLoadedRef = useRef(false)
-
-  const sessionEnvId = session?.envId || ''
 
   // ─── Scroll helpers (defined before useChatStream — needed by hook options) ──
 
@@ -167,6 +143,7 @@ export function TaskChat({
     confirmTool: chatConfirmTool,
     reconnectToStream,
     cancelSession,
+    cancelledRef,
   } = chat
 
   // useEffect(()=>{
@@ -249,10 +226,12 @@ export function TaskChat({
             }
           }
           // Auto-reconnect if the latest agent message is still pending (agent running in background)
+          // 但如果刚刚取消了，不要重连（后端状态可能还没完全更新）
           if (
             latestAgent &&
             (latestAgent.status === 'pending' || latestAgent.status === 'streaming') &&
-            canFetchMessages()
+            canFetchMessages() &&
+            !cancelledRef.current
           ) {
             reconnectToStream(latestAgent.id)
           }
@@ -352,37 +331,6 @@ export function TaskChat({
     }, 30000)
     return () => clearInterval(interval)
   }, [activeTab, fetchPRComments, fetchCheckRuns, fetchDeployments])
-
-  // Load preview URL when switching to preview tab
-  useEffect(() => {
-    if (activeTab !== 'preview' || task.mode !== 'coding') return
-    if (previewGatewayUrl) return
-    loadPreviewUrl()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, task.mode])
-
-  // P6+: 每次硬刷新(previewKey 递增)或 URL 切换时,重置加载遮罩,等新 iframe onLoad 再淡入
-  useEffect(() => {
-    setIframeLoaded(false)
-  }, [previewKey, previewGatewayUrl])
-
-  const loadPreviewUrl = async () => {
-    setPreviewLoading(true)
-    setPreviewError(null)
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/preview-url`)
-      const data = (await res.json()) as { gatewayUrl?: string; error?: string }
-      if (data.gatewayUrl) {
-        setPreviewGatewayUrl(data.gatewayUrl)
-      } else {
-        setPreviewError(data.error || 'Dev server not available')
-      }
-    } catch {
-      setPreviewError('Failed to load preview')
-    } finally {
-      setPreviewLoading(false)
-    }
-  }
 
   // Load tab data on switch
   useEffect(() => {
@@ -693,98 +641,9 @@ export function TaskChat({
   // P6+: `mdComponents` 已统一到 `@/components/chat/markdown-block`,
   //      在页面顶部 import;这里不再重复定义,避免不同位置样式漂移。
 
-  const isCodingMode = task.mode === 'coding'
-
   // ─── Tab content ───────────────────────────────────────────────────
 
   const renderTabContent = () => {
-    if (activeTab === 'preview' && isCodingMode) {
-      // P6+ 预览增强:
-      //   1) previewLoading 阶段 → PreviewPlaceholder 骨架屏(不再是一行 "正在启动预览...")
-      //   2) previewGatewayUrl 就绪后 → 顶部 BrowserControls(前进/后退/刷新/地址栏),
-      //      下方 iframe 带 fade-in 过渡 + iframe 未 onLoad 时叠加 Loader 遮罩
-      if (previewLoading) {
-        return (
-          <div className="flex-1 overflow-hidden -mx-3 -mt-3 relative">
-            <PreviewPlaceholder />
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground bg-background/80 backdrop-blur rounded-md px-4 py-3 shadow text-center">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  正在启动预览...
-                </div>
-                <p className="text-xs text-muted-foreground/70 max-w-[200px]">首次启动需初始化环境,通常约 30-60 秒</p>
-              </div>
-            </div>
-          </div>
-        )
-      }
-      if (previewError) {
-        return (
-          <div className="flex-1 overflow-hidden -mx-3 -mt-3 flex flex-col items-center justify-center gap-2">
-            <p className="text-sm text-destructive">{previewError}</p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setPreviewGatewayUrl(null)
-                loadPreviewUrl()
-              }}
-            >
-              重试
-            </Button>
-          </div>
-        )
-      }
-      if (previewGatewayUrl) {
-        return (
-          <div className="flex-1 overflow-hidden -mx-3 -mt-3 flex flex-col">
-            {/* 浏览器工具栏 */}
-            <div className="flex h-8 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
-              <BrowserControls
-                previewUrl={previewGatewayUrl}
-                iframeRef={previewIframeRef}
-                onHardRefresh={() => setPreviewKey((k) => k + 1)}
-                className="flex-1 min-w-0"
-              />
-            </div>
-            {/* iframe 区 */}
-            <div className="relative flex-1 min-h-0 bg-muted/5">
-              {/* 未 load 完遮罩:骨架屏 + 中央加载器 */}
-              {!iframeLoaded && (
-                <div className="absolute inset-0 z-10">
-                  <PreviewPlaceholder />
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/60" />
-                  </div>
-                </div>
-              )}
-              <iframe
-                key={previewKey}
-                ref={previewIframeRef}
-                src={previewGatewayUrl}
-                className={`w-full h-full border-0 transition-opacity duration-300 ${
-                  iframeLoaded ? 'opacity-100' : 'opacity-0'
-                }`}
-                title="Project Preview"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                onLoad={() => setIframeLoaded(true)}
-              />
-            </div>
-          </div>
-        )
-      }
-      return <div className="flex-1 overflow-hidden -mx-3 -mt-3" />
-    }
-
-    if (activeTab === 'cloud') {
-      return (
-        <div className="flex-1 overflow-hidden -mx-3 -mt-3">
-          <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
-        </div>
-      )
-    }
-
     if (activeTab === 'deployments') {
       const handleDeleteDeployment = async (deploymentId: string) => {
         try {
@@ -1035,372 +894,397 @@ export function TaskChat({
     })
 
     return (
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden pb-4">
-        {hiddenMessagesCount > 0 && (
-          <div className="text-xs text-center text-muted-foreground opacity-50 mb-4 italic">
-            {hiddenMessagesCount} older message{hiddenMessagesCount !== 1 ? 's' : ''} hidden
-          </div>
-        )}
-        {messageGroups.map((group, groupIndex, groups) => {
-          const isLatestGroup = groupIndex === groups.length - 1
-          return (
-            <div
-              key={group.userMessage.id}
-              className="flex flex-col"
-              style={group.minHeight > 0 ? { minHeight: `${group.minHeight}px` } : undefined}
-            >
+      <>
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden pb-4 min-h-0">
+          {hiddenMessagesCount > 0 && (
+            <div className="text-xs text-center text-muted-foreground opacity-50 mb-4 italic">
+              {hiddenMessagesCount} older message{hiddenMessagesCount !== 1 ? 's' : ''} hidden
+            </div>
+          )}
+          {messageGroups.map((group, groupIndex, groups) => {
+            const isLatestGroup = groupIndex === groups.length - 1
+            return (
               <div
-                ref={(el) => {
-                  messageRefs.current[group.userMessage.id] = el
-                }}
-                className={`${groupIndex > 0 ? 'mt-4' : ''} sticky top-0 z-10 before:content-[""] before:absolute before:inset-0 before:bg-background before:-z-10`}
+                key={group.userMessage.id}
+                className="flex flex-col"
+                style={group.minHeight > 0 ? { minHeight: `${group.minHeight}px` } : undefined}
               >
-                <Card className="px-2 py-2 bg-card rounded-md relative z-10 gap-0.5">
-                  <div
-                    ref={(el) => {
-                      contentRefs.current[group.userMessage.id] = el
-                    }}
-                    className="relative max-h-[72px] overflow-hidden"
-                  >
-                    <div className="text-xs">
-                      <Streamdown components={mdComponents}>{group.userMessage.content}</Streamdown>
-                    </div>
-                    {overflowingMessages.has(group.userMessage.id) && (
-                      <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-                    )}
-                  </div>
-                  <div className="flex items-center gap-0.5 justify-end">
-                    {!readOnly && (
-                      <button
-                        onClick={() => handleRetryMessage(group.userMessage.content)}
-                        disabled={isSending}
-                        className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center disabled:opacity-20"
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleCopyMessage(group.userMessage.id, group.userMessage.content)}
-                      className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
+                <div
+                  ref={(el) => {
+                    messageRefs.current[group.userMessage.id] = el
+                  }}
+                  className={`${groupIndex > 0 ? 'mt-4' : ''} sticky top-0 z-10 before:content-[""] before:absolute before:inset-0 before:bg-background before:-z-10`}
+                >
+                  <Card className="px-2 py-2 bg-card rounded-md relative z-10 gap-0.5">
+                    <div
+                      ref={(el) => {
+                        contentRefs.current[group.userMessage.id] = el
+                      }}
+                      className="relative max-h-[72px] overflow-hidden"
                     >
-                      {copiedMessageId === group.userMessage.id ? (
-                        <Check className="h-3 w-3" />
-                      ) : (
-                        <Copy className="h-3 w-3" />
+                      <div className="text-xs">
+                        <Streamdown components={mdComponents}>{group.userMessage.content}</Streamdown>
+                      </div>
+                      {overflowingMessages.has(group.userMessage.id) && (
+                        <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-card to-transparent pointer-events-none" />
                       )}
-                    </button>
-                  </div>
-                </Card>
-              </div>
-
-              {group.agentMessages.map((agentMessage, messageIndex, messges) => {
-                const isLatestMessage = messageIndex === messges.length - 1
-                const toolCallPartsReverse = agentMessage.parts?.filter((item) => item.type === 'tool_call')?.reverse()
-                return (
-                  <div key={agentMessage.id} className="mt-4">
-                    <div className="space-y-1">
-                      <div className="text-xs text-muted-foreground px-2">
-                        {!agentMessage.content.trim() &&
-                        !agentMessage.parts?.some(
-                          (p) => p.type === 'tool_call' || p.type === 'thinking' || (p.type === 'text' && p.text),
-                        ) &&
-                        (task.status === 'processing' || task.status === 'pending') ? (
-                          <div className="opacity-50">
-                            <div className="italic">Generating response...</div>
-                            <div className="text-right font-mono opacity-70 mt-1">
-                              {formatDuration(group.userMessage.createdAt)}
-                            </div>
-                          </div>
+                    </div>
+                    <div className="flex items-center gap-0.5 justify-end">
+                      {!readOnly && (
+                        <button
+                          onClick={() => handleRetryMessage(group.userMessage.content)}
+                          disabled={isSending}
+                          className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center disabled:opacity-20"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleCopyMessage(group.userMessage.id, group.userMessage.content)}
+                        className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
+                      >
+                        {copiedMessageId === group.userMessage.id ? (
+                          <Check className="h-3 w-3" />
                         ) : (
-                          <div className="space-y-2">
-                            {agentMessage.parts?.map((part, pi, parts) => {
-                              // P7-1: 子部件（有 parentToolCallId）由 SubagentCard 内部渲染 —— 主 timeline 跳过
-                              // 但必须先确认 parent 确实存在于同一 agentMessage，防止乱序导致信息丢失
-                              if ((part.type === 'tool_call' || part.type === 'tool_result') && part.parentToolCallId) {
-                                const parentExists = agentMessage.parts?.some(
-                                  (p) => p.type === 'tool_call' && p.toolCallId === part.parentToolCallId,
-                                )
-                                if (parentExists) return null
-                                // parent 尚未到达 → 兜底正常渲染（避免信息丢失）
-                              }
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </button>
+                    </div>
+                  </Card>
+                </div>
 
-                              // P7-2: Task 工具渲染为紫色 SubagentCard（嵌套子工具）
-                              if (part.type === 'tool_call' && part.toolName === 'Task') {
-                                const childParts =
-                                  agentMessage.parts?.filter(
-                                    (p) =>
-                                      (p.type === 'tool_call' || p.type === 'tool_result') &&
-                                      p.parentToolCallId === part.toolCallId,
-                                  ) ?? []
-                                const taskResult = agentMessage.parts?.find(
-                                  (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
-                                )
-                                return (
-                                  <SubagentCard
-                                    key={`subagent-${pi}`}
-                                    taskToolCall={part}
-                                    taskToolResult={taskResult?.type === 'tool_result' ? taskResult : undefined}
-                                    childParts={childParts}
-                                    isStreaming={isStreamingResponse}
-                                    allParts={agentMessage.parts}
-                                  />
-                                )
-                              }
+                {group.agentMessages.map((agentMessage, messageIndex, messges) => {
+                  const isLatestMessage = messageIndex === messges.length - 1
+                  const toolCallPartsReverse = agentMessage.parts
+                    ?.filter((item) => item.type === 'tool_call')
+                    ?.reverse()
+                  return (
+                    <div key={agentMessage.id} className="mt-4">
+                      <div className="space-y-1">
+                        <div className="text-xs text-muted-foreground px-2">
+                          {!agentMessage.content.trim() &&
+                          !agentMessage.parts?.some(
+                            (p) => p.type === 'tool_call' || p.type === 'thinking' || (p.type === 'text' && p.text),
+                          ) &&
+                          (task.status === 'processing' || task.status === 'pending') ? (
+                            <div className="opacity-50">
+                              <div className="italic">Generating response...</div>
+                              <div className="text-right font-mono opacity-70 mt-1">
+                                {formatDuration(group.userMessage.createdAt)}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {agentMessage.parts?.map((part, pi, parts) => {
+                                // P7-1: 子部件（有 parentToolCallId）由 SubagentCard 内部渲染 —— 主 timeline 跳过
+                                // 但必须先确认 parent 确实存在于同一 agentMessage，防止乱序导致信息丢失
+                                if (
+                                  (part.type === 'tool_call' || part.type === 'tool_result') &&
+                                  part.parentToolCallId
+                                ) {
+                                  const parentExists = agentMessage.parts?.some(
+                                    (p) => p.type === 'tool_call' && p.toolCallId === part.parentToolCallId,
+                                  )
+                                  if (parentExists) return null
+                                  // parent 尚未到达 → 兜底正常渲染（避免信息丢失）
+                                }
 
-                              if (part.type === 'thinking' && part.text) {
-                                const hasMoreThinking = agentMessage.parts
-                                  ?.slice(pi + 1)
-                                  .some((p) => p.type === 'thinking')
-                                const isThinking =
-                                  isStreamingResponse &&
-                                  (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
-                                return <ThinkingBlock key={`thinking-${pi}`} text={part.text} isThinking={isThinking} />
-                              }
-                              if (part.type === 'tool_call') {
-                                let isLatestToolCallPart = toolCallPartsReverse?.[0]?.toolCallId === part.toolCallId
-                                const resultPart = agentMessage.parts?.find(
-                                  (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
-                                )
-                                const resultStatus = resultPart?.type === 'tool_result' ? resultPart.status : undefined
-                                // 'executing' 是前端 optimistic 插入的过渡态:用户已允许,
-                                // 但真实执行结果还没到,保持 Loader2 继续转,直到真实 result 回来。
-                                const isPending =
-                                  !resultPart || resultStatus === 'incomplete' || resultStatus === 'executing'
-                                const isAskUserQuestion = part.toolName === 'AskUserQuestion'
-                                let askQuestions = []
+                                // Hide task management tool calls — shown in TaskListPanel instead
+                                if (part.type === 'tool_call' && HIDDEN_TOOLS.has(part.toolName)) return null
+                                if (part.type === 'tool_result') {
+                                  const matchingCall = agentMessage.parts?.find(
+                                    (p) => p.type === 'tool_call' && p.toolCallId === part.toolCallId,
+                                  )
+                                  const toolName =
+                                    part.toolName ||
+                                    (matchingCall?.type === 'tool_call' ? matchingCall.toolName : undefined)
+                                  if (toolName && HIDDEN_TOOLS.has(toolName)) return null
+                                }
 
-                                try {
-                                  const args =
-                                    typeof part.input === 'string' ? JSON.parse(part.input as any) : part.input
-                                  askQuestions = args.questions || []
-                                } catch (e) {}
-
-                                const resolvedAskData: AskUserQuestionData | undefined =
-                                  isAskUserQuestion &&
-                                  isPending &&
-                                  Array.isArray(askQuestions) &&
-                                  askQuestions.length > 0 &&
-                                  !!part.toolCallId
-                                    ? {
-                                        toolCallId: part.toolCallId || '',
-                                        assistantMessageId: (part as any).assistantMessageId || agentMessage.id,
-                                        questions: askQuestions,
-                                      }
-                                    : undefined
-
-                                return (
-                                  <div key={`tool-${pi}`} className="space-y-2">
-                                    <ToolCallCard
-                                      toolName={part.toolName || 'tool'}
-                                      toolCallId={part.toolCallId}
-                                      input={part.input}
-                                      result={resultPart?.type === 'tool_result' ? resultPart.content : undefined}
-                                      isError={resultPart?.type === 'tool_result' ? resultPart.isError : false}
-                                      isPending={isPending}
+                                // P7-2: Task 工具渲染为紫色 SubagentCard（嵌套子工具）
+                                if (part.type === 'tool_call' && part.toolName === 'Task') {
+                                  const childParts =
+                                    agentMessage.parts?.filter(
+                                      (p) =>
+                                        (p.type === 'tool_call' || p.type === 'tool_result') &&
+                                        p.parentToolCallId === part.toolCallId,
+                                    ) ?? []
+                                  const taskResult = agentMessage.parts?.find(
+                                    (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
+                                  )
+                                  return (
+                                    <SubagentCard
+                                      key={`subagent-${pi}`}
+                                      taskToolCall={part}
+                                      taskToolResult={taskResult?.type === 'tool_result' ? taskResult : undefined}
+                                      childParts={childParts}
+                                      isStreaming={isStreamingResponse}
+                                      allParts={agentMessage.parts}
                                     />
-                                    {resolvedAskData &&
-                                      !readOnly &&
-                                      isLatestGroup &&
-                                      isLatestMessage &&
-                                      isLatestToolCallPart && (
-                                        <AskUserForm
-                                          askData={resolvedAskData}
-                                          agentMessageId={resolvedAskData.assistantMessageId}
-                                          toolCallId={part.toolCallId || ''}
-                                          questionAnswers={questionAnswersByTool[part.toolCallId || ''] || {}}
-                                          manualInputs={manualInputsByTool[part.toolCallId || ''] || {}}
-                                          isSending={isSending}
-                                          onAnswerSelect={handleAnswerSelect}
-                                          onManualInput={handleManualInput}
-                                          onSubmit={handleAnswerQuestion}
-                                        />
-                                      )}
-                                    {isAskUserQuestion &&
-                                      resultPart?.type === 'tool_result' &&
-                                      resultPart.status !== 'incomplete' && (
-                                        <Card className="p-2 border-border/40 bg-muted/20">
-                                          <div className="text-xs text-muted-foreground mb-1">问答结果</div>
-                                          <pre className="text-[11px] whitespace-pre-wrap break-all">
-                                            {String(resultPart.content || '')}
-                                          </pre>
-                                        </Card>
-                                      )}
-                                  </div>
-                                )
-                              }
-                              if (part.type === 'text' && part.text) {
-                                return (
-                                  <Streamdown key={`text-${pi}`} components={mdComponents}>
-                                    {part.text}
-                                  </Streamdown>
-                                )
-                              }
-                              return null
-                            })}
-                            {/*
+                                  )
+                                }
+
+                                if (part.type === 'thinking' && part.text) {
+                                  const hasMoreThinking = agentMessage.parts
+                                    ?.slice(pi + 1)
+                                    .some((p) => p.type === 'thinking')
+                                  const isThinking =
+                                    isStreamingResponse &&
+                                    (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
+                                  return (
+                                    <ThinkingBlock key={`thinking-${pi}`} text={part.text} isThinking={isThinking} />
+                                  )
+                                }
+                                if (part.type === 'tool_call') {
+                                  let isLatestToolCallPart = toolCallPartsReverse?.[0]?.toolCallId === part.toolCallId
+                                  const resultPart = agentMessage.parts?.find(
+                                    (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
+                                  )
+                                  const resultStatus =
+                                    resultPart?.type === 'tool_result' ? resultPart.status : undefined
+                                  // 'executing' 是前端 optimistic 插入的过渡态:用户已允许,
+                                  // 但真实执行结果还没到,保持 Loader2 继续转,直到真实 result 回来。
+                                  const isPending =
+                                    !resultPart || resultStatus === 'incomplete' || resultStatus === 'executing'
+                                  const isAskUserQuestion = part.toolName === 'AskUserQuestion'
+                                  let askQuestions = []
+
+                                  try {
+                                    const args =
+                                      typeof part.input === 'string' ? JSON.parse(part.input as any) : part.input
+                                    askQuestions = args.questions || []
+                                  } catch (e) {}
+
+                                  const resolvedAskData: AskUserQuestionData | undefined =
+                                    isAskUserQuestion &&
+                                    isPending &&
+                                    Array.isArray(askQuestions) &&
+                                    askQuestions.length > 0 &&
+                                    !!part.toolCallId
+                                      ? {
+                                          toolCallId: part.toolCallId || '',
+                                          assistantMessageId: (part as any).assistantMessageId || agentMessage.id,
+                                          questions: askQuestions,
+                                        }
+                                      : undefined
+
+                                  return (
+                                    <div key={`tool-${pi}`} className="space-y-2">
+                                      <ToolCallCard
+                                        toolName={part.toolName || 'tool'}
+                                        toolCallId={part.toolCallId}
+                                        input={part.input}
+                                        result={resultPart?.type === 'tool_result' ? resultPart.content : undefined}
+                                        isError={resultPart?.type === 'tool_result' ? resultPart.isError : false}
+                                        isPending={isPending}
+                                      />
+                                      {resolvedAskData &&
+                                        !readOnly &&
+                                        isLatestGroup &&
+                                        isLatestMessage &&
+                                        isLatestToolCallPart && (
+                                          <AskUserForm
+                                            askData={resolvedAskData}
+                                            agentMessageId={resolvedAskData.assistantMessageId}
+                                            toolCallId={part.toolCallId || ''}
+                                            questionAnswers={questionAnswersByTool[part.toolCallId || ''] || {}}
+                                            manualInputs={manualInputsByTool[part.toolCallId || ''] || {}}
+                                            isSending={isSending}
+                                            onAnswerSelect={handleAnswerSelect}
+                                            onManualInput={handleManualInput}
+                                            onSubmit={handleAnswerQuestion}
+                                          />
+                                        )}
+                                      {isAskUserQuestion &&
+                                        resultPart?.type === 'tool_result' &&
+                                        resultPart.status !== 'incomplete' && (
+                                          <Card className="p-2 border-border/40 bg-muted/20">
+                                            <div className="text-xs text-muted-foreground mb-1">问答结果</div>
+                                            <pre className="text-[11px] whitespace-pre-wrap break-all">
+                                              {String(resultPart.content || '')}
+                                            </pre>
+                                          </Card>
+                                        )}
+                                    </div>
+                                  )
+                                }
+                                if (part.type === 'text' && part.text) {
+                                  return (
+                                    <Streamdown key={`text-${pi}`} components={mdComponents}>
+                                      {part.text}
+                                    </Streamdown>
+                                  )
+                                }
+                                return null
+                              })}
+                              {/*
                               P4 / P1 就地渲染：
                               - AgentStatusIndicator：仅在**最新 group** 的最新 agentMessage 且流式进行中展示
                                 （随当前回合消息尾部滚动；否则下一轮开始时会错误地挂在旧 group 的末尾）
                               - InterruptionCard：如果当前 toolConfirm 对应的 tool_call 就在本 agentMessage.parts 内，
                                 就在此消息末尾渲染；否则其它 agentMessage 不展示，避免"固定在输入框上方"。
                             */}
-                            {!readOnly &&
-                              isLatestGroup &&
-                              isLatestMessage &&
-                              isStreamingResponse &&
-                              agentPhase?.phase &&
-                              agentPhase.phase !== 'idle' && (
-                                <div className="pt-1">
-                                  <AgentStatusIndicator phase={agentPhase.phase} toolName={agentPhase.toolName} />
-                                </div>
+                              {!readOnly &&
+                                isLatestGroup &&
+                                isLatestMessage &&
+                                isStreamingResponse &&
+                                agentPhase?.phase &&
+                                agentPhase.phase !== 'idle' && (
+                                  <div className="pt-1">
+                                    <AgentStatusIndicator phase={agentPhase.phase} toolName={agentPhase.toolName} />
+                                  </div>
+                                )}
+                              {!readOnly &&
+                                toolConfirm &&
+                                agentMessage.parts?.some(
+                                  (p) => p.type === 'tool_call' && p.toolCallId === toolConfirm.toolCallId,
+                                ) && (
+                                  <div className="pt-1">
+                                    <InterruptionCard
+                                      data={toolConfirm}
+                                      isSending={isSending}
+                                      onDecision={handleConfirmTool}
+                                    />
+                                  </div>
+                                )}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-0.5 justify-end">
+                          {task.status !== 'processing' && task.status !== 'pending' && (
+                            <button
+                              onClick={() => handleCopyMessage(agentMessage.id, parseAgentMessage(agentMessage))}
+                              className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
+                            >
+                              {copiedMessageId === agentMessage.id ? (
+                                <Check className="h-3 w-3" />
+                              ) : (
+                                <Copy className="h-3 w-3" />
                               )}
-                            {!readOnly &&
-                              toolConfirm &&
-                              agentMessage.parts?.some(
-                                (p) => p.type === 'tool_call' && p.toolCallId === toolConfirm.toolCallId,
-                              ) && (
-                                <div className="pt-1">
-                                  <InterruptionCard
-                                    data={toolConfirm}
-                                    isSending={isSending}
-                                    onDecision={handleConfirmTool}
-                                  />
-                                </div>
-                              )}
-                          </div>
-                        )}
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-0.5 justify-end">
-                        {task.status !== 'processing' && task.status !== 'pending' && (
-                          <button
-                            onClick={() => handleCopyMessage(agentMessage.id, parseAgentMessage(agentMessage))}
-                            className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
-                          >
-                            {copiedMessageId === agentMessage.id ? (
-                              <Check className="h-3 w-3" />
-                            ) : (
-                              <Copy className="h-3 w-3" />
-                            )}
-                          </button>
-                        )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })}
+
+          {/* Deployment notifications */}
+          {deploymentNotifications.length > 0 && (
+            <div className="mt-4 px-2">
+              <div className="space-y-2">
+                {deploymentNotifications.map((deployment, idx) => (
+                  <button
+                    key={deployment.id}
+                    onClick={() => {
+                      setActiveTab('deployments')
+                      setDeploymentNotifications((prev) => prev.filter((_, i) => i !== idx))
+                    }}
+                    className="w-full flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors border border-border bg-muted/30 text-left"
+                  >
+                    {deployment.type === 'web' ? (
+                      <svg
+                        className="w-5 h-5 flex-shrink-0 text-green-500"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="2" y1="12" x2="22" y2="12" />
+                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="w-5 h-5 flex-shrink-0 text-purple-500"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+                        <line x1="12" y1="18" x2="12.01" y2="18" />
+                      </svg>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium flex items-center gap-1">
+                        <span className="text-green-600">Deployment Ready</span>
+                        <span className="text-muted-foreground">·</span>
+                        <span className="text-muted-foreground">
+                          {deployment.type === 'web' ? 'Web' : 'Mini Program'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {deployment.type === 'web' ? deployment.url : deployment.pagePath || 'View QR Code'}
+                      </div>
+                    </div>
+                    <span className="text-xs text-blue-500 flex-shrink-0">View →</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sandbox setup / awaiting response placeholder */}
+          {(task.status === 'processing' || task.status === 'pending') &&
+            displayMessages.length > 0 &&
+            (() => {
+              const lastMessage = displayMessages[displayMessages.length - 1]
+              if (lastMessage.role !== 'user') return null
+              const userMessages = displayMessages.filter((m) => m.role === 'user')
+              const isFirstMessage = userMessages.length === 1
+              const setupLogs = (task.logs || []).filter((log) => !log.message.startsWith('[SERVER]')).slice(-8)
+              if (isFirstMessage && setupLogs.length > 0) {
+                return (
+                  <div className="mt-4">
+                    <div className="text-xs px-2">
+                      <div className="space-y-1">
+                        <div className="text-muted-foreground font-medium mb-2 flex items-center gap-2">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Setting up sandbox...
+                        </div>
+                        <div className="space-y-0.5 pl-5">
+                          {setupLogs.map((log, idx) => (
+                            <div
+                              key={idx}
+                              className={`truncate ${idx === setupLogs.length - 1 ? 'text-foreground' : log.type === 'error' ? 'text-red-500/60' : log.type === 'success' ? 'text-green-500/60' : 'text-muted-foreground/60'}`}
+                            >
+                              {log.message}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="text-right font-mono text-muted-foreground/50 mt-2">
+                          {formatDuration(lastMessage.createdAt)}
+                        </div>
                       </div>
                     </div>
                   </div>
                 )
-              })}
-            </div>
-          )
-        })}
-
-        {/* Deployment notifications */}
-        {deploymentNotifications.length > 0 && (
-          <div className="mt-4 px-2">
-            <div className="space-y-2">
-              {deploymentNotifications.map((deployment, idx) => (
-                <button
-                  key={deployment.id}
-                  onClick={() => {
-                    setActiveTab('deployments')
-                    setDeploymentNotifications((prev) => prev.filter((_, i) => i !== idx))
-                  }}
-                  className="w-full flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors border border-border bg-muted/30 text-left"
-                >
-                  {deployment.type === 'web' ? (
-                    <svg
-                      className="w-5 h-5 flex-shrink-0 text-green-500"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <circle cx="12" cy="12" r="10" />
-                      <line x1="2" y1="12" x2="22" y2="12" />
-                      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-                    </svg>
-                  ) : (
-                    <svg
-                      className="w-5 h-5 flex-shrink-0 text-purple-500"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                      <line x1="12" y1="18" x2="12.01" y2="18" />
-                    </svg>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium flex items-center gap-1">
-                      <span className="text-green-600">Deployment Ready</span>
-                      <span className="text-muted-foreground">·</span>
-                      <span className="text-muted-foreground">
-                        {deployment.type === 'web' ? 'Web' : 'Mini Program'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {deployment.type === 'web' ? deployment.url : deployment.pagePath || 'View QR Code'}
-                    </div>
-                  </div>
-                  <span className="text-xs text-blue-500 flex-shrink-0">View →</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Sandbox setup / awaiting response placeholder */}
-        {(task.status === 'processing' || task.status === 'pending') &&
-          displayMessages.length > 0 &&
-          (() => {
-            const lastMessage = displayMessages[displayMessages.length - 1]
-            if (lastMessage.role !== 'user') return null
-            const userMessages = displayMessages.filter((m) => m.role === 'user')
-            const isFirstMessage = userMessages.length === 1
-            const setupLogs = (task.logs || []).filter((log) => !log.message.startsWith('[SERVER]')).slice(-8)
-            if (isFirstMessage && setupLogs.length > 0) {
+              }
               return (
                 <div className="mt-4">
-                  <div className="text-xs px-2">
-                    <div className="space-y-1">
-                      <div className="text-muted-foreground font-medium mb-2 flex items-center gap-2">
+                  <div className="text-xs text-muted-foreground px-2">
+                    <div className="opacity-50">
+                      <div className="italic flex items-center gap-2">
                         <Loader2 className="h-3 w-3 animate-spin" />
-                        Setting up sandbox...
+                        Awaiting response...
                       </div>
-                      <div className="space-y-0.5 pl-5">
-                        {setupLogs.map((log, idx) => (
-                          <div
-                            key={idx}
-                            className={`truncate ${idx === setupLogs.length - 1 ? 'text-foreground' : log.type === 'error' ? 'text-red-500/60' : log.type === 'success' ? 'text-green-500/60' : 'text-muted-foreground/60'}`}
-                          >
-                            {log.message}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="text-right font-mono text-muted-foreground/50 mt-2">
+                      <div className="text-right font-mono opacity-70 mt-1">
                         {formatDuration(lastMessage.createdAt)}
                       </div>
                     </div>
                   </div>
                 </div>
               )
-            }
-            return (
-              <div className="mt-4">
-                <div className="text-xs text-muted-foreground px-2">
-                  <div className="opacity-50">
-                    <div className="italic flex items-center gap-2">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Awaiting response...
-                    </div>
-                    <div className="text-right font-mono opacity-70 mt-1">{formatDuration(lastMessage.createdAt)}</div>
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
+            })()}
 
-        <div ref={messagesEndRef} />
-      </div>
+          <div ref={messagesEndRef} />
+        </div>
+        <TaskListPanel messages={messages} />
+      </>
     )
   }
 
@@ -1423,22 +1307,6 @@ export function TaskChat({
           >
             Deployments
           </button>
-          {isCodingMode && (
-            <button
-              onClick={() => setActiveTab('preview')}
-              className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'preview' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              Preview
-            </button>
-          )}
-          {!readOnly && (
-            <button
-              onClick={() => setActiveTab('cloud')}
-              className={`text-sm font-semibold px-2 py-1 rounded transition-colors whitespace-nowrap flex-shrink-0 ${currentTab === 'cloud' ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              Cloud
-            </button>
-          )}
         </div>
         <Button variant="ghost" size="sm" onClick={handleRefresh} className="h-6 w-6 p-0 flex-shrink-0" title="Refresh">
           <RefreshCw className="h-4 w-4" />

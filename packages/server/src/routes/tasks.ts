@@ -1,14 +1,16 @@
 import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
 import { requireAuth, requireUserEnv, type AppEnv } from '../middleware/auth'
 import { createTaskLogger } from '../lib/task-logger'
+import { resolveSandboxConfig, backfillSandboxConfig } from '../lib/sandbox-config'
 import { decrypt } from '../lib/crypto'
 import { Octokit } from '@octokit/rest'
-import { SandboxInstance } from '../sandbox/index.js'
+import { deleteArchiveBranch, SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
-import { detectAndEnsureDevServer, initCodingProject } from '../agent/coding-mode.js'
+import { CODING_DEV_SERVER_PORT } from '../agent/coding-mode.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
 // ---------------------------------------------------------------------------
@@ -297,6 +299,7 @@ tasksRouter.post('/', async (c) => {
     repoUrl,
     selectedAgent = 'claude',
     selectedModel,
+    mode = 'default',
     installDependencies = false,
     maxDuration = 300,
     keepAlive = false,
@@ -308,14 +311,11 @@ tasksRouter.post('/', async (c) => {
   const now = Date.now()
 
   // Compute sandbox config based on WORKSPACE_ISOLATION env var
-  const sandboxMode = process.env.WORKSPACE_ISOLATION === 'isolated' ? 'isolated' : 'shared'
-  let sandboxSessionId: string | null = null
-  let sandboxCwd: string | null = null
+  let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
   try {
     const resource = await getDb().userResources.findByUserId(session.user.id)
     if (resource?.envId) {
-      sandboxSessionId = sandboxMode === 'shared' ? resource.envId : taskId
-      sandboxCwd = sandboxMode === 'shared' ? `/tmp/workspace/${resource.envId}/${taskId}` : `/tmp/workspace/${taskId}`
+      sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
     }
   } catch {
     // Non-critical: sandbox config will be computed at agent launch time
@@ -329,6 +329,7 @@ tasksRouter.post('/', async (c) => {
     repoUrl: repoUrl || null,
     selectedAgent,
     selectedModel: selectedModel || null,
+    mode,
     installDependencies,
     maxDuration,
     keepAlive,
@@ -339,9 +340,9 @@ tasksRouter.post('/', async (c) => {
     error: null,
     branchName: null,
     sandboxId: null,
-    sandboxSessionId,
-    sandboxCwd,
-    sandboxMode,
+    sandboxSessionId: sandboxConfig?.sandboxSessionId ?? null,
+    sandboxCwd: sandboxConfig?.sandboxCwd ?? null,
+    sandboxMode: sandboxConfig?.sandboxMode ?? null,
     agentSessionId: null,
     sandboxUrl: null,
     previewUrl: null,
@@ -409,10 +410,14 @@ tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
   // Try to clean up via sandbox (rm -rf workspace dir + git archive sync); fall back to direct API delete
   ;(async () => {
     try {
-      const scfSessionId = existing.sandboxSessionId || envId
-      const sandbox = await scfSandboxManager.getExisting(taskId, scfSessionId).catch(() => null)
-      if (sandbox) {
-        await deleteConversationViaSandbox(sandbox, envId, taskId)
+      if (existing.mode === 'isolated') {
+        await deleteArchiveBranch(taskId)
+      } else {
+        const scfSessionId = existing.sandboxSessionId || envId
+        const sandbox = await scfSandboxManager.getExisting(taskId, scfSessionId).catch(() => null)
+        if (sandbox) {
+          await deleteConversationViaSandbox(sandbox, envId, taskId, existing.sandboxCwd || undefined)
+        }
       }
     } catch (e) {
       console.log('clean conversation workspace error')
@@ -2140,6 +2145,40 @@ tasksRouter.get('/:taskId/sandbox-health', requireUserEnv, async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// GET /:taskId/preview-health — 检查 dev server 是否实际响应（沙箱内 curl）
+// ---------------------------------------------------------------------------
+tasksRouter.get('/:taskId/preview-health', requireUserEnv, async (c) => {
+  try {
+    const session = c.get('session')!
+    const { envId } = c.get('userEnv')!
+    const { taskId } = c.req.param()
+    const task = await findActiveTask(taskId, session.user.id)
+    if (!task) return c.json({ status: 'not_found' })
+    if (!task.sandboxId) return c.json({ status: 'no_sandbox' })
+    const sandbox = await getScfSandbox(task, envId)
+    if (!sandbox) return c.json({ status: 'no_sandbox' })
+    // 在沙箱内部 curl dev server，避免跨域问题
+    const result = await runCommandInScfSandbox(
+      sandbox,
+      `curl -s -o /dev/null -w "%{http_code}" http://localhost:${CODING_DEV_SERVER_PORT}/ 2>/dev/null || echo "0"`,
+      8000,
+    )
+    const code = result.output?.trim()
+    const alive = code === '200' || code === '302' || code === '304'
+    // 同时读取 supervisor state
+    const stateResult = await runCommandInScfSandbox(
+      sandbox,
+      `cat /tmp/devserver.state 2>/dev/null || echo "unknown"`,
+      3000,
+    )
+    const supervisorState = stateResult.output?.trim() || 'unknown'
+    return c.json({ status: alive ? 'running' : 'stopped', httpCode: code, supervisorState })
+  } catch (error) {
+    return c.json({ status: 'error', message: (error as Error).message })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // POST /:taskId/start-sandbox
 // ---------------------------------------------------------------------------
 tasksRouter.post('/:taskId/start-sandbox', requireUserEnv, async (c) => {
@@ -2340,14 +2379,18 @@ tasksRouter.post('/:taskId/file-operation', requireUserEnv, async (c) => {
 })
 
 // ---------------------------------------------------------------------------
-// GET /:taskId/preview-url — detect (or start) dev server, return Gateway URL
+// GET /:taskId/preview-url — streaming SSE: 逐步推送启动进度，最终发 gatewayUrl
+// ---------------------------------------------------------------------------
+// 事件格式: data: {"stage":"...","message":"..."}
+//   stage = "progress" | "ready" | "error"
+//   "ready" 事件包含 gatewayUrl，前端收到即可显示 iframe
 // ---------------------------------------------------------------------------
 //
-// 冷启动支持(P6+ 预览增强):
-//   - 当 task.sandboxId 为 null 或 sandbox 不可访问时,自动 getOrCreate + initCodingProject
-//   - 让用户在未曾聊天的情况下直接打开 Preview tab 也能看到预览
-//   - initCodingProject 内部幂等(已有 package.json 则跳过克隆),多次调用安全
-//   - 整个流程最长 ~180s(网络慢时 npm install);前端已有骨架屏 + Loader 兜底
+// 超时策略（与 stage 相关）:
+//   - 沙箱冷启动: ~60s
+//   - 已有 node_modules: 检测 ~5s，启动 dev server ~10s
+//   - 需要 npm install: ~60-120s
+//   - dev server 启动: ~30s (PTY polling)
 
 tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   const session = c.get('session')!
@@ -2357,77 +2400,173 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
   const task = await findActiveTask(taskId, session.user.id)
   if (!task) return c.json({ error: 'Task not found' }, 404)
 
-  // ── 尝试拿到沙箱(可能需要冷启动) ──────────────────────────────────
-  let sandbox: SandboxInstance | null = null
-  let resolvedSandboxId: string = task.sandboxId || ''
-  let resolvedSessionId: string = task.sandboxSessionId || envId
-  let resolvedCwd: string = task.sandboxCwd || `/tmp/workspace/${envId}/${taskId}`
-
-  if (task.sandboxId) {
-    // 沙箱 ID 已存在:尝试复用
-    sandbox = await getScfSandbox(task, envId)
-  }
-
-  if (!sandbox) {
-    // 沙箱不存在或已失效:冷启动
-    console.log(`[preview-url] Cold-starting sandbox for task ${taskId}`)
-    try {
-      // sandboxMode 字段区分工作区隔离方式('shared' = 多任务共享工作目录,'isolated' = 独立目录);
-      // scfSandboxManager.getOrCreate 的 `mode` 参数对应函数复用级别,跟 workspaceIsolation 不同。
-      // 对齐 cloudbase-agent.service.ts 的调用方式:mode 始终传 'shared'(函数级别),
-      // workspaceIsolation 传 task 记录中的 sandboxMode 字段。
-      const workspaceIsolation = (task.sandboxMode || 'shared') as 'shared' | 'isolated'
-      const sandboxSessionId = workspaceIsolation === 'shared' ? envId : taskId
-      const sandboxCwd = `/tmp/workspace/${envId}/${taskId}`
-
-      sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
-        mode: 'shared',
-        workspaceIsolation,
-        sandboxSessionId,
-      })
-
-      resolvedSandboxId = sandbox.functionName
-      resolvedSessionId = sandboxSessionId
-      resolvedCwd = sandboxCwd
-
-      // 持久化沙箱信息到 task 表,让后续 /files、/file-content 等接口可用
-      await getDb().tasks.update(taskId, {
-        sandboxId: resolvedSandboxId,
-        sandboxSessionId: resolvedSessionId,
-        sandboxCwd: resolvedCwd,
-        updatedAt: Date.now(),
-      })
-    } catch (err) {
-      console.error('[preview-url] Sandbox cold-start failed:', err)
-      return c.json({ error: 'Sandbox unavailable — could not start' }, 503)
+  return streamSSE(c, async (stream) => {
+    const emit = async (stage: 'progress' | 'ready' | 'error', message: string, extra?: Record<string, unknown>) => {
+      await stream.writeSSE({ data: JSON.stringify({ stage, message, ...extra }) }).catch(() => {})
     }
-  }
 
-  // ── coding mode:确保项目已初始化 + dev server 已就绪 ─────────────────
-  // `task.mode` 字段存在于 shared/types/task.ts 但服务端 types.ts 尚未同步;
-  // 用 (task as any).mode 读取。另外 initCodingProject 内部幂等,已有 package.json 则跳过。
-  const taskMode = (task as any).mode as string | null | undefined
-  if (taskMode === 'coding' || !taskMode) {
-    // 若无 mode 字段(旧任务)或明确是 coding,尝试 initCodingProject(幂等,失败继续)
     try {
-      await initCodingProject(sandbox, resolvedCwd)
+      // ── 获取沙箱 ───────────────────────────────────────────────────────
+      const sandboxConfig = resolveSandboxConfig({
+        sandboxMode: task.sandboxMode,
+        sandboxSessionId: task.sandboxSessionId,
+        sandboxCwd: task.sandboxCwd,
+        envId,
+        taskId,
+      })
+      let sandbox: SandboxInstance | null = null
+      let resolvedSessionId = sandboxConfig.sandboxSessionId
+      let resolvedCwd = sandboxConfig.sandboxCwd
+
+      if (task.sandboxId) {
+        sandbox = await getScfSandbox(task, envId)
+      }
+
+      if (!sandbox) {
+        await emit('progress', '正在启动沙箱...')
+        try {
+          sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
+            mode: 'shared',
+            workspaceIsolation: sandboxConfig.sandboxMode,
+            sandboxSessionId: sandboxConfig.sandboxSessionId,
+          })
+
+          await getDb().tasks.update(taskId, {
+            sandboxId: sandbox.functionName,
+            sandboxSessionId: resolvedSessionId,
+            sandboxCwd: resolvedCwd,
+            updatedAt: Date.now(),
+          })
+        } catch (err) {
+          await emit('error', `沙箱启动失败: ${(err as Error).message}`)
+          return
+        }
+      }
+
+      // ── coding mode: 确保 workspace + vite 就绪 ──────────────────────
+      const taskMode = (task as any).mode as string | null | undefined
+      const isCodingMode = taskMode === 'coding'
+      if (isCodingMode) {
+        // /api/session/init 内部完成全部初始化：
+        //   - seedCodingTemplate（首次）或 git restore（二次启动）
+        //   - ensureViteDev: npm install + spawn vite + crash 自动重启
+        try {
+          const { credentials: userCredentials } = c.get('userEnv')!
+          await emit('progress', '正在初始化工作空间...')
+          await sandbox!.request('/api/session/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              env: {
+                CLOUDBASE_ENV_ID: envId,
+                ...(userCredentials?.secretId ? { TENCENTCLOUD_SECRETID: userCredentials.secretId } : {}),
+                ...(userCredentials?.secretKey ? { TENCENTCLOUD_SECRETKEY: userCredentials.secretKey } : {}),
+                ...(userCredentials?.sessionToken ? { TENCENTCLOUD_SESSIONTOKEN: userCredentials.sessionToken } : {}),
+              },
+            }),
+            signal: AbortSignal.timeout(60_000),
+          })
+        } catch (err) {
+          console.warn('[preview-url] session/init failed:', (err as Error).message)
+        }
+      }
+
+      // ── 等待 vite 端口响应 ──────────────────────────────────────────────
+      await emit('progress', '正在等待开发服务器就绪...')
+      const maxWaitMs = 120_000
+      const pollInterval = 2000
+      const startTime = Date.now()
+      let port = CODING_DEV_SERVER_PORT
+      let alive = false
+
+      while (Date.now() - startTime < maxWaitMs) {
+        try {
+          const pingRes = await sandbox!.request('/api/tools/bash', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port}/ 2>/dev/null || echo "0"`,
+              timeout: 5000,
+            }),
+            signal: AbortSignal.timeout(10_000),
+          })
+          const pingData = (await pingRes.json()) as { result?: { output?: string } }
+          const code = pingData.result?.output?.trim()
+          if (code === '200' || code === '302' || code === '304') {
+            alive = true
+            break
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, pollInterval))
+      }
+
+      if (!alive) {
+        await emit('error', `Dev server 未能在 ${maxWaitMs / 1000}s 内就绪`)
+        return
+      }
+
+      // ── 获取网关 URL ──────────────────────────────────────────────────
+      let previewBase: string
+      try {
+        previewBase = await scfSandboxManager.ensurePreviewGateway()
+      } catch {
+        const sandboxEnvId = process.env.TCB_ENV_ID || ''
+        previewBase = `https://${sandboxEnvId}.service.tcloudbase.com/preview`
+      }
+
+      const gatewayUrl = `${previewBase}/${port}/?cloudbase_session_id=${resolvedSessionId}`
+      await emit('ready', 'Dev server ready', { gatewayUrl, port })
     } catch (err) {
-      // 初始化失败不 abort —— dev server 可能已经在跑(上次 agent 留下的)
-      console.warn('[preview-url] initCodingProject warn:', (err as Error).message)
+      // 顶层异常兜底：确保前端总能收到 error 事件而非静默关闭
+      console.error('[preview-url] Unhandled error in SSE callback:', err)
+      await emit('error', `预览启动失败: ${(err as Error).message || '未知错误'}`)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GET /:taskId/preview-errors — 检查 Vite dev server 日志中的错误
+// 返回 { hasErrors, errors } 供前端将错误发送到聊天
+// ---------------------------------------------------------------------------
+tasksRouter.get('/:taskId/preview-errors', requireUserEnv, async (c) => {
+  const session = c.get('session')!
+  const { taskId } = c.req.param()
+
+  const task = await findActiveTask(taskId, session.user.id)
+  if (!task) return c.json({ error: 'Task not found' }, 404)
+
+  if (!task.sandboxId) {
+    return c.json({ hasErrors: false, errors: '' })
   }
 
   try {
-    const port = await detectAndEnsureDevServer(sandbox, resolvedCwd)
+    const { envId } = c.get('userEnv')!
+    const sandbox = await getScfSandbox(task, envId)
+    if (!sandbox) {
+      return c.json({ hasErrors: false, errors: '' })
+    }
 
-    const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const functionName = resolvedSandboxId
-    const gatewayUrl = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/${functionName}/preview/proxy/${port}/?session-id=${resolvedSessionId}`
+    const logRes = await sandbox.request('/api/tools/bash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command:
+          'tail -50 /tmp/devserver.log 2>/dev/null | grep -iE "(error|✘|\\[ERROR\\]|failed|Transform failed|Cannot find|Module not found|SyntaxError|TypeError)" || echo ""',
+        timeout: 5000,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
 
-    return c.json({ port, gatewayUrl })
+    const logData = (await logRes.json()) as { result?: { output?: string } }
+    const errorLines = logData.result?.output?.trim() || ''
+
+    if (errorLines) {
+      return c.json({ hasErrors: true, errors: errorLines })
+    }
+    return c.json({ hasErrors: false, errors: '' })
   } catch (err) {
-    console.error('[preview-url] Failed to detect/start dev server:', err)
-    return c.json({ error: 'Dev server failed to start' }, 502)
+    console.error('[preview-errors] Failed to check dev server log:', err)
+    return c.json({ hasErrors: false, errors: '' })
   }
 })
 

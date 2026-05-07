@@ -282,7 +282,6 @@ export async function loadSkills(originalFn: OriginalLoadSkills): Promise<SkillD
     const bundledSkills = scanLocalSkillsDirectory(bundledDir, 'project')
     if (bundledSkills.length > 0) {
       skills.push(...bundledSkills)
-      console.error(`[SkillLoaderOverride] Loaded ${bundledSkills.length} bundled skill(s) from ${bundledDir}`)
     }
   }
 

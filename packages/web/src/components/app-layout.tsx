@@ -150,11 +150,11 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
     fetchTasks()
   }, [])
 
-  // Poll for task updates every 5 seconds
+  // Poll for task updates every 15 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       fetchTasks()
-    }, 5000)
+    }, 15000)
 
     return () => clearInterval(interval)
   }, [])
@@ -229,12 +229,16 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
       maxDuration: taskData.maxDuration,
       keepAlive: false,
       enableBrowser: false,
+      mode: 'default',
       status: 'pending',
       progress: 0,
       logs: [],
       error: null,
       branchName: null,
       sandboxId: null,
+      sandboxSessionId: null,
+      sandboxCwd: null,
+      sandboxMode: null,
       agentSessionId: null,
       sandboxUrl: null,
       previewUrl: null,

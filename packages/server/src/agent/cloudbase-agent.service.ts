@@ -10,8 +10,9 @@ import { persistenceService } from './persistence.service.js'
 import { scfSandboxManager, type SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
 import { createSandboxMcpClient } from '../sandbox/sandbox-mcp-proxy.js'
 import { archiveToGit } from '../sandbox/git-archive.js'
-import { initCodingProject, startDevServer, getCodingSystemPrompt } from './coding-mode.js'
+import { getCodingSystemPrompt } from './coding-mode.js'
 import { getDb } from '../db/index.js'
+import { resolveSandboxConfig, backfillSandboxConfig } from '../lib/sandbox-config.js'
 import { nanoid } from 'nanoid'
 import { decrypt } from '../lib/crypto.js'
 import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage, ExtendedSessionUpdate } from '@coder/shared'
@@ -21,10 +22,10 @@ import { sessionPermissions, normalizeToolName } from './session-permissions.js'
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'glm-5.0'
+const DEFAULT_MODEL = 'glm-5.1'
 const OAUTH_TOKEN_ENDPOINT = 'https://copilot.tencent.com/oauth2/token'
 const CONNECT_TIMEOUT_MS = 60_000
-const ITERATION_TIMEOUT_MS = 45 * 1000
+const ITERATION_TIMEOUT_MS = 2 * 60 * 1000
 const HEALTH_MAX_RETRIES = 20
 const HEALTH_INTERVAL_MS = 2000
 
@@ -46,11 +47,13 @@ let cachedModels: ModelInfo[] | null = null
 
 // Static model list (temporary, replace with dynamic fetch when ready)
 const STATIC_MODELS: ModelInfo[] = [
+  { id: 'minimax-m2.7', name: 'MiniMax-M2.7' },
   { id: 'minimax-m2.5', name: 'MiniMax-M2.5' },
+  { id: 'kimi-k2.6', name: 'Kimi-K2.6' },
   { id: 'kimi-k2.5', name: 'Kimi-K2.5' },
   { id: 'kimi-k2-thinking', name: 'Kimi-K2-Thinking' },
+  { id: 'glm-5.1', name: 'GLM-5.1' },
   { id: 'glm-5.0', name: 'GLM-5.0' },
-  { id: 'glm-4.7', name: 'GLM-4.7' },
   { id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2' },
 ]
 
@@ -116,9 +119,14 @@ async function initSandboxWorkspace(
   sandbox: SandboxInstance,
   secret: { envId: string; secretId: string; secretKey: string; token?: string },
   conversationId: string,
+  preferredCwd?: string,
 ): Promise<string | undefined> {
-  try {
-    const res = await sandbox.request('/api/session/init', {
+  const workspace = preferredCwd || `/tmp/workspace/${secret.envId}/${conversationId}`
+
+  // Fire session/init（不等响应，沙箱内部可能需要很久做 git restore + npm install）
+  // 沙箱网关有自己的超时限制，等待会导致 AbortError
+  sandbox
+    .request('/api/session/init', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -129,35 +137,49 @@ async function initSandboxWorkspace(
           ...(secret.token ? { TENCENTCLOUD_SESSIONTOKEN: secret.token } : {}),
         },
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(300_000),
+    })
+    .then((res) => {
+      if (res.ok) {
+        console.log('[Agent] session/init completed successfully')
+      } else {
+        console.warn('[Agent] session/init returned status:', res.status)
+      }
+    })
+    .catch((e) => {
+      console.warn('[Agent] session/init background error:', (e as Error).message)
     })
 
-    if (res.ok) {
-      const workspace = `/tmp/workspace/${secret.envId}/${conversationId}`
-      console.log('[Agent] initSandboxWorkspace success, workspace:', workspace)
+  // 轮询等待 workspace 就绪（session/init 在后台创建目录 + seed 模板）
+  const maxWaitMs = 120_000
+  const pollInterval = 2000
+  const startTime = Date.now()
 
-      // 创建会话工作目录
-      const mkdirRes = await sandbox.request('/api/tools/bash', {
+  while (Date.now() - startTime < maxWaitMs) {
+    try {
+      const checkRes = await sandbox.request('/api/tools/bash', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          command: `mkdir -p "${workspace}"`,
+          command: `test -f "${workspace}/package.json" && echo "ready" || echo "waiting"`,
           timeout: 5000,
         }),
         signal: AbortSignal.timeout(10_000),
       })
-
-      if (mkdirRes.ok) {
-        console.log('[Agent] Workspace directory created:', workspace)
+      const data = (await checkRes.json()) as { result?: { output?: string } }
+      if (data.result?.output?.trim() === 'ready') {
+        console.log(`[Agent] initSandboxWorkspace ready, workspace: ${workspace}, preferredCwd: ${preferredCwd}`)
+        return workspace
       }
-
-      return workspace
+    } catch {
+      // bash 调用失败，沙箱可能还在启动
     }
-    console.error('[Agent] initSandboxWorkspace failed, status:', res.status)
-  } catch (e) {
-    console.error('[Agent] initSandboxWorkspace error:', (e as Error).message)
+    await new Promise((r) => setTimeout(r, pollInterval))
   }
-  return undefined
+
+  // 超时兜底：目录可能还没就绪，但返回路径让后续流程继续
+  console.warn(`[Agent] initSandboxWorkspace timeout after ${maxWaitMs / 1000}s, returning workspace anyway`)
+  return workspace
 }
 
 /**
@@ -193,7 +215,7 @@ interface ToolCallTracker {
   toolInputJsonBuffers: Map<string, string>
 }
 
-type AgentCallback = (message: AgentCallbackMessage) => void | Promise<void>
+type AgentCallback = (message: AgentCallbackMessage, seq?: number) => void | Promise<void>
 
 // ─── OAuth Token Cache ────────────────────────────────────────────────────
 
@@ -294,48 +316,92 @@ function getBundledSkillsDir(): string {
 
 // ─── System Prompt Builder ─────────────────────────────────────────────────
 
-function buildAppendPrompt(sandboxCwd?: string, conversationId?: string, envId?: string): string {
-  const base = `你是一个通用 AI 编程助手，同时具备腾讯云开发（CloudBase）能力，可通过工具操作云函数、数据库、存储、云托管等资源。
+/**
+ * 获取 CloudBase 前端 SDK 的 publishableKey（公开密钥）
+ * 使用系统大密钥（TCB_SECRET_ID/TCB_SECRET_KEY）调用 tcb:CreateApiKey 获取
+ * KeyType=publish_key 会返回已存在的 key 或创建新的
+ * 结果按 envId 缓存，避免重复调用
+ */
+const publishableKeyCache = new Map<string, string>()
+
+async function getPublishableKey(envId: string): Promise<string> {
+  if (publishableKeyCache.has(envId)) return publishableKeyCache.get(envId)!
+
+  const secretId = process.env.TCB_SECRET_ID
+  const secretKey = process.env.TCB_SECRET_KEY
+  if (!secretId || !secretKey || !envId) return ''
+  try {
+    const CloudBase = (await import('@cloudbase/manager-node')).default
+    const manager = new CloudBase({
+      secretId,
+      secretKey,
+      envId,
+      proxy: process.env.http_proxy,
+    })
+    const result = await manager.commonService('tcb', '2018-06-08').call({
+      Action: 'CreateApiKey',
+      Param: { EnvId: envId, KeyType: 'publish_key' },
+    })
+    const apiKey = result?.ApiKey || result?.Response?.ApiKey || ''
+    if (apiKey) {
+      publishableKeyCache.set(envId, apiKey)
+      console.log('[Agent] Got publishableKey for env:', envId)
+    }
+    return apiKey
+  } catch (e) {
+    console.warn('[Agent] Failed to get publishableKey:', (e as Error).message)
+    return ''
+  }
+}
+
+function buildAppendPrompt(
+  sandboxCwd?: string,
+  conversationId?: string,
+  envId?: string,
+  sandboxMode?: 'shared' | 'isolated',
+): string {
+  const base = `<role>
+你是一个通用 AI 编程助手，同时具备腾讯云开发（CloudBase）能力，可通过工具操作云函数、数据库、存储、云托管等资源。
 优先使用工具完成任务；删除等破坏性操作需确认用户意图。
 默认使用中文与用户沟通。
+</role>
 
-Bash 超时处理策略：对于耗时较长的命令（如 npm install、yarn install、大型项目构建等），如果执行超时：
+<guideline name="cloudbase">
+- 你正在操作云开发环境 ${envId || '(未指定)'}，可通过 cloudbase MCP 工具管理云函数、数据库、存储、静态托管等资源。
+- 部署云函数使用 manageFunctions 工具；上传文件到静态托管使用 cloudbase_uploadFiles 工具。
+</guideline>
+
+<guideline name="bash-timeout">
+对于耗时较长的命令（如 npm install、yarn install、大型项目构建等），如果执行超时：
 1. 改为后台执行, 添加 run_in_background，可以获取 pid
 2. 定期检查进程状态：ps aux | grep '<关键词>' | grep -v grep
 3. 通过 BashOutput 结合 pid 查看输出结果
 4. 也可以通过 KillShell 关闭后台执行的任务
+</guideline>
 
-${
-  false
-    ? `小程序开发规则：
-当用户的需求涉及微信小程序开发（创建、修改、部署小程序项目）时：
-1. 必须先使用 AskUserQuestion 工具获取用户的微信小程序 appId
-   - options 的第一个选项的 label 必须固定为 "ask:miniprogram_appid"（系统据此识别问题类别并替换为预置内容）
-   - 其余字段可任意填写，系统会自动替换为标准问题
-   - 示例: AskUserQuestion({ questions: [{ question: "选择小程序", header: "AppId", options: [{ label: "ask:miniprogram_appid", description: "选择小程序" }, { label: "跳过", description: "跳过" }], multiSelect: false }] })
-2. 获取到 appId 后，在生成 project.config.json 时使用该 appId
-3. 在调用 publishMiniprogram 部署前，确保已获取到有效的 appId`
-    : ''
-}
-
-定时任务规则：
+<guideline name="cron-task">
 当用户提到定时执行、定期运行、每天/每周/每小时执行某操作等需求时，必须使用 cronTask 工具来管理定时任务。
 - 创建：action="create"，需要 name、prompt、cronExpression
 - 查询：action="list"，查看当前所有定时任务
 - 更新：action="update"，通过 id 修改已有任务（可改 prompt、cronExpression、enabled 等）
 - 删除：action="delete"，通过 id 删除任务
-Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20:00。`
+Cron 表达式格式：分 时 日 月 周，例如 "0 20 * * *" 表示每天 20:00。
+</guideline>`
 
   if (sandboxCwd) {
+    const homeDir = sandboxMode === 'isolated' ? sandboxCwd : sandboxCwd.substring(0, sandboxCwd.lastIndexOf('/'))
     return `${base}
-工具默认在 Home: /tmp/workspace/${envId} 下执行
+
+<guideline name="sandbox">
+工具默认在 Home: ${homeDir} 下执行
 为项目开辟工作目录为: ${sandboxCwd}
 使用的云开发环境为: ${envId}
 请注意：
 - 所有文件读写、终端命令都应在工作目录中执行，注意 cd 到工作目录操作。
 - 使用 cloudbase_uploadFiles 部署文件时，localPath 必须是容器内的**绝对路径**（即当前工作目录 ${sandboxCwd} 下的路径），例如 ${sandboxCwd}/index.html
 - 如用户没有特别要求，cloudPath 需要为 ${conversationId}，即在当前会话路径下
-- 不要使用相对路径给 cloudbase_uploadFiles`
+- 不要使用相对路径给 cloudbase_uploadFiles
+</guideline>`
   }
   return base
 }
@@ -516,7 +582,7 @@ export class CloudbaseAgentService {
       envId,
       userId,
       userCredentials,
-      maxTurns = 100,
+      maxTurns = 500,
       cwd,
       askAnswers,
       toolConfirmation,
@@ -531,45 +597,48 @@ export class CloudbaseAgentService {
 
     // Read sandbox config from task record (written at creation time)
     // Historical tasks missing these fields are backfilled as 'shared' mode
-    let taskSandboxMode: string | null = null
-    let taskSandboxSessionId: string | null = null
-    let taskSandboxCwd: string | null = null
+    let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
     try {
       const taskRecord = await getDb().tasks.findById(conversationId)
-      taskSandboxMode = taskRecord?.sandboxMode || null
-      taskSandboxSessionId = taskRecord?.sandboxSessionId || null
-      taskSandboxCwd = taskRecord?.sandboxCwd || null
-
-      // Backfill missing sandbox config for historical tasks (default to 'shared')
-      if (!taskSandboxMode || !taskSandboxSessionId || !taskSandboxCwd) {
-        taskSandboxMode = taskSandboxMode || 'shared'
-        taskSandboxSessionId =
-          taskSandboxSessionId || (taskSandboxMode === 'shared' ? userContext.envId : conversationId)
-        taskSandboxCwd =
-          taskSandboxCwd ||
-          (taskSandboxMode === 'shared'
-            ? `/tmp/workspace/${userContext.envId}/${conversationId}`
-            : `/tmp/workspace/${conversationId}`)
-        await getDb().tasks.update(conversationId, {
-          sandboxMode: taskSandboxMode as 'shared' | 'isolated',
-          sandboxSessionId: taskSandboxSessionId,
-          sandboxCwd: taskSandboxCwd,
-          updatedAt: Date.now(),
-        })
-      }
+      await backfillSandboxConfig(
+        conversationId,
+        {
+          sandboxMode: taskRecord?.sandboxMode,
+          sandboxSessionId: taskRecord?.sandboxSessionId,
+          sandboxCwd: taskRecord?.sandboxCwd,
+        },
+        userContext.envId,
+        getDb(),
+      )
+      sandboxConfig = resolveSandboxConfig({
+        sandboxMode: taskRecord?.sandboxMode,
+        sandboxSessionId: taskRecord?.sandboxSessionId,
+        sandboxCwd: taskRecord?.sandboxCwd,
+        envId: userContext.envId,
+        taskId: conversationId,
+      })
     } catch {
       // Non-critical
     }
 
-    const sandboxMode = taskSandboxMode || (process.env.WORKSPACE_ISOLATION === 'isolated' ? 'isolated' : 'shared')
-    const sandboxSessionId = taskSandboxSessionId || (sandboxMode === 'shared' ? userContext.envId : conversationId)
-    const defaultCwd =
-      sandboxMode === 'shared'
-        ? `/tmp/workspace/${userContext.envId}/${conversationId}`
-        : `/tmp/workspace/${conversationId}`
+    // Fallback when task record was unavailable
+    if (!sandboxConfig) {
+      sandboxConfig = resolveSandboxConfig({ envId: userContext.envId, taskId: conversationId })
+    }
 
-    const actualCwd = cwd || taskSandboxCwd || defaultCwd
+    const { sandboxMode, sandboxSessionId, sandboxCwd: resolvedCwd } = sandboxConfig
+    const actualCwd = cwd || resolvedCwd
+    console.log(
+      `[Agent] sandboxConfig: mode=${sandboxMode}, sessionId=${sandboxSessionId}, resolvedCwd=${resolvedCwd}, cwd=${cwd}, actualCwd=${actualCwd}`,
+    )
     mkdirSync(actualCwd, { recursive: true })
+
+    // Coding 模式：自动放行所有写工具（agent 需要自由操作数据库和部署）
+    if (isCodingMode && conversationId) {
+      for (const tool of WRITE_TOOLS) {
+        sessionPermissions.allowAlways(conversationId, tool)
+      }
+    }
 
     // ── 创建 EventBuffer 用于持久化 ACP 事件 ─────────────────────────
     const eventBuffer = new EventBuffer(conversationId, assistantMessageId, userContext.envId, userContext.userId)
@@ -673,7 +742,6 @@ export class CloudbaseAgentService {
       // 同理 restoreMessages / preSavePendingRecords 也推迟。
     }
 
-
     // ── 预保存 pending 记录(已推迟到 sandbox + restoreMessages 之后) ──
     // 见下方 "Resume toolConfirmation: 真实执行" 块
     let preSavedUserRecordId: string | null = null
@@ -769,6 +837,7 @@ export class CloudbaseAgentService {
               token: userCredentials?.sessionToken,
             },
             conversationId,
+            resolvedCwd || undefined,
           )
           if (sandboxCwd) {
             detectedSandboxCwd = sandboxCwd
@@ -779,7 +848,7 @@ export class CloudbaseAgentService {
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             baseUrl: sandboxInstance.baseUrl,
-            scfSessionId: userContext.envId,
+            scfSessionId: sandboxSessionId,
             conversationId,
             getAccessToken: () => sandboxInstance!.getAccessToken(),
             getCredentials: async () => ({
@@ -823,21 +892,22 @@ export class CloudbaseAgentService {
       }
     }
 
-    // ── Coding mode: initialize template project and start dev server ──
+    // ── Coding mode: mark preview ready ─────────────────────────────────────
+    // 沙箱 /api/session/init 已内置完整的项目初始化流程：
+    //   - seedCodingTemplate: 从内置模板复制（零延迟）
+    //   - ensureViteDev: 自动启动 vite dev server + crash 重启
+    //   - node_modules 恢复: tar.gz 缓存 / npm install
+    // server 端只需写 previewUrl 信号，让前端触发 preview-url SSE
     if (isCodingMode && sandboxInstance) {
       try {
-        wrappedCallback({ type: 'text', content: '正在初始化 Coding 项目...\n' })
-        await initCodingProject(sandboxInstance, actualCwd)
-        wrappedCallback({ type: 'text', content: '正在启动开发服务器...\n' })
-        await startDevServer(sandboxInstance, actualCwd)
-        wrappedCallback({ type: 'text', content: '开发服务器已启动，可在 Preview 标签页预览。\n\n' })
-      } catch (err) {
-        console.error('[Agent] Coding mode init failed:', (err as Error).message)
-        wrappedCallback({
-          type: 'text',
-          content: `Coding 项目初始化失败: ${(err as Error).message}\n\n`,
-        })
-      }
+        const taskRecord = await getDb().tasks.findById(conversationId)
+        if (!taskRecord?.previewUrl) {
+          await getDb()
+            .tasks.update(conversationId, { previewUrl: 'ready' })
+            .catch(() => {})
+          console.log('[Agent] Coding mode: previewUrl set to ready')
+        }
+      } catch {}
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -987,6 +1057,7 @@ export class CloudbaseAgentService {
     }
 
     // 从 DB 恢复消息历史(含上方 toolConfirmation 真实执行后的 tool_result)
+    let lastAssistantRecordId: string | null = null
     if (conversationId && userContext.envId) {
       const restored = await persistenceService.restoreMessages(
         conversationId,
@@ -996,6 +1067,7 @@ export class CloudbaseAgentService {
       )
       historicalMessages = restored.messages
       lastRecordId = restored.lastRecordId
+      lastAssistantRecordId = restored.lastAssistantRecordId
       hasHistory = historicalMessages.length > 0
 
       // resume interrupt 场景下,即使 DB 中无历史,只要有 conversationId 就强制走 resume
@@ -1013,6 +1085,7 @@ export class CloudbaseAgentService {
         prompt,
         prevRecordId: lastRecordId,
         assistantRecordId: assistantMessageId,
+        lastAssistantRecordId,
       })
       preSavedUserRecordId = preSaved.userRecordId
     }
@@ -1065,7 +1138,7 @@ export class CloudbaseAgentService {
 
       // Skill loader override: load bundled skills + project/user skills
       envVars.CODEBUDDY_SKILL_LOADER_OVERRIDE = getSkillLoaderOverridePath()
-      envVars.CODEBUDDY_BUNDLED_SKILLS_DIR = getBundledSkillsDir()
+      // envVars.CODEBUDDY_BUNDLED_SKILLS_DIR = getBundledSkillsDir()
       if (sandboxInstance && detectedSandboxCwd) {
         // Pass sandbox cwd so skill-loader can scan remote skills dirs
         envVars.CODEBUDDY_SANDBOX_CWD = detectedSandboxCwd
@@ -1091,6 +1164,8 @@ export class CloudbaseAgentService {
       // - 其它情况沿用 'bypassPermissions'(与原有 canUseTool/hook 拦截协同)
       const sdkPermissionMode = requestedPermissionMode === 'plan' ? 'plan' : 'bypassPermissions'
 
+      const publishableKey = await getPublishableKey(userContext.envId)
+
       // 构建 query 参数 - 和 tcb-headless-service buildQueryOptions 一致
       // 注意: cwd 必须是本地路径, 即使沙箱启用. 沙箱只提供 MCP 工具, agent 进程在本地运行.
       const queryArgs = {
@@ -1105,8 +1180,10 @@ export class CloudbaseAgentService {
           includePartialMessages: true,
           systemPrompt: {
             append: isCodingMode
-              ? getCodingSystemPrompt() + '\n\n' + buildAppendPrompt(actualCwd, conversationId, userContext.envId)
-              : buildAppendPrompt(actualCwd, conversationId, userContext.envId),
+              ? getCodingSystemPrompt(userContext.envId, publishableKey) +
+                '\n\n' +
+                buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode)
+              : buildAppendPrompt(actualCwd, conversationId, userContext.envId, sandboxMode),
           },
           mcpServers,
           abortController,
@@ -1337,6 +1414,7 @@ export class CloudbaseAgentService {
           stderr: (data: string) => {
             console.error('[Agent CLI stderr]', data.trim())
           },
+          settingSources: ['project'],
           // P2: 移除 EnterPlanMode 的禁用——Plan 模式现改由显式 permissionMode='plan' + ExitPlanMode 工具驱动
           disallowedTools: ['AskUserQuestion'],
         },
@@ -1352,6 +1430,7 @@ export class CloudbaseAgentService {
       }, CONNECT_TIMEOUT_MS)
 
       let firstMessageReceived = false
+      let resultEmitted = false // 防止双发 result（break messageLoop 路径 vs 自然结束路径）
       const tracker = createToolCallTracker()
 
       resetIterationTimeout()
@@ -1443,6 +1522,7 @@ export class CloudbaseAgentService {
             }
             case 'result':
               // P4: agent 本轮执行完毕
+              resultEmitted = true
               emitPhase('idle')
               wrappedCallback({
                 type: 'result',
@@ -1455,6 +1535,16 @@ export class CloudbaseAgentService {
             default:
               break
           }
+        }
+        // for-await 循环自然结束（SDK 没有发 'result' 消息，如 GLM 的 end_turn 行为）
+        // 补发 idle phase + result，确保前端 phase indicator 复位、agent 状态标记为完成
+        if (!resultEmitted) {
+          console.log('[Agent] for-await loop ended without result message, emitting synthetic result')
+          emitPhase('idle')
+          wrappedCallback({
+            type: 'result',
+            content: JSON.stringify({ subtype: 'success', duration_ms: 0 }),
+          })
         }
       } catch (err) {
         console.error('[Agent] message loop error:', err)
@@ -1474,20 +1564,17 @@ export class CloudbaseAgentService {
       if (connectTimer) clearTimeout(connectTimer)
       if (iterationTimeoutTimer) clearTimeout(iterationTimeoutTimer)
 
-      // Cleanup stream events first — messages will be synced to DB below,
-      // so stream events (used only for SSE replay) are no longer needed.
-      try {
-        await persistenceService.cleanupStreamEvents(conversationId, assistantMessageId)
-      } catch {
-        // Non-critical
-      }
-
-      // Flush remaining events to DB
+      // Flush remaining events to DB FIRST — this must happen before cleanup,
+      // so any in-flight events are persisted for SSE replay on reconnect.
       try {
         await eventBuffer.close()
       } catch {
         // Non-critical
       }
+
+      // Cleanup stream events AFTER flushing the buffer and AFTER completeAgent()
+      // is called below, so the poll loop sees isDone=true before events are removed.
+      // (moved down — see cleanup call after completeAgent)
 
       // Archive to git if sandbox was used
       if (sandboxInstance) {
@@ -1507,6 +1594,11 @@ export class CloudbaseAgentService {
         }
       }
 
+      // ── 判断是否被用户取消 ──
+      // handleSessionCancel 已在 registry 中标记 status='cancelled'，
+      // 此处检测并决定 DB 记录的最终状态。
+      const wasCancelled = getAgentRun(conversationId)?.status === 'cancelled'
+
       // 同步消息 + 清理本地文件
       let syncError: Error | undefined
       let finalStatus: 'completed' | 'error' = 'completed'
@@ -1522,7 +1614,8 @@ export class CloudbaseAgentService {
           isResumeFromInterrupt,
           preSavedUserRecordId,
         )
-        await persistenceService.finalizePendingRecords(assistantMessageId, 'done')
+        // 取消时用 'cancel' 而非 'done'，这样 restoreMessages 能识别并跳过被取消的 turn
+        await persistenceService.finalizePendingRecords(assistantMessageId, wasCancelled ? 'cancel' : 'done')
       } catch (err) {
         syncError = err instanceof Error ? err : new Error(String(err))
         finalStatus = 'error'
@@ -1537,19 +1630,45 @@ export class CloudbaseAgentService {
         }
       }
 
-      // Update task status in SQLite
-      try {
-        await getDb().tasks.update(conversationId, {
-          status: finalStatus === 'error' ? 'error' : 'completed',
-          completedAt: Date.now(),
-          updatedAt: Date.now(),
-        })
-      } catch {
-        // Non-critical
+      // Update task status in DB
+      // 被取消的 turn: handleSessionCancel 已写 status='stopped'，不再覆写回 'completed'
+      if (!wasCancelled) {
+        try {
+          await getDb().tasks.update(conversationId, {
+            status: finalStatus === 'error' ? 'error' : 'completed',
+            completedAt: Date.now(),
+            updatedAt: Date.now(),
+          })
+        } catch {
+          // Non-critical
+        }
+      }
+
+      // 兜底: 如果 finalizePendingRecords 在上面因网络问题失败,延迟重试一次
+      // 防止 record 状态卡在 pending 导致后续对话被 "already in progress" 拦截
+      if (syncError) {
+        setTimeout(async () => {
+          try {
+            await persistenceService.finalizePendingRecords(assistantMessageId, 'error')
+            console.log('[Agent] Deferred finalize succeeded for', conversationId)
+          } catch {
+            // 彻底放弃——需要人工修复
+            console.error('[Agent] Deferred finalize also failed for', conversationId)
+          }
+        }, 5000)
       }
 
       // Update agent registry
-      completeAgent(conversationId, finalStatus, syncError?.message)
+      completeAgent(conversationId, wasCancelled ? 'cancelled' : finalStatus, syncError?.message)
+
+      // Cleanup stream events NOW — after completeAgent() so the poll loop sees
+      // isDone=true and drains remaining events before we remove them from DB.
+      // Give poll loop one cycle (500ms) to drain before cleaning.
+      setTimeout(() => {
+        persistenceService.cleanupStreamEvents(conversationId, assistantMessageId).catch(() => {
+          // Non-critical
+        })
+      }, 600)
 
       // Schedule registry cleanup after observers have time to detect completion
       setTimeout(() => removeAgent(conversationId), 30_000)

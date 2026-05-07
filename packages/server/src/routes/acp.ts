@@ -194,8 +194,8 @@ acp.delete('/conversation/:conversationId', async (c) => {
  * 简单的聊天端点，返回 SSE 流式响应
  */
 acp.post('/chat', async (c) => {
-  const body = await c.req.json<{ prompt: string; conversationId?: string; model?: string }>()
-  const { prompt, conversationId, model } = body
+  const body = await c.req.json<{ prompt: string; conversationId?: string; model?: string; mode?: string }>()
+  const { prompt, conversationId, model, mode } = body
 
   const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
   if (!envId) {
@@ -204,6 +204,16 @@ acp.post('/chat', async (c) => {
 
   const actualConversationId = conversationId || uuidv4()
 
+  let taskMode = mode as 'default' | 'coding' | undefined
+  if (!taskMode && conversationId) {
+    try {
+      const task = await getDb().tasks.findById(conversationId)
+      if (task?.mode === 'coding') taskMode = 'coding'
+    } catch {
+      // ignore
+    }
+  }
+
   return observeStreamWithLiveCallback(c, null, actualConversationId, envId, userId, async (callback) => {
     return cloudbaseAgentService.chatStream(prompt, callback, {
       conversationId: actualConversationId,
@@ -211,6 +221,7 @@ acp.post('/chat', async (c) => {
       userId,
       userCredentials,
       model,
+      mode: taskMode,
     })
   })
 })
@@ -385,6 +396,15 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
     // write failure doesn't affect main flow
   }
 
+  // Resolve task mode
+  let taskMode: 'default' | 'coding' | undefined
+  try {
+    const task = await getDb().tasks.findById(sessionId)
+    if (task?.mode === 'coding') taskMode = 'coding'
+  } catch {
+    // ignore
+  }
+
   // Launch agent with liveCallback for real-time SSE push
   return observeStreamWithLiveCallback(c, id, sessionId, envId, userId, async (callback) => {
     return cloudbaseAgentService.chatStream(effectivePrompt, callback, {
@@ -398,6 +418,7 @@ async function handleSessionPrompt(c: any, id: number | string, params: SessionP
       // P2: 透传 Plan 模式开关。当前端在开启 Plan 模式下发起 prompt 时传 'plan'，
       // 或 ExitPlanMode 用户选择 reject_and_exit_plan 后下一轮传 'default' 恢复普通模式。
       permissionMode: params.permissionMode,
+      mode: taskMode,
     })
   })
 }
@@ -440,7 +461,7 @@ async function observeStream(
   return streamSSE(c, async (stream) => {
     let lastSeq = -1
     const POLL_INTERVAL = 500
-    const MAX_POLL_DURATION = 10 * 60 * 1000
+    const MAX_POLL_DURATION = 30 * 60 * 1000
 
     // 1. Replay existing events
     try {
@@ -546,17 +567,19 @@ async function observeStreamWithLiveCallback(
         lastSeq = Math.max(lastSeq, seq)
       }
 
-      try {
-        stream.writeSSE({
+      // writeSSE returns a Promise — attach .catch() so unhandled rejection doesn't
+      // surface as an uncaught error. Actual write failure sets streamClosed=true.
+      stream
+        .writeSSE({
           data: JSON.stringify({
             jsonrpc: '2.0',
             method: 'session/update',
             params: { sessionId, update: acpEvent },
           }),
         })
-      } catch {
-        streamClosed = true
-      }
+        .catch(() => {
+          streamClosed = true
+        })
     }
 
     // ── Launch agent with liveCallback ────────────────────────
@@ -586,7 +609,10 @@ async function observeStreamWithLiveCallback(
     // ── Poll loop (safety net for missed events + completion) ─
     const startTime = Date.now()
     while (Date.now() - startTime < MAX_POLL_DURATION) {
-      if (stream.closed || stream.aborted) break
+      if (stream.closed || stream.aborted) {
+        console.log(`[SSE] Stream closed/aborted for ${sessionId}`)
+        break
+      }
 
       const run = getAgentRun(sessionId)
       const isDone = !run || run.status !== 'running'
@@ -605,9 +631,17 @@ async function observeStreamWithLiveCallback(
           lastSeq = Math.max(lastSeq, evt.seq)
         }
 
-        if (isDone && newEvents.length === 0) break
-      } catch {
-        if (isDone) break
+        if (isDone && newEvents.length === 0) {
+          console.log(
+            `[SSE] Agent done for ${sessionId}, status=${run?.status}, lastSeq=${lastSeq}, breaking poll loop`,
+          )
+          break
+        }
+      } catch (err) {
+        if (isDone) {
+          console.log(`[SSE] Agent done (with poll error) for ${sessionId}, status=${run?.status}`)
+          break
+        }
       }
 
       await new Promise((r) => setTimeout(r, POLL_INTERVAL))
@@ -617,7 +651,27 @@ async function observeStreamWithLiveCallback(
     if (rpcId !== null) {
       const run = getAgentRun(sessionId)
       const stopReason = run?.status === 'error' ? 'error' : 'end_turn'
-      await stream.writeSSE({ data: JSON.stringify(rpcOk(rpcId, { stopReason })) })
+
+      // 如果 agent 出错，先推一条 error 事件让前端知道原因
+      if (run?.status === 'error' && run.error) {
+        await stream.writeSSE({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'session/update',
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: `\n\n⚠️ ${run.error}\n` },
+              },
+            },
+          }),
+        })
+      }
+
+      await stream.writeSSE({
+        data: JSON.stringify(rpcOk(rpcId, { stopReason, meta: { key: 'observeStreamWithLiveCallback', rpcId } })),
+      })
     }
     await stream.writeSSE({ data: '[DONE]' })
 
@@ -644,10 +698,12 @@ async function handleSessionCancel(
   const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
 
   if (sessionId) {
-    // Abort the running agent process
+    // Abort the running agent process and immediately mark as cancelled in registry
+    // (prevents new prompt from observing a dying agent)
     const run = getAgentRun(sessionId)
     if (run && run.status === 'running') {
       run.abortController.abort()
+      run.status = 'cancelled'
     }
 
     if (envId) {
@@ -655,6 +711,13 @@ async function handleSessionCancel(
       const latestStatus = await persistenceService.getLatestRecordStatus(sessionId, userId, envId)
       if (latestStatus && (latestStatus.status === 'pending' || latestStatus.status === 'streaming')) {
         await persistenceService.updateRecordStatus(latestStatus.recordId, 'cancel')
+      }
+
+      // Update task status to stopped so frontend doesn't auto-reconnect
+      try {
+        await getDb().tasks.update(sessionId, { status: 'stopped', updatedAt: Date.now() })
+      } catch {
+        // Non-critical
       }
     }
   }

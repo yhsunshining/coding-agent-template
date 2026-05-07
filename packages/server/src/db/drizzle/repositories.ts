@@ -193,12 +193,13 @@ class DrizzleTaskRepository implements TaskRepository {
     return (row as unknown as Task) ?? null
   }
 
-  async findByUserId(userId: string): Promise<Task[]> {
+  async findByUserId(userId: string, limit = 20): Promise<Task[]> {
     const rows = await drizzleDb
       .select()
       .from(tasks)
       .where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt)))
       .orderBy(desc(tasks.createdAt))
+      .limit(limit)
     return rows as unknown as Task[]
   }
 

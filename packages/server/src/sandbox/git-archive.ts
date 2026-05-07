@@ -178,8 +178,9 @@ export async function deleteConversationViaSandbox(
   sandbox: SandboxInstance,
   envId: string,
   conversationId: string,
+  sandboxCwd?: string,
 ): Promise<void> {
-  const workspace = `/tmp/workspace/${envId}/${conversationId}`
+  const workspace = sandboxCwd || `/tmp/workspace/${envId}/${conversationId}`
 
   try {
     const res = await sandbox.request('/api/tools/bash', {
@@ -202,11 +203,7 @@ export async function deleteConversationViaSandbox(
 }
 
 /**
- * @deprecated 使用 deleteArchiveDirectory 替代
  * 删除远端归档分支（分支名 = sessionId）
- *
- * 注意：session 共享改造后，此函数不再适用，因为分支名 = envId，
- * 删除分支会影响同一 envId 下所有 conversation 的归档。
  */
 export async function deleteArchiveBranch(sessionId: string): Promise<void> {
   const config = getConfig()

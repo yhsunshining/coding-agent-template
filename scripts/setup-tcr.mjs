@@ -291,6 +291,8 @@ function getCloudbaseCredential() {
 /**
  * 从 cloudbase auth.json 读取账号 uin（不区分临时/永久凭证）
  * 永久密钥登录时 auth.json 不含 uin，回退到 STS.GetCallerIdentity 查询
+ * 返回 { accountId: 主账号AppID, callerUin: 当前调用者Uin } 或 null
+ * auth.json 路径无法获取 callerUin，只有 STS 路径才有
  */
 async function getCloudbaseAccountId(secretId, secretKey) {
   // 1. 优先从 auth.json 读取
@@ -299,7 +301,7 @@ async function getCloudbaseAccountId(secretId, secretKey) {
       const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
       const auth = JSON.parse(content)
       if (auth.credential?.uin) {
-        return auth.credential.uin
+        return { accountId: auth.credential.uin, callerUin: '' }
       }
     } catch {
       // ignore parse errors
@@ -317,7 +319,8 @@ async function getCloudbaseAccountId(secretId, secretKey) {
       })
       const resp = await stsClient.GetCallerIdentity({})
       if (resp?.AccountId) {
-        return resp.AccountId
+        // 返回对象包含 accountId 和 callerUin，供调用方区分主账号/子账号
+        return { accountId: resp.AccountId, callerUin: resp.Uin || '' }
       }
     } catch {
       // ignore API errors
@@ -531,8 +534,9 @@ function dockerLogin(domain, username, password) {
     return true
   } catch (error) {
     log('Docker login failed', 'error')
-    log('This may be due to incorrect password.', 'warn')
-    log('If you forgot your password, please reset it at: https://console.cloud.tencent.com/tcr', 'info')
+    log('密码可能不正确，请前往 TCR 控制台重置：', 'warn')
+    log('  https://console.cloud.tencent.com/tcr/?rid=1', 'info')
+    log('  → 找到广州地域的个人实例 → 点击「更多」→「重置登录密码」', 'info')
     return false
   }
 }
@@ -604,7 +608,11 @@ async function setupPermanentKey(config) {
 
     // 如果缺少 accountId，尝试从 cloudbase auth.json 获取
     if (!config.accountId) {
-      config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
+      const result = await getCloudbaseAccountId(config.secretId, config.secretKey)
+      if (result) {
+        config.accountId = result.accountId
+        if (result.callerUin) config.callerUin = result.callerUin
+      }
     }
 
     return true
@@ -671,11 +679,13 @@ async function setupPermanentKey(config) {
   config.isTemporaryCredential = false
 
   // 获取账号 ID（从 auth.json 刷新，登录后会更新）
-  const accountId = await getCloudbaseAccountId(config.secretId, config.secretKey)
-  if (accountId) {
-    config.accountId = accountId
-    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', accountId)
-    log(`账号 ID：${accountId}`, 'info')
+  const idResult = await getCloudbaseAccountId(config.secretId, config.secretKey)
+  if (idResult) {
+    config.accountId = idResult.accountId
+    if (idResult.callerUin) config.callerUin = idResult.callerUin
+    saveEnvVar('TENCENTCLOUD_ACCOUNT_ID', idResult.accountId)
+    log(`账号 ID：${idResult.accountId}`, 'info')
+    if (idResult.callerUin) log(`子账号 Uin：${idResult.callerUin}`, 'info')
   } else {
     log('未能自动获取账号 ID', 'warn')
   }
@@ -810,6 +820,10 @@ async function setupTcr(config) {
 
     if (!password) {
       console.log('')
+      console.log('  请输入 TCR 个人版登录密码。')
+      console.log('  如果忘记密码，可前往控制台重置：https://console.cloud.tencent.com/tcr/?rid=1')
+      console.log('  → 找到广州地域的个人实例 → 点击「更多」→「重置登录密码」')
+      console.log('')
       console.log('  1) 输入 TCR 密码')
       console.log('  2) 忘记密码，前往控制台重置')
       console.log('')
@@ -817,8 +831,12 @@ async function setupTcr(config) {
       const choice = await promptInput('请选择（1 或 2）')
 
       if (choice === '2') {
-        log('请在控制台重置密码后，重新运行此脚本', 'info')
-        log('  https://console.cloud.tencent.com/tcr/instance?rid=1', 'info')
+        console.log('')
+        log('请前往 TCR 控制台重置登录密码：', 'info')
+        log('  https://console.cloud.tencent.com/tcr/?rid=1', 'info')
+        log('  → 找到广州地域的个人实例 → 点击「更多」→「重置登录密码」', 'info')
+        console.log('')
+        log('重置完成后，重新运行此脚本即可', 'info')
         return false
       }
 
@@ -891,7 +909,11 @@ async function setupTcr(config) {
 
   // 确保有 accountId（Docker login 需要）
   if (!config.accountId) {
-    config.accountId = (await getCloudbaseAccountId(config.secretId, config.secretKey)) || ''
+    const idResult = await getCloudbaseAccountId(config.secretId, config.secretKey)
+    if (idResult) {
+      config.accountId = idResult.accountId
+      if (idResult.callerUin) config.callerUin = idResult.callerUin
+    }
   }
   if (!config.accountId) {
     log('未能自动获取账号 ID（AppID）', 'warn')
@@ -908,7 +930,9 @@ async function setupTcr(config) {
   }
 
   // Step 4: Docker login
-  if (!dockerLogin(TCR_DOMAIN, config.accountId, password)) {
+  // 子账号 callerUin 不为空时直接用 callerUin 作为 username，否则用 accountId（主账号）
+  const dockerUsername = config.callerUin || config.accountId
+  if (!dockerLogin(TCR_DOMAIN, dockerUsername, password)) {
     return false
   }
 
@@ -1041,6 +1065,7 @@ async function main() {
     secretId: process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || '',
     secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || '',
     accountId: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
+    callerUin: '',
     tcbEnvId: process.env.TCB_ENV_ID || '',
     // Token for temporary credentials: read from env only, never persisted to disk
     token: process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || undefined,
@@ -1049,7 +1074,7 @@ async function main() {
     namespace: '',
     namespacePrefix: DEFAULT_NAMESPACE_PREFIX,
     visibility: 'private',
-    localImage: 'ghcr.io/yhsunshining/cloudbase-workspace:latest',
+    localImage: 'ghcr.io/yhsunshining/cloudbase-workspace:isolate',
     repoName: 'sandbox',
     tag: 'latest',
     // Password from env var (passed by init.mjs to avoid exposing in process list)
@@ -1196,6 +1221,21 @@ Examples:
     console.log('Your image is available at:')
     console.log(`  ${TCR_DOMAIN}/${config.namespace}/${config.repoName}:${config.tag}\n`)
     console.log('Environment variables have been saved to .env.local')
+
+    // SCF 角色授权提示
+    console.log('')
+    console.log('━━━ SCF 角色授权（必须）━━━')
+    console.log('')
+    console.log('  云函数需要拉取镜像的权限，请依次访问以下两个链接完成授权：')
+    console.log('')
+    console.log('  1) SCF 基础操作权限：')
+    console.log('     https://console.cloud.tencent.com/cam/role/grant?roleName=SCF_QcsRole&policyName=QcloudAccessForScfRole&roleDesc=%E4%BA%91%E5%87%BD%E6%95%B0(SCF)%E6%93%8D%E4%BD%9C%E6%9D%83%E9%99%90%E5%90%AB%E5%88%9B%E5%BB%BA%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8(COS)%E8%A7%A6%E5%8F%91%E5%99%A8%EF%BC%8C%E6%8B%89%E5%8F%96%E4%BB%A3%E7%A0%81%E5%8C%85%E7%AD%89%EF%BC%9B%E5%90%AB%E5%88%9B%E5%BB%BAAPI%E7%BD%91%E5%85%B3(API%20Gateway)%E8%A7%A6%E5%8F%91%E5%99%A8%E7%AD%89%EF%BC%9B%E5%90%AB%E6%B6%88%E5%88%9B%E5%BB%BA%E6%81%AF%E9%98%9F%E5%88%97(CMQ)%E8%A7%A6%E5%8F%91%E5%99%A8%E7%AD%89%EF%BC%9B%E5%90%AB%E6%8A%95%E9%80%92%E6%97%A5%E5%BF%97%E6%9C%8D%E5%8A%A1(CLS)%E6%97%A5%E5%BF%97%E7%AD%89%E3%80%82&principal=eyJzZXJ2aWNlIjoic2NmLnFjbG91ZC5jb20ifQ%3D%3D')
+    console.log('')
+    console.log('  2) SCF 拉取镜像权限：')
+    console.log('     https://console.cloud.tencent.com/cam/role/grant?roleName=SCF_QcsRole&policyName=QcloudAccessForSCFRoleInPullImage&principal=eyJzZXJ2aWNlIjoic2NmLnFjbG91ZC5jb20ifQ%3D%3D')
+    console.log('')
+    console.log('  ⚠ 如果不授权，云函数将无法拉取镜像，沙箱创建会失败。')
+    console.log('')
   } else {
     console.log('\n❌ Setup failed. Please check the errors above.\n')
     process.exit(1)

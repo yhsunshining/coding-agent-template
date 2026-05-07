@@ -62,6 +62,7 @@ export function buildUserEnvPolicyStatements(envId: string) {
         'tcb:DescribeEnvRestriction',
         'tcb:DescribeUserPromotionalActivity',
         'tcb:DescribeFeaturePermissions',
+        'tcb:CreateAuthDomain',
         'tcb:RefreshAuthDomain',
         'tcb:DescribeActivityInfo',
         'tcb:DescribeTcbAccountInfo',
@@ -85,9 +86,10 @@ export function buildUserEnvPolicyStatements(envId: string) {
       effect: 'allow',
       resource: [`qcs::tcb:::env/${envId}`],
     },
-    // 某些 tcb 顶层 action(如 tcb:CreateFunction)在 CloudBase 内部以主账号为鉴权
-    // 范围,不以 envId 作为资源限制,必须 resource: *。单独列出避免整体 tcb:*
-    // 打到全资源造成过度授权。合法 action 名参见 CAM UpdatePolicy 探测结果。
+    // 某些 tcb 顶层 action(如 tcb:CreateFunction / tcb:QueryRecords)在
+    // CloudBase 内部以主账号为鉴权范围,不以 envId 作为资源限制,必须 resource: *。
+    // 单独列出避免整体 tcb:* 打到全资源造成过度授权。合法 action 名参见 CAM
+    // UpdatePolicy 探测结果。
     {
       action: [
         'tcb:CreateFunction',
@@ -95,6 +97,12 @@ export function buildUserEnvPolicyStatements(envId: string) {
         'tcb:GetFunction',
         'tcb:InvokeFunction',
         'tcb:ListFunctions',
+        // 云数据库(NoSQL) 记录操作,同样走主账号鉴权
+        'tcb:QueryRecords',
+        'tcb:PutItem',
+        'tcb:UpdateItem',
+        'tcb:DeleteItem',
+        'tcb:CreateTable',
       ],
       effect: 'allow',
       resource: ['*'],
@@ -275,6 +283,25 @@ export async function provisionUserResources(userId: string, username: string): 
   })
   envId = createEnvResp.EnvId
 
+  // 步骤3.5：添加安全域名
+  // - localhost:5173 用于本地开发
+  // - 主环境 .service.tcloudbase.com 域名，让用户环境的前端能通过主环境网关访问
+  try {
+    const mainEnvId = process.env.TCB_ENV_ID
+    const domains = ['localhost:5173']
+    if (mainEnvId) {
+      domains.push(`${mainEnvId}.service.tcloudbase.com`)
+    }
+    console.log('[provision] Adding security domains:', domains.join(', '))
+    await (tcbClient as any).CreateAuthDomain({
+      EnvId: envId,
+      Domains: domains,
+    })
+  } catch (e) {
+    // 非关键：安全域名添加失败不阻塞环境创建
+    console.log('[provision] CreateAuthDomain failed (non-critical):', (e as Error).message)
+  }
+
   // 步骤4：创建权限策略并绑定到子账号
   const policyName = `coder_policy_${envId}`
   let policyId: number | undefined
@@ -315,6 +342,28 @@ export async function provisionUserResources(userId: string, username: string): 
     camSecretId,
     camSecretKey,
     policyId: policyId!,
+  }
+}
+
+/**
+ * 为已存在的 CloudBase 环境添加安全域名
+ * 用于补全历史环境缺少的安全域名配置
+ */
+export async function ensureAuthDomains(envId: string, domains: string[]): Promise<void> {
+  const { tcbClient } = getClients()
+  try {
+    await (tcbClient as any).CreateAuthDomain({
+      EnvId: envId,
+      Domains: domains,
+    })
+    console.log('[provision] Auth domains added')
+  } catch (e: any) {
+    // ResourceInUse = 域名已存在，忽略
+    if (e?.code === 'ResourceInUse') {
+      console.log('[provision] Auth domains already exist')
+      return
+    }
+    console.log('[provision] CreateAuthDomain failed:', (e as Error).message)
   }
 }
 

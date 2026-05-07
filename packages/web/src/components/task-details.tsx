@@ -1,4 +1,6 @@
 import type { Task } from '@coder/shared'
+import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
+import type { Theme } from '@coder/dashboard/CloudDashboard'
 
 interface Connector {
   id: string
@@ -36,9 +38,14 @@ import {
   Plus,
   Maximize,
   Minimize,
+  AlertTriangle,
+  Cloud,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useTheme } from 'next-themes'
+import { useAtomValue } from 'jotai'
+import { sessionAtom } from '@/lib/atoms/session'
 import { toast } from 'sonner'
 import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { useTasks } from '@/components/app-layout'
@@ -61,6 +68,8 @@ import { FileDiffViewer } from '@/components/file-diff-viewer'
 import { CreatePRDialog } from '@/components/create-pr-dialog'
 import { MergePRDialog } from '@/components/merge-pr-dialog'
 import { TaskChat } from '@/components/task-chat'
+import { BrowserControls } from '@/components/chat/browser-controls'
+import { PreviewPlaceholder } from '@/components/chat/preview-placeholder'
 import { useChatStream } from '@/hooks/use-chat-stream'
 import {
   AlertDialog,
@@ -186,6 +195,12 @@ export function TaskDetails({
   initialPrompt,
   onInitialPromptConsumed,
 }: TaskDetailsProps) {
+  // ── Theme & session (for CloudDashboard) ──
+  const { resolvedTheme } = useTheme()
+  const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
+  const session = useAtomValue(sessionAtom)
+  const sessionEnvId = session?.envId || ''
+
   // ── Chat stream — hoisted here so it survives TaskChat remounts ──
   const chatStream = useChatStream(task.id, { onStreamComplete })
 
@@ -232,7 +247,7 @@ export function TaskDetails({
   const [subMode, setSubMode] = useState<'local' | 'remote'>(hasBranch ? 'remote' : 'local')
   const viewMode: 'local' | 'remote' | 'all' | 'all-local' =
     filesPane === 'files' ? (subMode === 'local' ? 'all-local' : 'all') : subMode
-  const [activeTab, setActiveTab] = useState<'code' | 'chat' | 'preview'>('code')
+  const [activeTab, setActiveTab] = useState<'code' | 'chat' | 'preview' | 'cloud'>('code')
   const [showFilesList, setShowFilesList] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [sandboxTimeRemaining, setSandboxTimeRemaining] = useState<string | null>(null)
@@ -240,9 +255,191 @@ export function TaskDetails({
   // Desktop pane toggles - initialize from cookies
   const [showFilesPane, setShowFilesPane] = useState(() => getShowFilesPane())
   const [showCodePane, setShowCodePane] = useState(() => getShowCodePane())
-  const [showPreviewPane, setShowPreviewPane] = useState(() => getShowPreviewPane())
+  // isCodingMode: 只有明确 mode==='coding' 才显示 preview，其他（'default' 或 null/undefined）均不显示
+  const isCodingMode = task.mode === 'coding'
+  // Preview pane:
+  //   - non-coding mode: never show (no button, no pane regardless of cookie)
+  //   - coding mode: open by default; user can close and it's remembered via cookie
+  const [showPreviewPane, setShowPreviewPane] = useState(() => {
+    if (!isCodingMode) return false
+    // getShowPreviewPane() defaults to false when no cookie exists.
+    // For coding mode we want "open" as the factory default, so only honour
+    // the cookie when it has been explicitly set (i.e. !== undefined).
+    const raw = typeof document !== 'undefined' ? document.cookie.match(/(^| )show-preview-pane=([^;]+)/) : null
+    return raw ? raw[2] === 'true' : true // default open for coding mode
+  })
   const [showChatPane, setShowChatPane] = useState(() => getShowChatPane())
+  const [showCloudPane, setShowCloudPane] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)
+
+  // Coding mode preview state (P6+: /api/tasks/:id/preview-url 接口驱动)
+  const [previewGatewayUrl, setPreviewGatewayUrl] = useState<string | null>(null)
+  const [previewGatewayLoading, setPreviewGatewayLoading] = useState(false)
+  const [previewGatewayError, setPreviewGatewayError] = useState<string | null>(null)
+  const [previewLoadingMessage, setPreviewLoadingMessage] = useState('正在启动预览...')
+  const [iframeLoaded, setIframeLoaded] = useState(false)
+  const [checkingErrors, setCheckingErrors] = useState(false)
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null)
+  const previewAbortRef = useRef<AbortController | null>(null)
+
+  /**
+   * 调后端 SSE 流，实时推送进度。
+   * 后端会按需安装依赖 / 启动 dev server，完成后推 { stage:'ready', gatewayUrl }。
+   */
+  const loadPreviewGatewayUrl = useCallback(async () => {
+    if (!isCodingMode) return
+
+    // 取消上一次请求
+    previewAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    previewAbortRef.current = ctrl
+
+    setPreviewGatewayLoading(true)
+    setPreviewGatewayError(null)
+    setPreviewGatewayUrl(null)
+    setPreviewLoadingMessage('正在启动预览...')
+
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/preview-url`, {
+        credentials: 'include',
+        signal: ctrl.signal,
+      })
+
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string }
+        setPreviewGatewayError(data.error || `启动失败 (${res.status})`)
+        setPreviewGatewayLoading(false)
+        return
+      }
+
+      // 解析 SSE 流
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6)) as {
+              stage: 'progress' | 'ready' | 'error'
+              message: string
+              gatewayUrl?: string
+              port?: number
+            }
+
+            if (event.stage === 'progress') {
+              setPreviewLoadingMessage(event.message)
+            } else if (event.stage === 'ready' && event.gatewayUrl) {
+              setPreviewGatewayUrl(event.gatewayUrl)
+              setPreviewGatewayLoading(false)
+              return
+            } else if (event.stage === 'error') {
+              setPreviewGatewayError(event.message)
+              setPreviewGatewayLoading(false)
+              return
+            }
+          } catch {
+            // skip unparseable lines
+          }
+        }
+      }
+
+      // 流结束但没收到 ready
+      if (!ctrl.signal.aborted) {
+        setPreviewGatewayError('Preview stream ended unexpectedly')
+        setPreviewGatewayLoading(false)
+      }
+    } catch (err: unknown) {
+      if ((err as Error)?.name === 'AbortError') return
+      setPreviewGatewayError('Failed to load preview')
+      setPreviewGatewayLoading(false)
+    }
+  }, [isCodingMode, task.id])
+
+  // 组件卸载时取消请求
+  useEffect(() => {
+    return () => {
+      previewAbortRef.current?.abort()
+    }
+  }, [])
+
+  // coding mode: preview pane 打开时加载 URL（若尚未加载）
+  // 注意: 必须检查 !previewGatewayError，否则出错后 loading=false+url=null
+  // 会导致 effect 再次触发 → 无限轮询
+  // 注意: 必须检查 task.previewUrl，等 agent 完成 initCodingProject + startDevServer 后才触发
+  useEffect(() => {
+    if (
+      isCodingMode &&
+      showPreviewPane &&
+      task.previewUrl &&
+      !previewGatewayUrl &&
+      !previewGatewayLoading &&
+      !previewGatewayError
+    ) {
+      loadPreviewGatewayUrl()
+    }
+  }, [
+    isCodingMode,
+    showPreviewPane,
+    task.previewUrl,
+    previewGatewayUrl,
+    previewGatewayLoading,
+    previewGatewayError,
+    loadPreviewGatewayUrl,
+  ])
+
+  // previewKey / URL 变化时重置 iframe 加载状态
+  // previewKey 增加（手动刷新）时，重新调后端拉起 dev server
+  useEffect(() => {
+    setIframeLoaded(false)
+    if (previewKey > 0 && isCodingMode) {
+      setPreviewGatewayUrl(null)
+      setPreviewGatewayError(null)
+      setPreviewLoadingMessage('正在重启预览...')
+      void loadPreviewGatewayUrl()
+    }
+  }, [previewKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 后台健康检查：iframe 显示后每 15s 通过后端检查 dev server 是否实际响应。
+  // 后端在沙箱内部 curl localhost:5173，避免跨域问题。
+  // status==='stopped' 说明 vite 没在跑，自动重新拉起。
+  useEffect(() => {
+    if (!isCodingMode || !previewGatewayUrl || previewGatewayLoading) return
+
+    let cancelled = false
+    const interval = setInterval(async () => {
+      if (cancelled) return
+      try {
+        const res = await fetch(`/api/tasks/${task.id}/preview-health`, {
+          credentials: 'include',
+          signal: AbortSignal.timeout(12000),
+        })
+        if (!res.ok) return
+        const data = (await res.json()) as { status: string; supervisorState?: string }
+        if (data.status === 'stopped' && !cancelled) {
+          console.log(`[preview] Dev server stopped (supervisorState=${data.supervisorState}), restarting...`)
+          clearInterval(interval)
+          setPreviewLoadingMessage('Dev server 已停止，正在重启...')
+          void loadPreviewGatewayUrl()
+        }
+      } catch {
+        // 网络错误忽略
+      }
+    }, 15000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [isCodingMode, previewGatewayUrl, previewGatewayLoading, loadPreviewGatewayUrl, task.id])
 
   // Pane widths for resizing
   const [filesPaneWidth, setFilesPaneWidth] = useState(() => getFilesPaneWidth())
@@ -347,7 +544,7 @@ export function TaskDetails({
   // ─── Derived pane visibility flags ──────────────────────────────────
   const hasFilesSupport = hasBranch || !!task.sandboxId
   const showCodeViewer = (showCodePane && hasBranch) || (!!selectedFile && showFilesPane)
-  const hasMiddlePane = showCodeViewer || showPreviewPane
+  const hasMiddlePane = showCodeViewer || showPreviewPane || showCloudPane
 
   // Helper function to format dates - show only time if same day as today
   const formatDateTime = (date: Date) => {
@@ -1141,6 +1338,11 @@ export function TaskDetails({
             event.preventDefault()
             setShowPreviewPane((prev) => {
               const newValue = !prev
+              // Preview 和 Files 互斥:打开 Preview 时关 Files
+              if (newValue) {
+                setShowFilesPane(false)
+                saveShowFilesPane(false)
+              }
               saveShowPreviewPane(newValue)
               return newValue
             })
@@ -1705,13 +1907,19 @@ export function TaskDetails({
                 variant="ghost"
                 size="sm"
                 onClick={() => {
+                  // Files 和 Preview/Cloud 互斥
+                  if (showPreviewPane) {
+                    setShowPreviewPane(false)
+                    saveShowPreviewPane(false)
+                  }
+                  setShowCloudPane(false)
                   const newValue = !showFilesPane
                   setShowFilesPane(newValue)
                   saveShowFilesPane(newValue)
                 }}
                 className={cn(
                   'h-7 px-3 text-xs font-medium transition-colors',
-                  showFilesPane
+                  showFilesPane && !showPreviewPane && !showCloudPane
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
                 )}
@@ -1719,40 +1927,59 @@ export function TaskDetails({
                 Files
               </Button>
             )}
-            {/* <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                const newValue = !showCodePane
-                setShowCodePane(newValue)
-                saveShowCodePane(newValue)
-              }}
-              className={cn(
-                'h-7 px-3 text-xs font-medium transition-colors',
-                showCodePane
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
-              )}
-            >
-              Code
-            </Button>
+            {/* Preview 按钮(仅 coding mode 显示) */}
+            {isCodingMode && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // Preview 和 Files/Cloud 互斥
+                  if (!showPreviewPane) {
+                    setShowFilesPane(false)
+                    saveShowFilesPane(false)
+                  }
+                  setShowCloudPane(false)
+                  const newValue = !showPreviewPane
+                  setShowPreviewPane(newValue)
+                  saveShowPreviewPane(newValue)
+                }}
+                className={cn(
+                  'h-7 px-3 text-xs font-medium transition-colors',
+                  showPreviewPane
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                )}
+              >
+                Preview
+              </Button>
+            )}
+            {/* Cloud 按钮 */}
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
-                const newValue = !showPreviewPane
-                setShowPreviewPane(newValue)
-                saveShowPreviewPane(newValue)
+                // Cloud 和 Files/Preview 互斥
+                if (showFilesPane) {
+                  setShowFilesPane(false)
+                  saveShowFilesPane(false)
+                }
+                if (showPreviewPane) {
+                  setShowPreviewPane(false)
+                  saveShowPreviewPane(false)
+                }
+                setShowCloudPane(!showCloudPane)
               }}
               className={cn(
                 'h-7 px-3 text-xs font-medium transition-colors',
-                showPreviewPane
+                showCloudPane
                   ? 'bg-accent text-accent-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
               )}
             >
-              Sandbox
-            </Button> */}
+              Cloud
+            </Button>
+            {/* Code pane toggle (注释保留以供将来恢复) */}
+            {/* <Button variant="ghost" size="sm" ... Code </Button> */}
             <Button
               variant="ghost"
               size="sm"
@@ -1953,8 +2180,8 @@ export function TaskDetails({
               </div>
             ) : null}
 
-            {/* Resize Handle - Code/Preview */}
-            {showPreviewPane && (showCodeViewer || showFilesPane) && (
+            {/* Resize Handle - Code/Preview/Cloud */}
+            {(showPreviewPane || showCloudPane) && (showCodeViewer || showFilesPane) && (
               <div className="w-3 cursor-col-resize flex-shrink-0 relative group">
                 <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border group-hover:bg-primary/50 transition-colors" />
               </div>
@@ -1963,192 +2190,340 @@ export function TaskDetails({
             {/* Preview */}
             {showPreviewPane && (
               <div className={cn('flex-1 min-h-0 min-w-0', isPreviewFullscreen && 'fixed inset-0 z-50 bg-background')}>
-                <div className="overflow-hidden h-full flex flex-col">
-                  {/* Preview Toolbar */}
-                  <div className="flex items-center gap-2 px-3 border-b flex-shrink-0 h-[46px]">
-                    <Monitor className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                    {task.sandboxUrl && sandboxHealth !== 'stopped' ? (
-                      <a
-                        href={task.sandboxUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-muted-foreground hover:text-foreground truncate flex-1 transition-colors"
-                        title={task.sandboxUrl}
+                {/* ── Coding mode: gateway URL 驱动的预览(P6+) ── */}
+                {isCodingMode ? (
+                  <div className="overflow-hidden h-full flex flex-col">
+                    {/* 工具栏:BrowserControls + 刷新 + 全屏 */}
+                    <div className="flex h-8 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
+                      <BrowserControls
+                        previewUrl={previewGatewayUrl || 'http://localhost:5173'}
+                        iframeRef={previewIframeRef}
+                        onHardRefresh={() => {
+                          setPreviewKey((k) => k + 1)
+                        }}
+                        className="flex-1 min-w-0"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (previewGatewayUrl) window.open(previewGatewayUrl, '_blank')
+                        }}
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title="Open in new window"
+                        disabled={!previewGatewayUrl}
                       >
-                        {task.sandboxUrl}
-                      </a>
-                    ) : (
-                      <span className="text-sm text-muted-foreground truncate flex-1">
-                        {sandboxHealth === 'stopped'
-                          ? 'Sandbox stopped'
-                          : currentStatus === 'pending' || currentStatus === 'processing'
-                            ? 'Creating sandbox...'
-                            : 'Sandbox not running'}
-                      </span>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setPreviewKey((prev) => prev + 1)}
-                      className="h-6 w-6 p-0 flex-shrink-0"
-                      title="Refresh Preview"
-                      disabled={!task.sandboxUrl}
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
-                      className="h-6 w-6 p-0 flex-shrink-0"
-                      title={isPreviewFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-                    >
-                      {isPreviewFullscreen ? (
-                        <Minimize className="h-3.5 w-3.5" />
-                      ) : (
-                        <Maximize className="h-3.5 w-3.5" />
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          if (checkingErrors) return
+                          setCheckingErrors(true)
+                          try {
+                            const res = await fetch(`/api/tasks/${task.id}/preview-errors`)
+                            const data = await res.json()
+                            if (data.hasErrors && data.errors) {
+                              await chatStream.sendMessage(`预览页面有错误，请修复：\n\n${data.errors}`, () => {})
+                            } else {
+                              toast.success('No errors found')
+                            }
+                          } catch {
+                            toast.error('Failed to check errors')
+                          } finally {
+                            setCheckingErrors(false)
+                          }
+                        }}
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title="Fix preview errors"
+                        disabled={!previewGatewayUrl || checkingErrors}
+                      >
+                        {checkingErrors ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
+                        className="h-6 w-6 p-0 flex-shrink-0 ml-1"
+                        title={isPreviewFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                      >
+                        {isPreviewFullscreen ? (
+                          <Minimize className="h-3.5 w-3.5" />
+                        ) : (
+                          <Maximize className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
+                    {/* 内容区 */}
+                    <div className="relative flex-1 min-h-0">
+                      {/* 项目未初始化：等 agent 完成 initCodingProject + startDevServer */}
+                      {!task.previewUrl && !previewGatewayLoading && !previewGatewayUrl && !previewGatewayError && (
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground text-center">
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                            <span>AI 正在初始化项目，请稍候...</span>
+                          </div>
+                        </div>
                       )}
-                    </Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0 flex-shrink-0"
-                          disabled={isRestartingDevServer || isStoppingSandbox || isStartingSandbox}
-                        >
-                          <MoreVertical className="h-3.5 w-3.5" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {task.sandboxUrl && (
-                          <>
-                            <DropdownMenuItem onClick={() => window.open(task.sandboxUrl!, '_blank')}>
-                              Open in New Tab
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => {
-                                navigator.clipboard.writeText(task.sandboxUrl!)
-                              }}
-                            >
-                              Copy URL
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {task.keepAlive && (
-                          <>
-                            {task.sandboxUrl && <DropdownMenuSeparator />}
-                            {sandboxHealth === 'stopped' || !task.sandboxUrl ? (
-                              <DropdownMenuItem onClick={handleStartSandbox} disabled={isStartingSandbox}>
-                                {isStartingSandbox ? (
-                                  <>
-                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                    Starting...
-                                  </>
-                                ) : (
-                                  'Start Sandbox'
-                                )}
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem onClick={handleStopSandbox} disabled={isStoppingSandbox}>
-                                {isStoppingSandbox ? (
-                                  <>
-                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                    Stopping...
-                                  </>
-                                ) : (
-                                  'Stop Sandbox'
-                                )}
-                              </DropdownMenuItem>
-                            )}
-                          </>
-                        )}
-                        {sandboxHealth === 'running' && (
-                          <>
-                            {(task.sandboxUrl || task.keepAlive) && <DropdownMenuSeparator />}
-                            <DropdownMenuItem onClick={handleRestartDevServer} disabled={isRestartingDevServer}>
-                              {isRestartingDevServer ? (
-                                <>
-                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                                  Restarting...
-                                </>
-                              ) : (
-                                'Restart Dev Server'
-                              )}
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  <div className="overflow-y-auto flex-1">
-                    {task.sandboxUrl ? (
-                      <div className="relative w-full h-full">
-                        {sandboxHealth === 'running' ? (
+                      {/* Loading 状态：实时显示后端推送的进度 */}
+                      {previewGatewayLoading && (
+                        <>
+                          <PreviewPlaceholder />
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground bg-background/80 backdrop-blur rounded-md px-4 py-3 shadow text-center">
+                              <div className="flex items-center gap-2">
+                                <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
+                                <span>{previewLoadingMessage}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      {/* Error 状态 */}
+                      {previewGatewayError && !previewGatewayLoading && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center">
+                          <AlertCircle className="h-8 w-8 text-destructive/60" />
+                          <p className="text-sm text-destructive max-w-[280px]">{previewGatewayError}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              loadPreviewGatewayUrl()
+                            }}
+                          >
+                            重试
+                          </Button>
+                        </div>
+                      )}
+                      {/* iframe：后端已确认 dev server 就绪才返回 URL，拿到即可渲染 */}
+                      {previewGatewayUrl && !previewGatewayLoading && (
+                        <>
+                          {/* 加载遮罩（等待 iframe onLoad） */}
+                          {!iframeLoaded && (
+                            <div className="absolute inset-0 z-10">
+                              <PreviewPlaceholder />
+                              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/60" />
+                              </div>
+                            </div>
+                          )}
                           <iframe
                             key={previewKey}
-                            src={task.sandboxUrl}
-                            className="w-full h-full border-0"
-                            title="Preview"
-                            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
+                            ref={previewIframeRef}
+                            src={previewGatewayUrl}
+                            className={cn(
+                              'w-full h-full border-0 transition-opacity duration-300',
+                              iframeLoaded ? 'opacity-100' : 'opacity-0',
+                            )}
+                            title="Project Preview"
+                            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                            onLoad={() => setIframeLoaded(true)}
                           />
-                        ) : null}
-                        {sandboxHealth === 'starting' && (
-                          <div className="absolute inset-0 bg-background flex items-center justify-center">
-                            <div className="text-center">
-                              <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-muted-foreground" />
-                              <p className="text-sm text-muted-foreground">Starting dev server...</p>
-                            </div>
-                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* ── 非 coding mode: 旧式 sandboxUrl 预览 ── */
+                  <div className="overflow-hidden h-full flex flex-col">
+                    {/* Preview Toolbar */}
+                    <div className="flex items-center gap-2 px-3 border-b flex-shrink-0 h-[46px]">
+                      <Monitor className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                      {task.sandboxUrl && sandboxHealth !== 'stopped' ? (
+                        <a
+                          href={task.sandboxUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm text-muted-foreground hover:text-foreground truncate flex-1 transition-colors"
+                          title={task.sandboxUrl}
+                        >
+                          {task.sandboxUrl}
+                        </a>
+                      ) : (
+                        <span className="text-sm text-muted-foreground truncate flex-1">
+                          {sandboxHealth === 'stopped'
+                            ? 'Sandbox stopped'
+                            : currentStatus === 'pending' || currentStatus === 'processing'
+                              ? 'Creating sandbox...'
+                              : 'Sandbox not running'}
+                        </span>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPreviewKey((prev) => prev + 1)}
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title="Refresh Preview"
+                        disabled={!task.sandboxUrl}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsPreviewFullscreen(!isPreviewFullscreen)}
+                        className="h-6 w-6 p-0 flex-shrink-0"
+                        title={isPreviewFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                      >
+                        {isPreviewFullscreen ? (
+                          <Minimize className="h-3.5 w-3.5" />
+                        ) : (
+                          <Maximize className="h-3.5 w-3.5" />
                         )}
-                        {sandboxHealth === 'stopped' && (
-                          <div className="absolute inset-0 bg-background flex items-center justify-center">
-                            <div className="text-center">
-                              <StopCircle className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                              <p className="text-sm text-muted-foreground mb-1">Sandbox Stopped</p>
-                              <p className="text-xs text-muted-foreground">Start a new sandbox from the menu above</p>
-                            </div>
-                          </div>
-                        )}
-                        {sandboxHealth === 'error' && (
-                          <div className="absolute inset-0 bg-background flex items-center justify-center">
-                            <div className="text-center">
-                              <AlertCircle className="h-8 w-8 mx-auto mb-2 text-destructive" />
-                              <p className="text-sm text-muted-foreground mb-1">Application Error</p>
-                              <p className="text-xs text-muted-foreground">The dev server encountered an error</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-muted-foreground text-sm p-6 text-center">
-                        <div>
-                          {currentStatus === 'pending' || currentStatus === 'processing' ? (
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 flex-shrink-0"
+                            disabled={isRestartingDevServer || isStoppingSandbox || isStartingSandbox}
+                          >
+                            <MoreVertical className="h-3.5 w-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {task.sandboxUrl && (
                             <>
-                              <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-muted-foreground" />
-                              <p className="mb-1">Creating sandbox...</p>
-                              <p className="text-xs">The preview will appear here once the dev server starts</p>
-                            </>
-                          ) : (
-                            <>
-                              <p className="mb-1">Sandbox not running</p>
-                              <p className="text-xs">
-                                {task.keepAlive
-                                  ? 'Start it from the menu above to view the preview'
-                                  : 'This task does not have keep-alive enabled'}
-                              </p>
+                              <DropdownMenuItem onClick={() => window.open(task.sandboxUrl!, '_blank')}>
+                                Open in New Tab
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  navigator.clipboard.writeText(task.sandboxUrl!)
+                                }}
+                              >
+                                Copy URL
+                              </DropdownMenuItem>
                             </>
                           )}
+                          {task.keepAlive && (
+                            <>
+                              {task.sandboxUrl && <DropdownMenuSeparator />}
+                              {sandboxHealth === 'stopped' || !task.sandboxUrl ? (
+                                <DropdownMenuItem onClick={handleStartSandbox} disabled={isStartingSandbox}>
+                                  {isStartingSandbox ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                      Starting...
+                                    </>
+                                  ) : (
+                                    'Start Sandbox'
+                                  )}
+                                </DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem onClick={handleStopSandbox} disabled={isStoppingSandbox}>
+                                  {isStoppingSandbox ? (
+                                    <>
+                                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                      Stopping...
+                                    </>
+                                  ) : (
+                                    'Stop Sandbox'
+                                  )}
+                                </DropdownMenuItem>
+                              )}
+                            </>
+                          )}
+                          {sandboxHealth === 'running' && (
+                            <>
+                              {(task.sandboxUrl || task.keepAlive) && <DropdownMenuSeparator />}
+                              <DropdownMenuItem onClick={handleRestartDevServer} disabled={isRestartingDevServer}>
+                                {isRestartingDevServer ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                    Restarting...
+                                  </>
+                                ) : (
+                                  'Restart Dev Server'
+                                )}
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <div className="overflow-y-auto flex-1">
+                      {task.sandboxUrl ? (
+                        <div className="relative w-full h-full">
+                          {sandboxHealth === 'running' ? (
+                            <iframe
+                              key={previewKey}
+                              src={task.sandboxUrl}
+                              className="w-full h-full border-0"
+                              title="Preview"
+                              sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals"
+                            />
+                          ) : null}
+                          {sandboxHealth === 'starting' && (
+                            <div className="absolute inset-0 bg-background flex items-center justify-center">
+                              <div className="text-center">
+                                <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-sm text-muted-foreground">Starting dev server...</p>
+                              </div>
+                            </div>
+                          )}
+                          {sandboxHealth === 'stopped' && (
+                            <div className="absolute inset-0 bg-background flex items-center justify-center">
+                              <div className="text-center">
+                                <StopCircle className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+                                <p className="text-sm text-muted-foreground mb-1">Sandbox Stopped</p>
+                                <p className="text-xs text-muted-foreground">Start a new sandbox from the menu above</p>
+                              </div>
+                            </div>
+                          )}
+                          {sandboxHealth === 'error' && (
+                            <div className="absolute inset-0 bg-background flex items-center justify-center">
+                              <div className="text-center">
+                                <AlertCircle className="h-8 w-8 mx-auto mb-2 text-destructive" />
+                                <p className="text-sm text-muted-foreground mb-1">Application Error</p>
+                                <p className="text-xs text-muted-foreground">The dev server encountered an error</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-muted-foreground text-sm p-6 text-center">
+                          <div>
+                            {currentStatus === 'pending' || currentStatus === 'processing' ? (
+                              <>
+                                <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2 text-muted-foreground" />
+                                <p className="mb-1">Creating sandbox...</p>
+                                <p className="text-xs">The preview will appear here once the dev server starts</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="mb-1">Sandbox not running</p>
+                                <p className="text-xs">
+                                  {task.keepAlive
+                                    ? 'Start it from the menu above to view the preview'
+                                    : 'This task does not have keep-alive enabled'}
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
+              </div>
+            )}
+
+            {/* Cloud Dashboard */}
+            {showCloudPane && (
+              <div className="flex-1 min-h-0 min-w-0">
+                <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
               </div>
             )}
 
             {/* Resize Handle - Preview/Chat or Code/Chat */}
-            {showChatPane && (showPreviewPane || showCodeViewer || showFilesPane) && (
+            {showChatPane && (showPreviewPane || showCodeViewer || showFilesPane || showCloudPane) && (
               <div
                 className="w-3 cursor-col-resize flex-shrink-0 relative group"
                 onMouseDown={() => setResizingPane('chat')}
@@ -2430,6 +2805,11 @@ export function TaskDetails({
                   )}
                 </div>
               </div>
+
+              {/* Cloud Tab */}
+              <div className={cn('h-full', activeTab !== 'cloud' && 'hidden')}>
+                <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
+              </div>
             </div>
 
             {/* Bottom Tab Bar */}
@@ -2455,15 +2835,27 @@ export function TaskDetails({
                   <MessageSquare className="h-5 w-5" />
                   <span className="text-xs font-medium">Chat</span>
                 </button>
+                {isCodingMode && (
+                  <button
+                    onClick={() => setActiveTab('preview')}
+                    className={cn(
+                      'flex-1 flex flex-col items-center justify-center gap-1 transition-colors',
+                      activeTab === 'preview' ? 'text-primary' : 'text-muted-foreground',
+                    )}
+                  >
+                    <Monitor className="h-5 w-5" />
+                    <span className="text-xs font-medium">Preview</span>
+                  </button>
+                )}
                 <button
-                  onClick={() => setActiveTab('preview')}
+                  onClick={() => setActiveTab('cloud')}
                   className={cn(
                     'flex-1 flex flex-col items-center justify-center gap-1 transition-colors',
-                    activeTab === 'preview' ? 'text-primary' : 'text-muted-foreground',
+                    activeTab === 'cloud' ? 'text-primary' : 'text-muted-foreground',
                   )}
                 >
-                  <Monitor className="h-5 w-5" />
-                  <span className="text-xs font-medium">Sandbox</span>
+                  <Cloud className="h-5 w-5" />
+                  <span className="text-xs font-medium">Cloud</span>
                 </button>
               </div>
             </div>

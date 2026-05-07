@@ -439,14 +439,24 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
   )
 
   /** Cancel the current session/agent run via ACP. */
+  const cancelledRef = useRef(false)
   const cancelSession = useCallback(async () => {
     try {
+      cancelledRef.current = true
       await acpClient.cancel()
+      // 后端已 await updateRecordStatus + task.status='stopped'
+      // 短暂延迟确保 DB 写入对后续 fetchMessages 可见
+      await new Promise((r) => setTimeout(r, 300))
       phaseRef.current = 'idle'
       setIsSending(false)
       setIsStreamingResponse(false)
+      // 500ms 后清除 cancelled 标记（防止 auto-reconnect 误触发）
+      setTimeout(() => {
+        cancelledRef.current = false
+      }, 500)
     } catch (err) {
       console.error('Failed to cancel session:', err)
+      cancelledRef.current = false
     }
   }, [acpClient])
 
@@ -496,5 +506,6 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
     confirmTool,
     reconnectToStream,
     cancelSession,
+    cancelledRef,
   }
 }

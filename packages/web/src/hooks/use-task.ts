@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { api } from '../lib/api'
 import type { Task } from '@coder/shared'
 
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+
 export function useTask(taskId: string) {
   const [task, setTask] = useState<Task | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -21,9 +23,14 @@ export function useTask(taskId: string) {
 
   useEffect(() => {
     fetchTask()
-    const interval = setInterval(fetchTask, 5000)
-    return () => clearInterval(interval)
   }, [fetchTask])
+
+  // Only poll when task is still running
+  useEffect(() => {
+    if (!task || TERMINAL_STATUSES.has(task.status)) return
+    const interval = setInterval(fetchTask, 15000)
+    return () => clearInterval(interval)
+  }, [task?.status, fetchTask])
 
   return { task, isLoading, error, refetch: fetchTask }
 }

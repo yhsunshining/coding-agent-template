@@ -1012,6 +1012,60 @@ async function installDependencies() {
   return true
 }
 
+// ===================== Upload Coding Template =====================
+
+async function uploadCodingTemplate() {
+  const tarPath = resolve(process.cwd(), 'packages/server/assets/coding-template.tar.gz')
+
+  if (!existsSync(tarPath)) {
+    log('模板文件不存在：packages/server/assets/coding-template.tar.gz', 'warn')
+    log('跳过上传（Coding 模式将使用 git clone 初始化，速度较慢）', 'info')
+    return
+  }
+
+  if (!tcbConfig.envId) {
+    log('TCB_ENV_ID 未设置，跳过模板上传', 'warn')
+    return
+  }
+
+  log('正在上传 Coding 模板到静态托管...')
+  const cloudPath = 'assets/coding-template.tar.gz'
+
+  try {
+    runCommand(
+      `tcb hosting deploy "${tarPath}" ${cloudPath} --envId ${tcbConfig.envId}`,
+      true,
+    )
+    log('模板上传成功', 'success')
+
+    // 构造静态托管 URL 并写入 server/.env
+    // 静态托管域名格式: https://{envId}-{appId}.tcloudbaseapp.com
+    // 通过 tcb hosting detail 获取域名
+    let hostingDomain = ''
+    try {
+      const detailOutput = execSync(
+        `tcb hosting detail --envId ${tcbConfig.envId} 2>/dev/null`,
+        { encoding: 'utf-8', stdio: 'pipe' },
+      )
+      const domainMatch = detailOutput.match(/Domain:\s*(https:\/\/[^\s]+)/)
+      if (domainMatch) {
+        hostingDomain = domainMatch[1]
+      }
+    } catch {}
+
+    if (hostingDomain) {
+      const templateUrl = `${hostingDomain}/${cloudPath}`
+      saveServerEnvVar('CODING_TEMPLATE_URL', templateUrl)
+      log(`CODING_TEMPLATE_URL 已写入: ${templateUrl}`, 'success')
+    } else {
+      log('无法获取静态托管域名，请手动设置 CODING_TEMPLATE_URL', 'warn')
+    }
+  } catch (err) {
+    log(`模板上传失败: ${err.message}`, 'warn')
+    log('Coding 模式将使用 git clone 初始化（较慢）', 'info')
+  }
+}
+
 // ===================== Main =====================
 
 async function main() {
@@ -1046,18 +1100,19 @@ async function main() {
     process.exit(1)
   }
 
-  // Step 6: Setup Server Environment
+  // Step 6: CodeBuddy auth configuration
+  // 必须在 setupServerEnv 之前执行，因为 setupServerEnv 会将 codebuddyConfig 写入 .env
+  await setupCodebuddy()
+
+  // Step 7: Setup Server Environment (writes packages/server/.env including CodeBuddy config)
   if (!(await setupServerEnv())) {
     process.exit(1)
   }
 
-  // Step 7: Install dependencies (setup-tcr.mjs needs tencentcloud-sdk-nodejs)
+  // Step 8: Install dependencies (setup-tcr.mjs needs tencentcloud-sdk-nodejs)
   if (!(await installDependencies())) {
     process.exit(1)
   }
-
-  // Step 8: CodeBuddy auth configuration
-  await setupCodebuddy()
 
   // Step 9: Setup TCR (requires node_modules)
   logSection('TCR 配置')
@@ -1111,6 +1166,10 @@ async function main() {
     log('Skills 安装失败（可选步骤，不影响启动）', 'warn')
     log('可手动运行: sh scripts/install-skills.sh', 'info')
   }
+
+  // Step 12: Upload coding template to static hosting
+  logSection('上传 Coding 模板')
+  await uploadCodingTemplate()
 
   // Done!
   console.log('')

@@ -12,5 +12,7 @@ export function TaskPage() {
     )
   }
 
-  return <TaskPageClient taskId={taskId} user={null} authProvider={null} />
+  // key={taskId} 确保切换 task 时整个页面组件树重建，
+  // 清空所有本地状态（preview URL、文件标签、pane 状态等）
+  return <TaskPageClient key={taskId} taskId={taskId} user={null} authProvider={null} />
 }

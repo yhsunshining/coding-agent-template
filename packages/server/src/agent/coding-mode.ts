@@ -1,222 +1,67 @@
-import type { SandboxInstance } from '../sandbox/scf-sandbox-manager.js'
-
-const TEMPLATE_REPO = 'https://github.com/TencentCloudBase/awesome-cloudbase-examples.git'
-const TEMPLATE_SUBDIR = 'web/cloudbase-react-template'
 const DEV_SERVER_PORT = 5173
 
 /**
- * Initialize a coding project in the sandbox workspace from the CloudBase React template.
- * Clones the template repo, copies the subdir to the workspace, and installs dependencies.
+ * The correct vite.config.ts content for CloudBase sandbox preview.
+ * - base "./" for static hosting deployment (relative asset paths)
+ * - dev server is launched with --base=/preview/ CLI flag which overrides this
+ * - server.host "0.0.0.0" lets the CloudBase gateway proxy reach the dev server
+ * - server.allowedHosts true allows requests from the gateway domain
  */
-export async function initCodingProject(sandbox: SandboxInstance, workspace: string): Promise<void> {
-  // Check if project already initialized (package.json exists)
-  const checkRes = await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      command: `test -f "${workspace}/package.json" && echo "exists" || echo "not_found"`,
-      timeout: 5000,
-    }),
-    signal: AbortSignal.timeout(10_000),
-  })
+const SANDBOX_VITE_CONFIG = `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-  const checkData = (await checkRes.json()) as { result?: { output?: string } }
-  if (checkData.result?.output?.trim() === 'exists') {
-    console.log('[CodingMode] Project already initialized')
-    return
-  }
+// CloudBase sandbox preview setup:
+// - base "./" for static hosting deployment (relative asset paths)
+// - dev server is launched with --base=/preview/ CLI flag which overrides this
+// - server.host "0.0.0.0" lets the CloudBase gateway proxy reach the dev server
+// - server.allowedHosts true allows requests from the gateway domain
+export default defineConfig({
+  plugins: [react()],
+  base: "./",
+  server: {
+    host: "0.0.0.0",
+    port: 5173,
+    allowedHosts: true,
+  },
+});
+`
 
-  // Clone template repo (sparse checkout for the specific subdir)
-  console.log('[CodingMode] Initializing project from template')
-  const initScript = [
-    `cd /tmp`,
-    `git clone --depth 1 --filter=blob:none --sparse ${TEMPLATE_REPO} _template_repo 2>&1 || true`,
-    `cd _template_repo`,
-    `git sparse-checkout set ${TEMPLATE_SUBDIR} 2>&1`,
-    `cp -r ${TEMPLATE_SUBDIR}/. "${workspace}/"`,
-    `cd /tmp && rm -rf _template_repo`,
-  ].join(' && ')
-
-  const cloneRes = await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command: initScript, timeout: 60000 }),
-    signal: AbortSignal.timeout(120_000),
-  })
-
-  if (!cloneRes.ok) {
-    throw new Error('Failed to clone template')
-  }
-
-  // Install dependencies
-  console.log('[CodingMode] Installing dependencies')
-  const installRes = await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      command: `cd "${workspace}" && npm install 2>&1`,
-      timeout: 120000,
-    }),
-    signal: AbortSignal.timeout(180_000),
-  })
-
-  if (!installRes.ok) {
-    throw new Error('Failed to install dependencies')
-  }
-
-  console.log('[CodingMode] Project initialized')
-}
+// ─── Exports ───────────────────────────────────────────────────────────────
 
 /**
- * Start the Vite dev server in the background inside the sandbox.
- * Returns once the server is confirmed running.
+ * Returns the system prompt for coding mode.
+ * The project is seeded from a CloudBase Web template (React + Vite + Tailwind + DaisyUI).
+ * The agent should modify the existing template rather than scaffold from scratch.
  */
-export async function startDevServer(sandbox: SandboxInstance, workspace: string): Promise<void> {
-  // Check if dev server is already running
-  const checkRes = await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${DEV_SERVER_PORT}/ 2>/dev/null || echo "0"`,
-      timeout: 5000,
-    }),
-    signal: AbortSignal.timeout(10_000),
-  })
+export function getCodingSystemPrompt(envId: string, publishableKey: string): string {
+  return `<coding-mode>
+当前处于 Coding 模式，你正在一个基于 CloudBase Web 项目模板的 React 应用中工作。
+模板已包含完整的项目脚手架，请基于已有代码进行页面修改和功能开发，不要从零搭建项目。
 
-  const checkData = (await checkRes.json()) as { result?: { output?: string } }
-  const statusCode = checkData.result?.output?.trim()
-  if (statusCode === '200' || statusCode === '304') {
-    console.log('[CodingMode] Dev server already running')
-    return
-  }
+<IMPORTANT>
+IMPORTANT: 必须先读取 src/utils/cloudbase.ts，将其中的 ENV_ID 和 PUBLISHABLE_KEY 替换为当前环境的真实值。
+IMPORTANT: 直接修改代码而非创建 .env 文件。
+- ENV_ID：${envId}
+- PUBLISHABLE_KEY：${publishableKey}
+</IMPORTANT>
 
-  // Start dev server in background
-  console.log('[CodingMode] Starting dev server')
-  await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      command: `cd "${workspace}" && nohup npm run dev > /tmp/devserver.log 2>&1 &`,
-      timeout: 10000,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  })
-
-  // Wait for dev server to be ready (poll up to 30s)
-  for (let i = 0; i < 15; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
-    try {
-      const pollRes = await sandbox.request('/api/tools/bash', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${DEV_SERVER_PORT}/ 2>/dev/null || echo "0"`,
-          timeout: 5000,
-        }),
-        signal: AbortSignal.timeout(10_000),
-      })
-      const pollData = (await pollRes.json()) as { result?: { output?: string } }
-      const code = pollData.result?.output?.trim()
-      if (code === '200' || code === '304') {
-        console.log('[CodingMode] Dev server ready')
-        return
-      }
-    } catch {
-      // continue polling
-    }
-  }
-
-  console.log('[CodingMode] Dev server may not be ready, continuing anyway')
-}
-
-/**
- * Returns the system prompt that constrains the agent to the coding tech stack.
- */
-export function getCodingSystemPrompt(): string {
-  return `You are a frontend coding assistant. You are working on a React project with the following tech stack:
-
+<tech-stack>
 - React 18 + TypeScript
-- Vite (dev server and build tool)
-- Tailwind CSS (utility-first CSS framework)
-- DaisyUI (Tailwind component library)
-- React Router (client-side routing)
-- Framer Motion (animations)
+- Vite 6（开发服务器 + 构建工具）
+- Tailwind CSS（原子化 CSS 框架）
+- React Router（客户端路由）
+- @cloudbase/js-sdk（云开发前端 SDK）
+</tech-stack>
 
-IMPORTANT RULES:
-1. Only use the above technologies. Do NOT introduce new frameworks or libraries unless explicitly asked.
-2. Use Tailwind CSS classes and DaisyUI components for all styling. Do NOT write custom CSS unless absolutely necessary.
-3. All new components should be placed in src/components/.
-4. All new pages should be placed in src/pages/ and registered in src/App.jsx routes.
-5. Use functional components with hooks. Do NOT use class components.
-6. Keep the code clean and well-structured. Use TypeScript for new files (.tsx/.ts).
-7. After modifying code, the dev server will auto-reload via Vite HMR — no need to restart it.
-8. When creating new UI, prefer DaisyUI components (btn, card, modal, navbar, etc.) over building from scratch.`
+<dev-rules>
+1. 仅使用以上技术栈，除非用户明确要求，不要引入新框架或库。
+2. 新组件放在 src/components/，新页面放在 src/pages/ 并在 src/App.tsx 注册路由。
+3. 代码修改后 Vite HMR 会自动热更新，不需要手动重启 dev server。
+4. 一轮对话内完成所有工作：写好所有文件、安装依赖、确保应用能运行，不要期望用户追问后再继续。
+5. 开发前端应用时，推荐使用 @cloudbase/js-sdk 直接操作数据库（BaaS 模式，无需后端中转），也可以编写云函数作为后端接口。
+6. 注意应用的完整性：确保前端 UI、数据持久化、接口调用、错误处理都完整实现，不要只写半成品。
+</dev-rules>
+</coding-mode>`
 }
 
 export const CODING_DEV_SERVER_PORT = DEV_SERVER_PORT
-
-interface PreviewPortInfo {
-  port: number
-  service?: string
-  kind?: string
-}
-
-/**
- * Detect a running dev server inside the sandbox using the /preview/ports endpoint.
- * The sandbox's remote-workspace service parses /proc/net/tcp{,6} and infers service types
- * (vite, next-dev, webpack-dev-server, etc.) automatically.
- * Returns the port number of the first "preview"-kind service, or 0 if none found.
- */
-async function detectDevServerPort(sandbox: SandboxInstance): Promise<number> {
-  try {
-    const res = await sandbox.request('/preview/ports', {
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!res.ok) return 0
-    const data = (await res.json()) as { ports?: PreviewPortInfo[] }
-    const previewPort = data.ports?.find((p) => p.kind === 'preview')
-    return previewPort?.port ?? 0
-  } catch {
-    return 0
-  }
-}
-
-/**
- * Detect the running dev server port, starting one if not found.
- * - First checks for an existing process via pgrep + ss / /proc/net/tcp6
- * - If none found, starts `npm run dev` in the workspace background
- * - Polls up to 15s for the server to become ready
- * Returns the port number, or throws if the server fails to start.
- */
-export async function detectAndEnsureDevServer(sandbox: SandboxInstance, workspace: string): Promise<number> {
-  // Step 1: check for already-running dev server
-  const existingPort = await detectDevServerPort(sandbox)
-  if (existingPort > 0) {
-    console.log(`[CodingMode] Dev server already running on port ${existingPort}`)
-    return existingPort
-  }
-
-  // Step 2: start dev server
-  console.log('[CodingMode] No dev server found, starting one')
-  await sandbox.request('/api/tools/bash', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      command: `cd "${workspace}" && nohup npm run dev > /tmp/devserver.log 2>&1 &`,
-      timeout: 10000,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  })
-
-  // Step 3: poll until port is detected (up to ~15s)
-  for (let i = 0; i < 8; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
-    const port = await detectDevServerPort(sandbox)
-    if (port > 0) {
-      console.log(`[CodingMode] Dev server ready on port ${port}`)
-      return port
-    }
-  }
-
-  throw new Error('Dev server failed to start within timeout')
-}

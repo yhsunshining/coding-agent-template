@@ -180,6 +180,48 @@ export class PersistenceService {
     }
   }
 
+  // ========== Cancelled Turn Filtering ==========
+
+  /**
+   * 过滤被取消的 turn（assistant status='cancel'）及其关联的 user record。
+   *
+   * 取消场景下 DB 中会残留：
+   *   user(status=done) → assistant(status=cancel, parts=[])
+   * 这对不应出现在还原的 JSONL 中，否则 user record 没有对应的 assistant 回复，
+   * 后续 turn 的 parentId 链断裂，SDK resume 走 parentId 树无法找到完整路径。
+   *
+   * 策略：
+   * 1. 找到所有 status='cancel' 的 assistant record
+   * 2. 通过 replyTo 找到其关联的 user record
+   * 3. 同时移除两者
+   */
+  private filterCancelledTurns(records: UnifiedMessageRecord[]): UnifiedMessageRecord[] {
+    // 收集所有被取消的 assistant record 的 replyTo（即对应的 user recordId）
+    const cancelledUserRecordIds = new Set<string>()
+    const cancelledAssistantRecordIds = new Set<string>()
+
+    for (const record of records) {
+      if (record.role === 'assistant' && record.status === 'cancel') {
+        cancelledAssistantRecordIds.add(record.recordId)
+        if (record.replyTo) {
+          cancelledUserRecordIds.add(record.replyTo)
+        }
+      }
+    }
+
+    if (cancelledAssistantRecordIds.size === 0) {
+      return records // 无取消记录，原样返回
+    }
+
+    console.log(
+      `[Persistence] Filtering ${cancelledAssistantRecordIds.size} cancelled turn(s) and ${cancelledUserRecordIds.size} associated user record(s)`,
+    )
+
+    return records.filter(
+      (r) => !cancelledAssistantRecordIds.has(r.recordId) && !cancelledUserRecordIds.has(r.recordId),
+    )
+  }
+
   // ========== Message Conversion ==========
 
   private transformDBMessagesToCodeBuddyMessages(
@@ -219,13 +261,17 @@ export class PersistenceService {
       let needsFix = false
 
       if (msg.parentId && msg.parentId === msg.id) {
+        // Case 1: Self-reference
         needsFix = true
       } else if (msg.parentId) {
+        // Case 2: Parent is file-history-snapshot or doesn't exist in current message set
         const parentType = idTypeMap.get(msg.parentId)
         if (!parentType || parentType === 'file-history-snapshot') {
           needsFix = true
         }
-      } else if (msg.type === 'function_call' || msg.type === 'function_call_result') {
+      } else if (!msg.parentId && i > 0) {
+        // Case 3: 没有 parentId 且不是第一条消息
+        // 所有非首条消息都应该有 parentId，否则从树上脱落
         needsFix = true
       }
 
@@ -599,15 +645,24 @@ export class PersistenceService {
   }> {
     try {
       const dbRecords = await this.loadDBMessages(conversationId, envId, userId)
-      const lastRecordId = dbRecords.length > 0 ? dbRecords[dbRecords.length - 1].recordId : null
-      const lastAssistantRecord = [...dbRecords].reverse().find((r) => r.role === 'assistant')
+
+      // ── 过滤被取消的 turn ──────────────────────────────────────────
+      // 被取消的 assistant record (status='cancel') 以及紧邻其前的 user record
+      // 不应出现在还原的 JSONL 中，否则会产生没有 parentId 的孤立节点，
+      // 导致 SDK resume 时走 parentId 树找不到完整对话路径。
+      const filteredRecords = this.filterCancelledTurns(dbRecords)
+
+      const lastRecordId = filteredRecords.length > 0 ? filteredRecords[filteredRecords.length - 1].recordId : null
+      const lastAssistantRecord = [...filteredRecords]
+        .reverse()
+        .find((r) => r.role === 'assistant' && r.status !== 'cancel')
       const lastAssistantRecordId = lastAssistantRecord?.recordId ?? null
 
-      if (dbRecords.length === 0) {
+      if (filteredRecords.length === 0) {
         return { messages: [], lastRecordId: null, lastAssistantRecordId: null }
       }
 
-      const messages = this.transformDBMessagesToCodeBuddyMessages(dbRecords, conversationId)
+      const messages = this.transformDBMessagesToCodeBuddyMessages(filteredRecords, conversationId)
 
       const localFilePath = getLocalMessageFilePath(conversationId, cwd)
       await this.writeLocalMessageFile(localFilePath, messages)
@@ -785,6 +840,8 @@ export class PersistenceService {
     prompt: string
     prevRecordId: string | null
     assistantRecordId?: string
+    /** 上一条 assistant record 的 recordId，用于写入 user message metadata 的 parentId */
+    lastAssistantRecordId?: string | null
   }): Promise<{ userRecordId: string; assistantRecordId: string }> {
     const { conversationId, envId, userId, prompt, prevRecordId } = params
     const assistantRecordId = params.assistantRecordId || uuidv4()
@@ -801,6 +858,9 @@ export class PersistenceService {
           role: 'user',
           sessionId: conversationId,
           timestamp: Date.now(),
+          // parentId: 指向上一条 assistant 消息，确保 JSONL 树的连续性
+          // 即使 cancel 导致 SDK 没写真正的 JSONL，树也不会断裂
+          ...(params.lastAssistantRecordId ? { parentId: params.lastAssistantRecordId } : {}),
         },
       },
     ]

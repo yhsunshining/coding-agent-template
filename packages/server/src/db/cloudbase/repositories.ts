@@ -217,13 +217,13 @@ class CloudBaseTaskRepository implements TaskRepository {
     return stripCloudBaseId<Task>(data[0] as Record<string, unknown>)
   }
 
-  async findByUserId(userId: string): Promise<Task[]> {
+  async findByUserId(userId: string, limit = 20): Promise<Task[]> {
     const _ = getCommand()
     const collection = await getCollection('tasks')
     const { data } = await collection
       .where({ userId: _.eq(userId), deletedAt: _.eq(null) })
       .orderBy('createdAt', 'desc')
-      .limit(1000)
+      .limit(limit)
       .get()
     return (data as Record<string, unknown>[]).map((doc) => stripCloudBaseId<Task>(doc))
   }

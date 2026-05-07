@@ -97,7 +97,7 @@ function getModelProviderKey(modelId: string): ProviderKey {
 
 // Model options for each agent
 const AGENT_MODELS: Record<string, Array<{ value: string; label: string }>> = {
-  codebuddy: [{ value: 'glm-5.0', label: 'GLM 5.0' }],
+  codebuddy: [{ value: 'glm-5.1', label: 'GLM 5.1' }],
   // --- Other agents (commented out, kept for reference) ---
   // claude: [
   //   { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
@@ -108,7 +108,7 @@ const AGENT_MODELS: Record<string, Array<{ value: string; label: string }>> = {
 
 // Default models for each agent
 const DEFAULT_MODELS = {
-  codebuddy: 'glm-5.0',
+  codebuddy: 'glm-5.1',
   // --- Other agents (commented out) ---
   // claude: 'claude-sonnet-4-5',
   // codex: 'openai/gpt-5.1',
@@ -132,7 +132,9 @@ export function TaskForm({
   const [prompt, setPrompt] = useAtom(taskPromptAtom)
   const selectedAgent = 'codebuddy'
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODELS.codebuddy)
-  const [codebuddyModels, setCodebuddyModels] = useState<ModelInfo[]>([{ id: 'glm-5.0', name: 'GLM 5.0' }])
+  // Default to 'coding' mode — tasks without a git repo are always coding/sandbox tasks
+  const [taskMode, setTaskMode] = useState<'default' | 'coding'>('coding')
+  const [codebuddyModels, setCodebuddyModels] = useState<ModelInfo[]>([{ id: 'glm-5.1', name: 'GLM 5.1' }])
   const [repos, setRepos] = useAtom(githubReposAtomFamily(selectedOwner))
   const [, setLoadingRepos] = useState(false)
 
@@ -141,7 +143,6 @@ export function TaskForm({
   const [maxDuration, setMaxDurationState] = useState(initialMaxDuration)
   const [keepAlive, setKeepAliveState] = useState(initialKeepAlive)
   const [enableBrowser, setEnableBrowserState] = useState(initialEnableBrowser)
-  const [mode, setMode] = useState<'default' | 'coding'>('coding')
   const [showMcpServersDialog, setShowMcpServersDialog] = useState(false)
 
   // Connectors state
@@ -304,7 +305,7 @@ export function TaskForm({
         repoUrl: '',
         selectedAgent,
         selectedModel,
-        mode,
+        mode: taskMode,
         installDependencies,
         maxDuration,
         keepAlive,
@@ -352,7 +353,7 @@ export function TaskForm({
       repoUrl: selectedRepoData?.clone_url || '',
       selectedAgent,
       selectedModel,
-      mode,
+      mode: taskMode,
       installDependencies,
       maxDuration,
       keepAlive,
@@ -395,10 +396,24 @@ export function TaskForm({
             />
           </div>
 
-          {/* Agent/Model selector (fixed to codebuddy) */}
+          {/* Mode + Agent/Model selector */}
           <div className="p-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 flex-1 min-w-0">
+                {/* Mode toggle */}
+                <button
+                  type="button"
+                  onClick={() => setTaskMode(taskMode === 'default' ? 'coding' : 'default')}
+                  className={`flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full border transition-colors ${
+                    taskMode === 'coding'
+                      ? 'bg-primary/10 text-primary border-primary/30'
+                      : 'text-muted-foreground border-border hover:border-primary/30'
+                  }`}
+                >
+                  <Code2 className="h-3 w-3" />
+                  {taskMode === 'coding' ? 'Coding' : 'Default'}
+                </button>
+                <span className="text-muted-foreground/50">·</span>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground px-2 h-8">
                   {(() => {
                     const agent = CODING_AGENTS.find((a) => a.value === selectedAgent)
@@ -499,26 +514,6 @@ export function TaskForm({
                 {/* Buttons */}
                 <div className="flex items-center gap-2">
                   <TooltipProvider delayDuration={1500} skipDelayDuration={1500}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="rounded-full h-8 w-8 p-0 relative"
-                          onClick={() => setMode((m) => (m === 'coding' ? 'default' : 'coding'))}
-                        >
-                          <Code2 className="h-4 w-4" />
-                          {mode === 'coding' && (
-                            <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-green-500" />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Coding Mode {mode === 'coding' ? '(on)' : '(off)'}</p>
-                      </TooltipContent>
-                    </Tooltip>
-
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
