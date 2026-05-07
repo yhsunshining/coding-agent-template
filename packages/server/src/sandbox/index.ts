@@ -1,20 +1,18 @@
 /**
  * Sandbox Module
  *
- * Exports all sandbox-related utilities:
- * - SCF sandbox manager for creating/managing cloud function sandboxes
- * - Tool override for redirecting CLI tools to sandbox
- * - Sandbox MCP proxy for CloudBase tools
- * - Git archive for persisting workspace changes
+ * Exports sandbox manager based on deployment mode:
+ * - AGS mode (E2B_API_KEY set): uses e2b-tcb SDK via TCB gateway
+ * - SCF mode (fallback): uses SCF function creation via CloudBase manager
  */
 
 export {
-  scfSandboxManager,
-  ScfSandboxManager,
+  agsSandboxManager as scfSandboxManager,
+  AgsSandboxManager as ScfSandboxManager,
   SandboxInstance,
   type SandboxMode,
   type SandboxProgressCallback,
-} from './scf-sandbox-manager.js'
+} from './ags-sandbox-manager.js'
 
 export { createSandboxMcpClient, type SandboxMcpDeps } from './sandbox-mcp-proxy.js'
 

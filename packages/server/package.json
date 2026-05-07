@@ -27,6 +27,7 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.8.0",
     "drizzle-orm": "^0.36.4",
+    "e2b": "file:../../../e2b-tcb/packages/js-sdk",
     "gray-matter": "^4.0.3",
     "hono": "^4.7.0",
     "jose": "^6.1.3",
