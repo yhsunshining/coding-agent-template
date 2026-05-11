@@ -1,19 +1,21 @@
 /**
  * AGS Sandbox Manager
  *
- * Uses e2b-tcb JS SDK to manage AGS sandbox instances via TCB gateway.
- * Replaces SCF-based sandbox creation with AGS instance lifecycle.
+ * Pure HTTP + @cloudbase/manager-node. No e2b SDK dependency.
+ * Control plane: manager-node SandboxService (create/pause/resume/stop)
+ * Data plane: HTTP fetch to TRW via TCB gateway
  *
  * Environment variables:
- *   E2B_API_KEY        — AGS API key (Authorization header)
- *   E2B_API_URL        — TCB gateway URL (https://<env>.api.tcloudbasegateway.com/v1/sandbox/-)
- *   E2B_SANDBOX_URL    — Same as E2B_API_URL
- *   E2B_TEMPLATE       — AGS tool name (e.g. trw-sandbox-tcb)
  *   TCB_API_KEY        — TCB token for X-Cloudbase-Authorization header
- *   AGS_SANDBOX_ID     — (optional) Pre-created instance ID to connect to instead of creating new
+ *   TCB_ENV_ID         — CloudBase environment ID
+ *   TCB_SECRET_ID      — Tencent Cloud SecretId (for manager-node)
+ *   TCB_SECRET_KEY     — Tencent Cloud SecretKey (for manager-node)
+ *   AGS_SANDBOX_ID     — (optional) Pre-created instance ID to connect to
+ *   AGS_TOOL_ID        — AGS tool ID for creating new instances
+ *   AGS_SANDBOX_URL    — TCB gateway base URL for data plane (e.g. https://<env>.api.tcloudbasegateway.com/v1/sandbox/-)
  */
 
-import { Sandbox } from 'e2b'
+import { checkHealth, buildDataPlaneHeaders } from './sandbox-backend.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -33,7 +35,6 @@ export class SandboxInstance {
   readonly status: 'creating' | 'ready' | 'error'
   readonly mode: SandboxMode
 
-  private readonly e2bSandbox: Sandbox
   private readonly tcbApiKey: string
 
   // Compat aliases for code that references old SCF SandboxInstance fields
@@ -54,7 +55,7 @@ export class SandboxInstance {
   }
 
   constructor(ctx: {
-    e2bSandbox: Sandbox
+    sandboxId: string
     conversationId: string
     baseUrl: string
     status: 'creating' | 'ready' | 'error'
@@ -62,8 +63,7 @@ export class SandboxInstance {
     tcbApiKey: string
     mcpConfig?: SandboxInstance['mcpConfig']
   }) {
-    this.e2bSandbox = ctx.e2bSandbox
-    this.sandboxId = ctx.e2bSandbox.sandboxId
+    this.sandboxId = ctx.sandboxId
     this.conversationId = ctx.conversationId
     this.baseUrl = ctx.baseUrl
     this.status = ctx.status
@@ -72,20 +72,13 @@ export class SandboxInstance {
     this.mcpConfig = ctx.mcpConfig
   }
 
-  /** Get the underlying E2B Sandbox instance for direct SDK operations */
-  getE2bSandbox(): Sandbox {
-    return this.e2bSandbox
-  }
-
-  /** Compat: returns TCB API key (replaces old SCF access token) */
+  /** Compat: returns TCB API key */
   async getAccessToken(): Promise<string> {
     return this.tcbApiKey
   }
 
   getAuthHeaders(): Record<string, string> {
-    return {
-      'X-Cloudbase-Authorization': `Bearer ${this.tcbApiKey}`,
-    }
+    return buildDataPlaneHeaders('ags', { tcbApiKey: this.tcbApiKey, sandboxId: this.sandboxId })
   }
 
   async getToolOverrideConfig(): Promise<{ url: string; headers: Record<string, string> }> {
@@ -104,6 +97,11 @@ export class SandboxInstance {
       },
     })
   }
+
+  /** Health check via HTTP — replaces e2b isRunning() */
+  async isRunning(): Promise<boolean> {
+    return checkHealth(this.baseUrl, this.getAuthHeaders())
+  }
 }
 
 // ─── AgsSandboxManager ────────────────────────────────────────────────────
@@ -113,35 +111,37 @@ export class AgsSandboxManager {
 
   private getConfig() {
     const tcbApiKey = process.env.TCB_API_KEY || ''
-    const template = process.env.E2B_TEMPLATE || 'trw-sandbox-tcb'
-    const apiUrl = process.env.E2B_API_URL || ''
+    const toolId = process.env.AGS_TOOL_ID || process.env.TOOL_ID || ''
     const preCreatedId = process.env.AGS_SANDBOX_ID || ''
+    const sandboxUrl = process.env.AGS_SANDBOX_URL || process.env.E2B_SANDBOX_URL || ''
 
     if (!tcbApiKey) {
       throw new Error('Missing TCB_API_KEY for AGS sandbox')
     }
 
-    return { tcbApiKey, template, apiUrl, preCreatedId }
+    return { tcbApiKey, toolId, preCreatedId, sandboxUrl }
   }
 
-  private buildHeaders(): Record<string, string> {
-    const { tcbApiKey } = this.getConfig()
-    return {
-      'X-Cloudbase-Authorization': `Bearer ${tcbApiKey}`,
-    }
+  private buildHeaders(sandboxId?: string): Record<string, string> {
+    return buildDataPlaneHeaders('ags', { tcbApiKey: this.getConfig().tcbApiKey, sandboxId })
   }
 
   private buildBaseUrl(sandboxId: string): string {
-    // TRW port 9000 exposed via AGS port routing: https://9000-{instanceId}.{region}.tencentags.com
+    const { sandboxUrl } = this.getConfig()
+    if (sandboxUrl) {
+      // TCB gateway URL — sandbox routing via headers
+      return sandboxUrl
+    }
+    // Fallback: AGS direct (port-routing format)
     const region = process.env.AGS_REGION || 'ap-shanghai'
     return `https://9000-${sandboxId}.${region}.tencentags.com`
   }
 
-  private buildMcpConfig(baseUrl: string): SandboxInstance['mcpConfig'] {
+  private buildMcpConfig(baseUrl: string, sandboxId: string): SandboxInstance['mcpConfig'] {
     return {
       type: 'http' as const,
       url: `${baseUrl}/mcp`,
-      headers: this.buildHeaders(),
+      headers: this.buildHeaders(sandboxId),
     }
   }
 
@@ -157,57 +157,59 @@ export class AgsSandboxManager {
   ): Promise<SandboxInstance> {
     const progress = onProgress || (() => {})
     const mode = options?.mode || 'shared'
-    const { tcbApiKey, template, preCreatedId } = this.getConfig()
+    const { tcbApiKey, toolId, preCreatedId } = this.getConfig()
 
     // Cache key: shared mode uses 'shared', per-conversation uses conversationId
     const cacheKey = mode === 'shared' ? 'shared' : conversationId
 
-    // Check cache
+    // Check cache — health check via HTTP
     const cached = this.instanceCache.get(cacheKey)
     if (cached) {
-      try {
-        const isRunning = await cached.getE2bSandbox().isRunning()
-        if (isRunning) {
-          progress({ phase: 'reuse', message: 'Reusing existing sandbox\n' })
-          return cached
-        }
-      } catch {
-        // Stale, remove from cache
-        this.instanceCache.delete(cacheKey)
+      const alive = await cached.isRunning()
+      if (alive) {
+        progress({ phase: 'reuse', message: 'Reusing existing sandbox\n' })
+        return cached
       }
+      this.instanceCache.delete(cacheKey)
     }
 
-    const headers = this.buildHeaders()
-
-    let e2bSandbox: Sandbox
+    let sandboxId: string
 
     if (preCreatedId) {
-      // Connect to pre-created instance (test/dev mode)
+      // Connect to pre-created instance (shared/dev mode)
       progress({ phase: 'wait_ready', message: 'Connecting to AGS instance...\n' })
-      e2bSandbox = await Sandbox.connect(preCreatedId, {
-        timeoutMs: 300_000,
-        headers,
-      })
-    } else {
-      // Create new instance via SDK control plane
+      sandboxId = preCreatedId
+    } else if (toolId) {
+      // Create new instance via @cloudbase/manager-node
       progress({ phase: 'create', message: 'Creating AGS sandbox...\n' })
-      e2bSandbox = await Sandbox.create(template, {
-        timeoutMs: 300_000,
-        headers,
-      })
+      sandboxId = await this.createInstance(toolId)
+      // Wait for instance to become ready
+      progress({ phase: 'wait_ready', message: 'Waiting for instance...\n' })
+      await this.waitForReady(sandboxId)
+    } else {
+      throw new Error('AGS sandbox requires either AGS_SANDBOX_ID or AGS_TOOL_ID')
+    }
+
+    const baseUrl = this.buildBaseUrl(sandboxId)
+
+    // Final health check
+    const headers = this.buildHeaders(sandboxId)
+    const healthy = await checkHealth(baseUrl, headers)
+    if (!healthy) {
+      progress({ phase: 'error', message: 'Sandbox health check failed\n' })
+      throw new Error(`AGS sandbox ${sandboxId} is not healthy at ${baseUrl}`)
     }
 
     progress({ phase: 'ready', message: 'Sandbox ready\n' })
 
-    const baseUrl = this.buildBaseUrl(e2bSandbox.sandboxId)
     const instance = new SandboxInstance({
-      e2bSandbox,
+      sandboxId,
       conversationId,
       baseUrl,
       status: 'ready',
       mode,
       tcbApiKey,
-      mcpConfig: this.buildMcpConfig(baseUrl),
+      mcpConfig: this.buildMcpConfig(baseUrl, sandboxId),
     })
 
     this.instanceCache.set(cacheKey, instance)
@@ -216,19 +218,68 @@ export class AgsSandboxManager {
 
   /**
    * Get an existing sandbox instance (no creation).
-   * Returns null if not cached or not running.
    */
   async getExisting(conversationId: string, _scfSessionId: string): Promise<SandboxInstance | null> {
     const cached = this.instanceCache.get('shared') || this.instanceCache.get(conversationId)
     if (!cached) return null
+    const alive = await cached.isRunning()
+    return alive ? cached : null
+  }
 
-    try {
-      const isRunning = await cached.getE2bSandbox().isRunning()
-      if (isRunning) return cached
-    } catch {
-      // Not running
+  // ─── Control Plane (via @cloudbase/manager-node) ──────────────────────
+
+  private async callManagerApi(action: string, param: Record<string, any>): Promise<any> {
+    const CloudBase = (await import('@cloudbase/manager-node')).default
+    const app = new CloudBase({
+      secretId: process.env.TCB_SECRET_ID || '',
+      secretKey: process.env.TCB_SECRET_KEY || '',
+      token: process.env.TCB_TOKEN || '',
+      envId: process.env.TCB_ENV_ID || '',
+    })
+    return (app.commonService('ags') as any).call({ Action: action, Param: param })
+  }
+
+  private async createInstance(toolId: string): Promise<string> {
+    const result = await this.callManagerApi('StartSandboxInstance', {
+      ToolId: toolId,
+      Timeout: '30m',
+      AuthMode: 'NONE',
+    })
+    const instanceId = result?.InstanceId || result?.data?.Instance?.InstanceId || ''
+    if (!instanceId) {
+      throw new Error(`Failed to create AGS instance: ${JSON.stringify(result)}`)
     }
-    return null
+    return instanceId
+  }
+
+  private async waitForReady(instanceId: string, maxWaitMs = 120_000): Promise<void> {
+    const baseUrl = this.buildBaseUrl(instanceId)
+    const headers = this.buildHeaders(instanceId)
+    const start = Date.now()
+    while (Date.now() - start < maxWaitMs) {
+      if (await checkHealth(baseUrl, headers)) return
+      await new Promise((r) => setTimeout(r, 3000))
+    }
+    throw new Error(`AGS instance ${instanceId} did not become ready within ${maxWaitMs}ms`)
+  }
+
+  async pause(instanceId: string): Promise<void> {
+    await this.callManagerApi('PauseSandboxInstance', { InstanceId: instanceId })
+  }
+
+  async resume(instanceId: string): Promise<void> {
+    await this.callManagerApi('ResumeSandboxInstance', { InstanceId: instanceId })
+  }
+
+  async destroy(instanceId: string): Promise<void> {
+    await this.callManagerApi('StopSandboxInstance', { InstanceId: instanceId })
+    // Remove from cache
+    for (const [key, inst] of this.instanceCache) {
+      if (inst.sandboxId === instanceId) {
+        this.instanceCache.delete(key)
+        break
+      }
+    }
   }
 }
 

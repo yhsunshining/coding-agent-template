@@ -6,7 +6,7 @@
  * - Uses sandbox's git_push API endpoint
  */
 
-import type { SandboxInstance } from './scf-sandbox-manager.js'
+import type { SandboxInstance } from './ags-sandbox-manager.js'
 
 // ─── Types ────────────────────────────────────────────────────────
 

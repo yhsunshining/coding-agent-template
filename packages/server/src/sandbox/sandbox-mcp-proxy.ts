@@ -10,7 +10,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { SandboxInstance } from './scf-sandbox-manager.js'
+import { buildDataPlaneHeaders } from './sandbox-backend.js'
 import { tool as sdkTool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
@@ -168,7 +168,7 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
     const token = await getAccessToken()
     return {
       'Content-Type': 'application/json',
-      ...SandboxInstance.buildAuthHeaders(token, scfSessionId),
+      ...buildDataPlaneHeaders('scf', { accessToken: token, sessionId: scfSessionId }),
       'X-Conversation-Id': conversationId,
     }
   }
