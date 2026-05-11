@@ -209,14 +209,16 @@ flowchart LR
 
 ### Sandbox Capabilities
 
-每个 Sandbox 容器对外暴露以下能力：
+每个 Sandbox 容器（TRW）对外暴露以下核心能力：
 
-| Capability | Endpoint | Description |
+| Category | Endpoints | Description |
 | --- | --- | --- |
-| File System | `/api/tools/read`, `/api/tools/write`, `/api/tools/edit` | 文件读写编辑 |
-| Bash | `/api/tools/bash` | Shell 命令执行 |
-| Git Push | `/api/tools/git_push` | 将工作区变更推送到远端 |
-| MCP Server | In-memory transport | CloudBase 工具和部署工具 |
+| File | `/api/tools/read`, `write`, `edit`, `files_upload`, `files_download` | 文件读写编辑上传下载 |
+| Search | `/api/tools/grep`, `glob`, `ls` | 内容搜索、文件匹配、目录列表 |
+| Execute | `/api/tools/bash` | Shell 命令执行 |
+| Git | `/api/tools/git_push` | 将工作区变更推送到远端 |
+| Snapshot | `/api/tools/workspace_snapshot`, `workspace_restore` | COS 全量快照/恢复（需挂载 COS） |
+| MCP | `/mcp` | MCP 协议端点（builtin tools） |
 | Health | `/health` | 容器健康检查 |
 
 ### MCP Tool Proxy
