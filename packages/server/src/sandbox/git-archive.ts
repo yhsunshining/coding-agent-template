@@ -4,6 +4,18 @@
  * Simplified version for pushing changes to git archive repo.
  * - Uses env vars directly: GIT_ARCHIVE_REPO, GIT_ARCHIVE_TOKEN, GIT_ARCHIVE_USER
  * - Uses sandbox's git_push API endpoint
+ *
+ * Persistence strategies (complementary, not mutually exclusive):
+ *
+ * 1. Git Archive (this module):
+ *    Server-side initiated. Pushes git-tracked changes to a remote CNB repo.
+ *    Good for code version history. Triggered after each user turn.
+ *
+ * 2. COS Workspace Snapshot (TRW-side, /api/tools/workspace_snapshot):
+ *    Container-side initiated. Tars the entire workspace to COS via FUSE mount.
+ *    Good for full filesystem restore (incl. node_modules, build artifacts).
+ *    Available when sandbox has COS_MOUNT_DIR configured.
+ *    Can be triggered manually via MCP tool or HTTP API.
  */
 
 import type { SandboxInstance } from './ags-sandbox-manager.js'
