@@ -5,6 +5,9 @@
 ## [Unreleased]
 
 ### Added
+- **SANDBOX_BACKEND 开关**: 新增 `SANDBOX_BACKEND` 环境变量（`scf` | `ags` | `lightbox`），默认 `scf` 保持原有行为。`ags` 模式使用 AGS 容器实例，`lightbox` 模式预留 Lightbox 微虚机支持。
+- **AGS 纯 HTTP 数据面**: AGS/Lightbox 模式通过 TCB 网关纯 HTTP 调用 TRW API，无需 e2b SDK。控制面使用 `@cloudbase/manager-node` commonService。
+- **COS Workspace Snapshot 文档**: 在 git-archive.ts 注释中记录 COS 快照作为互补持久化策略（sandbox 挂载 COS 时可用）。
 - **预览沙箱 & Browser 工具栏**: 新建 coding 模式任务后自动冷启动沙箱；右侧预览面板支持浏览器地址栏、刷新/返回/前进、设备尺寸切换；首次加载有骨架屏。
 - **Agent Mode 任务切换**: 任务表单支持选择 `default` / `coding` 模式（单一 `Coding / Default` 药丸按钮）。
 - **CAM 环境策略脚本**: 新增 `packages/server/src/scripts/refresh-policy.ts`，通过 CAM `UpdatePolicy` 把本地 policy 定义刷新到已部署 policyId，免重新 provision（约 1 分钟生效）。
@@ -33,6 +36,7 @@
 
 ### Changed
 - `toolConfirmation` 真实执行从 sandbox 启动**之前**推迟到 sandbox + sandboxMcpClient ready **之后**，避免 sandbox 未就绪时写入占位文本误触发 SDK 重试。
+- **移除 e2b SDK 依赖**: AGS 模式不再依赖 `e2b` file: 链接，改为纯 HTTP + `@cloudbase/manager-node`。减少 24 个间接依赖包。
 
 ---
 

@@ -213,7 +213,7 @@ flowchart LR
 
 | Capability | Endpoint | Description |
 | --- | --- | --- |
-| File System | `/e2b-compatible/files` | 文件读写（兼容 e2b 协议） |
+| File System | `/api/tools/read`, `/api/tools/write`, `/api/tools/edit` | 文件读写编辑 |
 | Bash | `/api/tools/bash` | Shell 命令执行 |
 | Git Push | `/api/tools/git_push` | 将工作区变更推送到远端 |
 | MCP Server | In-memory transport | CloudBase 工具和部署工具 |
@@ -251,6 +251,24 @@ Git Remote (GIT_ARCHIVE_REPO)
 - **目录策略**：每个会话 (`conversationId`) 对应分支下的一个目录
 - **推送方式**：通过 Sandbox 内的 `/api/tools/git_push` 执行
 - **清理方式**：通过 CNB Gateway API 删除远端目录或分支
+
+### Multi-Backend Support (SANDBOX_BACKEND)
+
+Sandbox 模块支持三种后端，通过 `SANDBOX_BACKEND` 环境变量切换：
+
+| Backend | 控制面 | 数据面 | 说明 |
+| --- | --- | --- | --- |
+| `scf` (默认) | `@cloudbase/manager-node` CreateFunction | HTTP via TCB 网关 (Authorization + Session-Id) | CloudBase 云函数容器 |
+| `ags` | `@cloudbase/manager-node` commonService('ags') | HTTP via TCB 网关 (X-Cloudbase-Authorization + E2b-Sandbox-Id) | AGS 容器实例 |
+| `lightbox` | 同 ags | 同 ags | Lightbox 微虚机（预留） |
+
+**AGS 模式特有环境变量**：
+- `AGS_SANDBOX_ID` — 预创建实例 ID（共享/开发模式，跳过动态创建）
+- `AGS_TOOL_ID` — AGS Tool ID（动态创建模式）
+- `AGS_SANDBOX_URL` — TCB 网关数据面 URL
+- `TCB_API_KEY` — TCB 网关鉴权 Token
+
+**AGS 模式持久化**：当容器挂载 COS 时，可通过 `/api/tools/workspace_snapshot` 执行全量文件系统快照（tar.zst → COS FUSE），与 Git Archive 互补。
 
 ### Connector Management
 
