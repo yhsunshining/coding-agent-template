@@ -1,52 +1,30 @@
 /**
- * Sandbox Backend — shared utilities for multi-backend sandbox support.
+ * Sandbox Backend — shared utilities for AGS/Lightbox sandbox.
  *
- * SANDBOX_BACKEND env var selects the backend:
- *   - scf (default): SCF cloud function via @cloudbase/manager-node
- *   - ags: AGS container via @cloudbase/manager-node SandboxService
- *   - lightbox: Lightbox microVM via E2B-compatible HTTP API
+ * Data plane: pure HTTP via TCB gateway.
+ * Headers: X-Cloudbase-Authorization + E2b-Sandbox-Id + E2b-Sandbox-Port
  */
-
-export type SandboxBackend = 'scf' | 'ags' | 'lightbox'
-
-export function getSandboxBackend(): SandboxBackend {
-  const v = (process.env.SANDBOX_BACKEND || 'scf').trim().toLowerCase()
-  if (v === 'ags' || v === 'lightbox') return v
-  return 'scf'
-}
 
 /**
- * Build data-plane HTTP headers based on backend type.
- * - SCF: Authorization + X-Cloudbase-Session-Id (TCB gateway routing)
- * - AGS/Lightbox: X-Cloudbase-Authorization + E2b-Sandbox-Id + E2b-Sandbox-Port (TCB gateway routing)
+ * Build data-plane HTTP headers for TCB gateway routing.
+ * Includes sandbox instance routing headers (E2b-Sandbox-Id + E2b-Sandbox-Port).
  */
-export function buildDataPlaneHeaders(
-  backend: SandboxBackend,
-  opts?: { accessToken?: string; sessionId?: string; tcbApiKey?: string; sandboxId?: string },
-): Record<string, string> {
-  switch (backend) {
-    case 'scf':
-      return {
-        Authorization: `Bearer ${opts?.accessToken || ''}`,
-        'X-Cloudbase-Session-Id': opts?.sessionId || '',
-        'X-Tcb-Webfn': 'true',
-      }
-    case 'ags':
-    case 'lightbox': {
-      const headers: Record<string, string> = {
-        'X-Cloudbase-Authorization': `Bearer ${opts?.tcbApiKey || process.env.TCB_API_KEY || ''}`,
-      }
-      if (opts?.sandboxId) {
-        headers['E2b-Sandbox-Id'] = opts.sandboxId
-        headers['E2b-Sandbox-Port'] = '9000'
-      }
-      return headers
-    }
+export function buildDataPlaneHeaders(opts: {
+  tcbApiKey?: string
+  sandboxId?: string
+}): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-Cloudbase-Authorization': `Bearer ${opts.tcbApiKey || process.env.TCB_API_KEY || ''}`,
   }
+  if (opts.sandboxId) {
+    headers['E2b-Sandbox-Id'] = opts.sandboxId
+    headers['E2b-Sandbox-Port'] = '9000'
+  }
+  return headers
 }
 
 /**
- * Health check via HTTP GET /health. No envd WebSocket needed.
+ * Health check via HTTP GET /health.
  */
 export async function checkHealth(baseUrl: string, headers: Record<string, string>): Promise<boolean> {
   try {

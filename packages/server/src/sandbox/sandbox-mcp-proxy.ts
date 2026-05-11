@@ -10,7 +10,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { buildDataPlaneHeaders } from './sandbox-backend.js'
 import { tool as sdkTool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { nanoid } from 'nanoid'
@@ -23,11 +22,15 @@ import { scheduleTask, unscheduleTask } from '../services/cron-scheduler.js'
 export interface SandboxMcpDeps {
   /** 沙箱 CloudBase Gateway 基础 URL */
   baseUrl: string
-  /** SCF session ID (envId) for X-Cloudbase-Session-Id header */
-  scfSessionId: string
+  /** Sandbox instance ID for TCB gateway routing */
+  sandboxId: string
   /** Conversation ID for per-conversation isolation in shared container */
   conversationId: string
-  /** 获取最新网关 access token（带缓存，调每次都是最新） */
+  /** @deprecated Legacy alias for sandboxId, kept for compat */
+  scfSessionId?: string
+  /** 获取数据面鉴权 headers（X-Cloudbase-Authorization + E2b-Sandbox-Id） */
+  getAuthHeaders: () => Record<string, string>
+  /** 获取最新网关 access token（带缓存） */
   getAccessToken: () => Promise<string>
   /** 获取最新 TencentCloud 密钥（用于注入容器 env） */
   getCredentials: () => Promise<{
@@ -149,8 +152,10 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
 }> {
   const {
     baseUrl,
+    sandboxId: _sandboxId,
     scfSessionId,
     conversationId,
+    getAuthHeaders,
     getAccessToken,
     getCredentials,
     bashTimeoutMs = 30_000,
@@ -165,10 +170,9 @@ export async function createSandboxMcpClient(deps: SandboxMcpDeps): Promise<{
   // ── HTTP helpers ────────────────────────────────────────────────
 
   async function buildHeaders(): Promise<Record<string, string>> {
-    const token = await getAccessToken()
     return {
       'Content-Type': 'application/json',
-      ...buildDataPlaneHeaders('scf', { accessToken: token, sessionId: scfSessionId }),
+      ...getAuthHeaders(),
       'X-Conversation-Id': conversationId,
     }
   }

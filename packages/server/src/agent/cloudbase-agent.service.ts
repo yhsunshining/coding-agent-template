@@ -848,8 +848,10 @@ export class CloudbaseAgentService {
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             baseUrl: sandboxInstance.baseUrl,
+            sandboxId: sandboxInstance.sandboxId,
             scfSessionId: sandboxSessionId,
             conversationId,
+            getAuthHeaders: () => sandboxInstance!.getAuthHeaders(),
             getAccessToken: () => sandboxInstance!.getAccessToken(),
             getCredentials: async () => ({
               cloudbaseEnvId: userContext.envId,

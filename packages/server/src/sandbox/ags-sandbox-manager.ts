@@ -2,17 +2,24 @@
  * AGS Sandbox Manager
  *
  * Pure HTTP + @cloudbase/manager-node. No e2b SDK dependency.
- * Control plane: manager-node SandboxService (create/pause/resume/stop)
+ * Control plane: manager-node commonService (create/pause/resume/stop)
  * Data plane: HTTP fetch to TRW via TCB gateway
  *
- * Environment variables:
- *   TCB_API_KEY        — TCB token for X-Cloudbase-Authorization header
+ * Required environment variables:
+ *   TCB_API_KEY        — TCB gateway auth token (X-Cloudbase-Authorization header)
+ *
+ * Instance connection (one of):
+ *   AGS_SANDBOX_ID     — Pre-created instance ID (shared/dev mode, skips creation)
+ *   AGS_TOOL_ID        — AGS tool ID (dynamic creation mode)
+ *
+ * Data plane routing:
+ *   AGS_SANDBOX_URL    — TCB gateway base URL (e.g. https://<env>.api.tcloudbasegateway.com/v1/sandbox/-)
+ *
+ * Dynamic creation only (optional):
  *   TCB_ENV_ID         — CloudBase environment ID
- *   TCB_SECRET_ID      — Tencent Cloud SecretId (for manager-node)
- *   TCB_SECRET_KEY     — Tencent Cloud SecretKey (for manager-node)
- *   AGS_SANDBOX_ID     — (optional) Pre-created instance ID to connect to
- *   AGS_TOOL_ID        — AGS tool ID for creating new instances
- *   AGS_SANDBOX_URL    — TCB gateway base URL for data plane (e.g. https://<env>.api.tcloudbasegateway.com/v1/sandbox/-)
+ *   TCB_SECRET_ID      — Tencent Cloud SecretId
+ *   TCB_SECRET_KEY     — Tencent Cloud SecretKey
+ *   TCB_TOKEN          — Tencent Cloud temporary token (optional)
  */
 
 import { checkHealth, buildDataPlaneHeaders } from './sandbox-backend.js'
@@ -78,7 +85,7 @@ export class SandboxInstance {
   }
 
   getAuthHeaders(): Record<string, string> {
-    return buildDataPlaneHeaders('ags', { tcbApiKey: this.tcbApiKey, sandboxId: this.sandboxId })
+    return buildDataPlaneHeaders({ tcbApiKey: this.tcbApiKey, sandboxId: this.sandboxId })
   }
 
   async getToolOverrideConfig(): Promise<{ url: string; headers: Record<string, string> }> {
@@ -111,9 +118,9 @@ export class AgsSandboxManager {
 
   private getConfig() {
     const tcbApiKey = process.env.TCB_API_KEY || ''
-    const toolId = process.env.AGS_TOOL_ID || process.env.TOOL_ID || ''
+    const toolId = process.env.AGS_TOOL_ID || ''
     const preCreatedId = process.env.AGS_SANDBOX_ID || ''
-    const sandboxUrl = process.env.AGS_SANDBOX_URL || process.env.E2B_SANDBOX_URL || ''
+    const sandboxUrl = process.env.AGS_SANDBOX_URL || ''
 
     if (!tcbApiKey) {
       throw new Error('Missing TCB_API_KEY for AGS sandbox')
@@ -123,18 +130,15 @@ export class AgsSandboxManager {
   }
 
   private buildHeaders(sandboxId?: string): Record<string, string> {
-    return buildDataPlaneHeaders('ags', { tcbApiKey: this.getConfig().tcbApiKey, sandboxId })
+    return buildDataPlaneHeaders({ tcbApiKey: this.getConfig().tcbApiKey, sandboxId })
   }
 
-  private buildBaseUrl(sandboxId: string): string {
+  private buildBaseUrl(_sandboxId: string): string {
     const { sandboxUrl } = this.getConfig()
-    if (sandboxUrl) {
-      // TCB gateway URL — sandbox routing via headers
-      return sandboxUrl
+    if (!sandboxUrl) {
+      throw new Error('Missing AGS_SANDBOX_URL — TCB gateway URL required for data plane')
     }
-    // Fallback: AGS direct (port-routing format)
-    const region = process.env.AGS_REGION || 'ap-shanghai'
-    return `https://9000-${sandboxId}.${region}.tencentags.com`
+    return sandboxUrl
   }
 
   private buildMcpConfig(baseUrl: string, sandboxId: string): SandboxInstance['mcpConfig'] {
@@ -280,6 +284,17 @@ export class AgsSandboxManager {
         break
       }
     }
+  }
+  /**
+   * Preview base URL for AGS mode.
+   * Preview routes through the same TCB gateway baseUrl + /preview path.
+   */
+  async ensurePreviewGateway(): Promise<string> {
+    const { sandboxUrl } = this.getConfig()
+    if (sandboxUrl) return `${sandboxUrl}/preview`
+    const cached = this.instanceCache.get('shared')
+    if (cached) return `${cached.baseUrl}/preview`
+    return '/preview'
   }
 }
 
