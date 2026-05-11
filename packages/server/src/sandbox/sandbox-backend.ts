@@ -9,10 +9,7 @@
  * Build data-plane HTTP headers for TCB gateway routing.
  * Includes sandbox instance routing headers (E2b-Sandbox-Id + E2b-Sandbox-Port).
  */
-export function buildDataPlaneHeaders(opts: {
-  tcbApiKey?: string
-  sandboxId?: string
-}): Record<string, string> {
+export function buildDataPlaneHeaders(opts: { tcbApiKey?: string; sandboxId?: string }): Record<string, string> {
   const headers: Record<string, string> = {
     'X-Cloudbase-Authorization': `Bearer ${opts.tcbApiKey || process.env.TCB_API_KEY || ''}`,
   }

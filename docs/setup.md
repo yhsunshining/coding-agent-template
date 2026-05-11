@@ -92,7 +92,7 @@ flowchart TD
 - CloudBase 相关配置（`TCB_ENV_ID`、`TCB_SECRET_ID`、`TCB_SECRET_KEY`）
 - CodeBuddy 认证配置
 - 数据库提供方配置
-- SCF Sandbox / TCR 配置
+- AGS Sandbox 配置
 - 可选的 GitHub OAuth、代理配置
 
 初始化脚本会优先把 CloudBase 和服务端相关配置写入这里。
@@ -119,14 +119,14 @@ flowchart TD
 | `CODEBUDDY_CLIENT_SECRET` | 二选一 | OAuth 模式下使用 |
 | `CODEBUDDY_OAUTH_ENDPOINT` | 否 | OAuth Token 端点，默认使用国内地址 |
 
-### Sandbox / TCR
+### AGS Sandbox
 
 | 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `SCF_SANDBOX_IMAGE_TYPE` | 否 | 镜像类型，默认 `personal` |
-| `SCF_SANDBOX_IMAGE_URI` | 是 | SCF Sandbox 所使用的镜像 URI |
-| `SCF_SANDBOX_IMAGE_PORT` | 否 | 容器暴露端口，默认 `9000` |
-| `TCR_IMAGE` | 建议 | `setup-tcr` 成功后会写入，用于 sandbox 镜像配置 |
+| `TCB_API_KEY` | 是 | TCB 网关鉴权 Token |
+| `AGS_SANDBOX_URL` | 是 | TCB 网关数据面 URL |
+| `AGS_SANDBOX_ID` | 二选一 | 预创建实例 ID（共享/开发模式） |
+| `AGS_TOOL_ID` | 二选一 | AGS Tool ID（动态创建模式） |
 
 ## 用户环境模式
 
@@ -268,4 +268,3 @@ pnpm rebuild better-sqlite3
 
 - [根目录 README](../README.md)
 - [系统架构文档](./architecture.md)
-- [SCF Session 共享方案](./scf-session-sharing.md)

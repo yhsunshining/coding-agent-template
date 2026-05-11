@@ -2,7 +2,7 @@
 
 ## Overview
 
-CloudBase VibeCoding Platform 是一个基于腾讯云 CloudBase 的 AI 编程助手平台。用户通过 Web 界面向 Agent 下达编程指令，Agent 在隔离的 SCF Sandbox 容器中执行代码操作，结果通过 SSE 流式返回并持久化到 CloudBase 数据库。
+CloudBase VibeCoding Platform 是一个基于腾讯云 CloudBase 的 AI 编程助手平台。用户通过 Web 界面向 Agent 下达编程指令，Agent 在隔离的 AGS 容器实例中执行代码操作，结果通过 SSE 流式返回并持久化到 CloudBase 数据库。
 
 ```mermaid
 graph TB
@@ -21,9 +21,9 @@ graph TB
 
     subgraph Infra["CloudBase Infrastructure"]
         DB[("CloudBase DB")]
-        SCF["SCF Sandbox"]
+        AGS["AGS Sandbox"]
         Storage["Cloud Storage"]
-        TCR["TCR Registry"]
+        COS["COS (Snapshot)"]
     end
 
     subgraph AI["AI Layer"]
@@ -41,11 +41,11 @@ graph TB
     Auth --> TaskSvc
     AgentSvc --> SDK --> Models
     AgentSvc --> MCP
-    MCP --> SCF
-    TaskSvc --> SCF
+    MCP --> AGS
+    TaskSvc --> AGS
     AgentSvc --> Persist --> DB
-    SCF --> CNB
-    SCF --> TCR
+    AGS --> CNB
+    AGS --> COS
     TaskSvc --> Storage
 ```
 
@@ -189,23 +189,24 @@ Sandbox 模块为每个任务 / 会话提供隔离的执行环境。
 
 ```mermaid
 flowchart LR
-    Agent["Agent Service"] --> Manager["ScfSandboxManager"]
-    Manager --> SCF["SCF Container"]
-    SCF --> FS["File System"]
-    SCF --> Bash["Bash Execution"]
-    SCF --> MCPServer["MCP Server"]
-    SCF --> Git["Git Archive"]
+    Agent["Agent Service"] --> Manager["AgsSandboxManager"]
+    Manager --> AGS["AGS Container (TRW)"]
+    AGS --> FS["File System"]
+    AGS --> Bash["Bash Execution"]
+    AGS --> MCPServer["MCP Server"]
+    AGS --> Git["Git Archive"]
+    AGS --> COS["COS Snapshot"]
     MCPServer --> CloudBase["CloudBase Tools"]
     MCPServer --> Deploy["Deployment Tools"]
 ```
 
-### SCF Sandbox Lifecycle
+### AGS Sandbox Lifecycle
 
-1. **Create or Reuse** — `scfSandboxManager` 根据 conversationId 创建或复用云函数容器
-2. **Health Check** — 轮询 `/health` 等待容器就绪
-3. **Init Workspace** — 通过 `/api/session/init` 注入 CloudBase 凭证和环境变量
-4. **Execute** — Agent 通过 HTTP 调用容器内的工具接口
-5. **Archive** — 任务结束时通过 Git 归档工作区
+1. **Create or Reuse** — `sandboxManager` 根据 `AGS_SANDBOX_ID`（预创建）或 `AGS_TOOL_ID`（动态创建）获取实例
+2. **Health Check** — 轮询 `/health` 确认 TRW 就绪
+3. **Init Workspace** — 通过 `/api/workspace/init` 注入 CloudBase 凭证和环境变量
+4. **Execute** — Agent 通过 HTTP 调用容器内的工具接口（`/api/tools/{tool}`）
+5. **Snapshot / Archive** — COS 快照持久化 + Git 归档代码变更
 
 ### Sandbox Capabilities
 
@@ -254,23 +255,19 @@ Git Remote (GIT_ARCHIVE_REPO)
 - **推送方式**：通过 Sandbox 内的 `/api/tools/git_push` 执行
 - **清理方式**：通过 CNB Gateway API 删除远端目录或分支
 
-### Multi-Backend Support (SANDBOX_BACKEND)
+### Environment Variables
 
-Sandbox 模块支持三种后端，通过 `SANDBOX_BACKEND` 环境变量切换：
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `TCB_API_KEY` | ✅ | TCB 网关鉴权 Token |
+| `AGS_SANDBOX_URL` | ✅ | TCB 网关数据面 URL |
+| `AGS_SANDBOX_ID` | 二选一 | 预创建实例 ID（共享/开发模式） |
+| `AGS_TOOL_ID` | 二选一 | AGS Tool ID（动态创建模式） |
+| `TCB_ENV_ID` | 动态创建 | CloudBase 环境 ID |
+| `TCB_SECRET_ID` | 动态创建 | Tencent Cloud SecretId |
+| `TCB_SECRET_KEY` | 动态创建 | Tencent Cloud SecretKey |
 
-| Backend | 控制面 | 数据面 | 说明 |
-| --- | --- | --- | --- |
-| `scf` (默认) | `@cloudbase/manager-node` CreateFunction | HTTP via TCB 网关 (Authorization + Session-Id) | CloudBase 云函数容器 |
-| `ags` | `@cloudbase/manager-node` commonService('ags') | HTTP via TCB 网关 (X-Cloudbase-Authorization + E2b-Sandbox-Id) | AGS 容器实例 |
-| `lightbox` | 同 ags | 同 ags | Lightbox 微虚机（预留） |
-
-**AGS 模式特有环境变量**：
-- `AGS_SANDBOX_ID` — 预创建实例 ID（共享/开发模式，跳过动态创建）
-- `AGS_TOOL_ID` — AGS Tool ID（动态创建模式）
-- `AGS_SANDBOX_URL` — TCB 网关数据面 URL
-- `TCB_API_KEY` — TCB 网关鉴权 Token
-
-**AGS 模式持久化**：当容器挂载 COS 时，可通过 `/api/tools/workspace_snapshot` 执行全量文件系统快照（tar.zst → COS FUSE），与 Git Archive 互补。
+**持久化**：当容器挂载 COS 时，可通过 `/api/tools/workspace_snapshot` 执行全量文件系统快照（tar.zst → COS FUSE），与 Git Archive 互补。
 
 ### Connector Management
 
@@ -377,7 +374,7 @@ sequenceDiagram
     participant Web
     participant Server
     participant Agent as Agent Service
-    participant Sandbox as SCF Sandbox
+    participant Sandbox as AGS Sandbox
     participant DB as CloudBase DB
     participant Git as Git Archive
 
@@ -413,7 +410,7 @@ sequenceDiagram
 | Backend | Hono, Node.js, Drizzle ORM |
 | Database | CloudBase DB (primary), SQLite (local fallback) |
 | AI | CodeBuddy SDK (`@tencent-ai/agent-sdk`), MCP |
-| Sandbox | CloudBase SCF, TCR container images |
+| Sandbox | AGS container images (TCR registry) |
 | Auth | JWE session, bcrypt, Arctic (OAuth) |
 | Persistence | CloudBase DB, local .jsonl, Git archive |
 
@@ -636,5 +633,4 @@ erDiagram
 ## Related Documents
 
 - [Setup Guide](./setup.md) — 初始化流程、环境变量、验证与排障
-- [SCF Session Sharing](./scf-session-sharing.md) — 沙箱会话共享方案
 - [Cron Task Plan](./crontask-cloudfunction-plan.md) — 定时任务云函数演进规划

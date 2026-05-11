@@ -23,7 +23,6 @@
 ├── docs/
 │   ├── setup.md                  # setup 详解与排障
 │   ├── architecture.md           # 系统架构文档
-│   ├── scf-session-sharing.md    # SCF Session 共享设计
 │   └── crontask-cloudfunction-plan.md
 ├── packages/
 │   ├── web/          # React + Vite 前端
@@ -40,7 +39,7 @@
 ## 系统架构概览
 
 - `packages/web` 提供面向用户的主交互界面，包括任务、对话、日志和仓库相关能力
-- `packages/server` 负责认证、API 路由、Agent 编排、消息持久化与 SCF Sandbox 管理
+- `packages/server` 负责认证、API 路由、Agent 编排、消息持久化与 AGS Sandbox 管理
 - `packages/dashboard` 提供 CloudBase 资源管理相关界面
 - `packages/shared` 提供前后端共享类型和协议定义
 - CloudBase 负责数据库、云函数、存储和镜像基础设施，CodeBuddy / 模型层负责智能体能力
@@ -280,7 +279,7 @@ pnpm setup:tcr        # 配置容器镜像服务
 
 ## 与上游项目的关系
 
-本项目 fork 自 Vercel 的 [coding-agent-template](https://github.com/vercel-labs/coding-agent-template)，主要变化：将 Next.js 全栈架构重构为 Monorepo 前后端分离（React + Vite / Hono），部署平台从 Vercel 迁移到腾讯云 CloudBase，Sandbox 从 Vercel Sandbox 替换为 CloudBase SCF。
+本项目 fork 自 Vercel 的 [coding-agent-template](https://github.com/vercel-labs/coding-agent-template)，主要变化：将 Next.js 全栈架构重构为 Monorepo 前后端分离（React + Vite / Hono），部署平台从 Vercel 迁移到腾讯云 CloudBase，Sandbox 从 Vercel Sandbox 替换为 AGS 容器实例（纯 HTTP 数据面，无 e2b SDK 依赖）。
 
 ## Contributing
 
