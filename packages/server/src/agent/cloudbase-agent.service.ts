@@ -7,7 +7,7 @@ import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { v4 as uuidv4 } from 'uuid'
 import { loadConfig } from '../config/store.js'
 import { persistenceService } from './persistence.service.js'
-import { scfSandboxManager, type SandboxInstance } from '../sandbox/index.js'
+import { sandboxManager, type SandboxInstance } from '../sandbox/index.js'
 import { createSandboxMcpClient } from '../sandbox/sandbox-mcp-proxy.js'
 import { archiveToGit } from '../sandbox/git-archive.js'
 import { getCodingSystemPrompt } from './coding-mode.js'
@@ -813,7 +813,7 @@ export class CloudbaseAgentService {
 
     if (sandboxEnabled) {
       try {
-        sandboxInstance = await scfSandboxManager.getOrCreate(conversationId, userContext.envId, {
+        sandboxInstance = await sandboxManager.getOrCreate(conversationId, userContext.envId, {
           mode: 'shared',
           workspaceIsolation: sandboxMode as 'shared' | 'isolated',
           sandboxSessionId,

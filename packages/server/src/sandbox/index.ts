@@ -8,7 +8,6 @@
 
 export {
   agsSandboxManager as sandboxManager,
-  agsSandboxManager as scfSandboxManager, // compat alias for existing consumers
   AgsSandboxManager,
   SandboxInstance,
   type SandboxMode,

@@ -9,7 +9,7 @@ import { decrypt } from '../lib/crypto'
 import { Octokit } from '@octokit/rest'
 import { deleteArchiveBranch, SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
-import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
+import { deleteConversationViaSandbox, sandboxManager, archiveToGit } from '../sandbox/index.js'
 import { CODING_DEV_SERVER_PORT } from '../agent/coding-mode.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 
@@ -102,7 +102,7 @@ async function getScfSandbox(
   if (!task.sandboxId) return null
   try {
     const scfSessionId = task.sandboxSessionId || envId
-    return (await scfSandboxManager.getExisting(task.sandboxId, scfSessionId)) ?? null
+    return (await sandboxManager.getExisting(task.sandboxId, scfSessionId)) ?? null
   } catch {
     return null
   }
@@ -414,7 +414,7 @@ tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
         await deleteArchiveBranch(taskId)
       } else {
         const scfSessionId = existing.sandboxSessionId || envId
-        const sandbox = await scfSandboxManager.getExisting(taskId, scfSessionId).catch(() => null)
+        const sandbox = await sandboxManager.getExisting(taskId, scfSessionId).catch(() => null)
         if (sandbox) {
           await deleteConversationViaSandbox(sandbox, envId, taskId, existing.sandboxCwd || undefined)
         }
@@ -2204,7 +2204,7 @@ tasksRouter.post('/:taskId/start-sandbox', requireUserEnv, async (c) => {
       }
     }
     await logger.info('Starting sandbox')
-    const sandbox = await scfSandboxManager.getOrCreate(taskId, envId)
+    const sandbox = await sandboxManager.getOrCreate(taskId, envId)
     await getDb().tasks.update(taskId, { sandboxId: sandbox.functionName, updatedAt: Date.now() })
     await logger.info('Sandbox started successfully')
     return c.json({ success: true, message: 'Sandbox started successfully', sandboxId: sandbox.functionName })
@@ -2425,7 +2425,7 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
       if (!sandbox) {
         await emit('progress', '正在启动沙箱...')
         try {
-          sandbox = await scfSandboxManager.getOrCreate(taskId, envId, {
+          sandbox = await sandboxManager.getOrCreate(taskId, envId, {
             mode: 'shared',
             workspaceIsolation: sandboxConfig.sandboxMode,
             sandboxSessionId: sandboxConfig.sandboxSessionId,
@@ -2508,7 +2508,7 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
       // ── 获取网关 URL ──────────────────────────────────────────────────
       let previewBase: string
       try {
-        previewBase = await scfSandboxManager.ensurePreviewGateway()
+        previewBase = await sandboxManager.ensurePreviewGateway()
       } catch {
         const sandboxEnvId = process.env.TCB_ENV_ID || ''
         previewBase = `https://${sandboxEnvId}.service.tcloudbase.com/preview`
